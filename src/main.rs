@@ -88,6 +88,83 @@ fn channel(seed: u64, tags: &[&str]) -> Rng {
     Rng::new(h64(seed, tags))
 }
 
+// ---------- Themes ----------
+/* Meaning is authored upstream; the generator is a librarian. Each depth
+   draws its identity from this table via the per-depth "theme" channel.
+   Grounding rule (template edition): flavor text may only restate things
+   the engine did — never invent entities, exits, or events. Lore speaks of
+   the place's past; it never claims something is present that isn't. */
+struct Theme {
+    label: &'static str,
+    amulet: &'static str,
+    mobs: [&'static str; 3], // skins for rat / goblin / ogre stat rows
+    adjs: [&'static str; 4],
+    lore: [&'static str; 3], // {A} is filled from slots
+    slots: [&'static str; 4],
+}
+
+const THEMES: [Theme; 4] = [
+    Theme {
+        label: "the drowned monastery",
+        amulet: "the Quiet Bell",
+        mobs: ["cloister rat", "drowned acolyte", "bell-warden"],
+        adjs: ["water-stained", "hushed", "candle-blackened", "weeping"],
+        lore: [
+            "The Order raised these halls over the spring, {A}.",
+            "The bell rang for the living, {A}. The water answered.",
+            "The lower stairs were sealed {A}. Someone unsealed them.",
+        ],
+        slots: ["to count the dead hours", "in the wet year", "when the abbot went below", "against all writ"],
+    },
+    Theme {
+        label: "the salt counting-house",
+        amulet: "the Final Ledger",
+        mobs: ["salt rat", "clerk-thing", "debt-golem"],
+        adjs: ["dust-dry", "ink-stained", "ledger-lined", "airless"],
+        lore: [
+            "The vaults run deep to keep the salt-debts cool, {A}.",
+            "The clerks recorded debts before they were owed, {A}.",
+            "On the last page is a sum still being paid, {A}.",
+        ],
+        slots: ["by royal writ", "in the ninth audit", "in the short harvest year", "and sealed twice"],
+    },
+    Theme {
+        label: "the deep mine",
+        amulet: "the First Lode",
+        mobs: ["blind rat", "ember wisp", "pit foreman"],
+        adjs: ["soot-caked", "cold", "narrow", "groaning"],
+        lore: [
+            "They followed the seam past the marked depth, {A}.",
+            "The singing shaft was sealed, {A}. Digging went on.",
+            "The old galleries were abandoned in one shift, {A}.",
+        ],
+        slots: ["against the surveyor's oath", "in the dry season", "when the birds went quiet", "and told no one above"],
+    },
+    Theme {
+        label: "the hollow library",
+        amulet: "the Last Index",
+        mobs: ["paper rat", "ink haunt", "shelf-warden"],
+        adjs: ["dog-eared", "mould-spotted", "whispering", "unshelved"],
+        lore: [
+            "The stacks were carved downward when shelves ran out, {A}.",
+            "The catalogue was burned by its own librarians, {A}.",
+            "Borrowing ended {A}. Returns were still accepted.",
+        ],
+        slots: ["in the third founding", "one volume at a time", "after the misfiling", "by unanimous silence"],
+    },
+];
+
+/// Per-depth theme identity: (theme, lore template, lore slot) indices.
+/// Its own channel, so flavor can never perturb worldgen or spawns.
+fn theme_pick(seed: u64, depth: u32) -> (usize, usize, usize) {
+    let mut tr = channel(seed, &["theme", &depth.to_string()]);
+    (
+        tr.range(0, THEMES.len() as i32) as usize,
+        tr.range(0, 3) as usize,
+        tr.range(0, 4) as usize,
+    )
+}
+
 // ---------- Map ----------
 #[derive(Clone, Copy, PartialEq)]
 enum Tile {
@@ -167,6 +244,7 @@ struct Game {
     seed: u64,
     combat_rng: Rng,
     ai_rng: Rng,
+    flavor_rng: Rng,
     dead: bool,
     won: bool,
 }
@@ -200,12 +278,26 @@ impl Game {
             seed,
             combat_rng: channel(seed, &["combat"]),
             ai_rng: channel(seed, &["ai"]),
+            flavor_rng: channel(seed, &["flavor"]),
             dead: false,
             won: false,
         };
         g.gen_level();
         g.log(String::from("Fetch the Amulet from depth 5 and climb back before dark!"));
         g
+    }
+
+    fn theme(&self) -> &'static Theme {
+        &THEMES[theme_pick(self.seed, self.depth).0]
+    }
+
+    fn mob_name(&self, k: MKind) -> &'static str {
+        self.theme().mobs[k as usize]
+    }
+
+    fn adj(&mut self) -> &'static str {
+        let t = self.theme();
+        t.adjs[self.flavor_rng.range(0, t.adjs.len() as i32) as usize]
     }
 
     fn log(&mut self, s: String) {
@@ -315,6 +407,12 @@ impl Game {
             }
         }
         self.compute_fov();
+
+        // first arrival: name the place and surface one line of its history
+        let (ti, li, si) = theme_pick(self.seed, self.depth);
+        let t = &THEMES[ti];
+        self.log(format!("You enter {}.", t.label));
+        self.log(t.lore[li].replace("{A}", t.slots[si]));
     }
 
     fn rand_floor(&mut self, rng: &mut Rng, min_player_dist: i32) -> Option<(i32, i32)> {
@@ -489,7 +587,7 @@ impl Game {
         }
         if let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) {
             let dmg = self.atk + self.combat_rng.range(0, 3);
-            let name = Monster::stats(self.monsters[mi].kind).4;
+            let name = self.mob_name(self.monsters[mi].kind);
             self.monsters[mi].hp -= dmg;
             if self.monsters[mi].hp <= 0 {
                 self.monsters.remove(mi);
@@ -557,15 +655,18 @@ impl Game {
                 IKind::Potion => {
                     let heal = 8.min(self.maxhp - self.hp);
                     self.hp += heal;
-                    self.log(format!("You quaff a potion. (+{} HP)", heal));
+                    let a = self.adj();
+                    self.log(format!("You quaff a {} draught. (+{} HP)", a, heal));
                 }
                 IKind::Sword => {
                     self.atk += 2;
-                    self.log(String::from("A sharper sword! (+2 ATK)"));
+                    let a = self.adj();
+                    self.log(format!("A {} blade, still sharp! (+2 ATK)", a));
                 }
                 IKind::Amulet => {
                     self.has_amulet = true;
-                    self.log(String::from("The AMULET is yours! It is heavy. Climb, before dark!"));
+                    let name = self.theme().amulet;
+                    self.log(format!("You take {}. It is heavy. Climb, before dark!", name));
                 }
             }
         }
@@ -609,7 +710,7 @@ impl Game {
         }
         for (kind, dmg) in attacks {
             self.hp -= dmg;
-            let name = Monster::stats(kind).4;
+            let name = self.mob_name(kind);
             if self.hp <= 0 {
                 self.hp = 0;
                 self.dead = true;
@@ -872,7 +973,10 @@ fn dump(seed: u64) -> String {
     for d in 1..=MAX_DEPTH {
         g.depth = d;
         g.gen_level();
-        out.push_str(&format!("-- depth {} --\n", d));
+        let (ti, li, si) = theme_pick(seed, d);
+        let t = &THEMES[ti];
+        out.push_str(&format!("-- depth {} : {} --\n", d, t.label));
+        out.push_str(&format!("{}\n", t.lore[li].replace("{A}", t.slots[si])));
         out.push_str(&level_dump(&g));
     }
     out
@@ -997,6 +1101,22 @@ mod tests {
     fn solver_smoke() {
         for seed in 0..50 {
             assert!(solve_seed(seed).is_some(), "seed {} unwinnable", seed);
+        }
+    }
+
+    /// Every lore line must fit the 78-char log row for every slot filling,
+    /// and so must the fixed-shape flavor messages.
+    #[test]
+    fn theme_lines_fit_log_row() {
+        for t in &THEMES {
+            assert!(format!("You enter {}.", t.label).len() <= 78);
+            assert!(format!("You take {}. It is heavy. Climb, before dark!", t.amulet).len() <= 78);
+            for lore in &t.lore {
+                for slot in &t.slots {
+                    let line = lore.replace("{A}", slot);
+                    assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
+                }
+            }
         }
     }
 
