@@ -84,6 +84,14 @@ fn h64(seed: u64, tags: &[&str]) -> u64 {
     h
 }
 
+/// Resolve a `--seed` argument: numeric strings parse directly, anything
+/// else is hashed into a u64 so `--seed swordfish` is stable and distinct
+/// from any small numeric seed. Only used for `--seed`; `--solve`/`--sim`
+/// keep the numeric-only `flag_val`.
+fn seed_from_arg(s: &str) -> u64 {
+    s.parse::<u64>().unwrap_or_else(|_| h64(0, &["seedstr", s]))
+}
+
 fn channel(seed: u64, tags: &[&str]) -> Rng {
     Rng::new(h64(seed, tags))
 }
@@ -974,6 +982,13 @@ fn parse_save(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
     Some((u64::from_le_bytes(s), bytes[13..].to_vec()))
 }
 
+/// Save filename is derived from the world hash, not the seed, so it
+/// identifies the generated world (`--seed`/`--daily`/restart all funnel
+/// through `whash`). One place for the format so F5 and autosave agree.
+fn save_filename(whash: u64) -> String {
+    format!("rl144-{:016x}.sav", whash)
+}
+
 /// Reconstruct a game by replaying inputs from the original seed. Restart
 /// bytes re-derive the seed exactly as the R key does.
 fn replay(seed0: u64, inputs: &[u8]) -> Game {
@@ -1565,14 +1580,19 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .and_then(|v| v.parse().ok())
     };
+    let str_val = |name: &str| -> Option<String> {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    };
     // seed precedence: explicit --seed > --daily (shared seed of the day) >
     // launch-time entropy. The only entropy in the whole program is here.
+    // --seed accepts a raw string: numeric parses directly, anything else
+    // is hashed (seed_from_arg) so e.g. --seed swordfish is stable.
     let daily = args.iter().any(|a| a == "--daily");
     let day = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() / 86400)
         .unwrap_or(0);
-    let seed = flag_val("--seed").unwrap_or_else(|| {
+    let seed = str_val("--seed").map(|s| seed_from_arg(&s)).unwrap_or_else(|| {
         if daily {
             h64(day, &["daily"])
         } else {
@@ -1582,10 +1602,6 @@ fn main() {
                 .unwrap_or(0xDEAD_BEEF)
         }
     });
-
-    let str_val = |name: &str| -> Option<String> {
-        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
-    };
 
     if args.iter().any(|a| a == "--solve") {
         solve_main(
@@ -1677,6 +1693,12 @@ fn main() {
         (Key::L, (1, 0)),
     ];
 
+    // F5 overwrite confirmation: first press on an existing save file arms
+    // this flag and logs a warning instead of writing; a second F5 press
+    // while armed writes. Any real game input (move/wait/restart) disarms
+    // it, so a stray F5 days later doesn't silently clobber a save.
+    let mut confirm_armed = false;
+
     while window.is_open() && !window.is_key_down(Key::Escape) {
         for (key, (dx, dy)) in moves {
             if window.is_key_pressed(key, KeyRepeat::Yes) {
@@ -1687,11 +1709,13 @@ fn main() {
                     _ => 3,
                 });
                 game.try_move_player(dx, dy);
+                confirm_armed = false;
             }
         }
         if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
             input_log.push(4);
             game.wait_turn();
+            confirm_armed = false;
         }
         if (game.dead || game.won) && window.is_key_pressed(Key::R, KeyRepeat::No) {
             input_log.push(INPUT_RESTART);
@@ -1699,6 +1723,7 @@ fn main() {
             game = Game::new(s);
             whash = world_hash(s);
             window.set_title(&title(s));
+            confirm_armed = false;
         }
         // F1: identify the world. Log-only — consumes no turn, no input byte,
         // and touches no RNG channel, so replay is unaffected.
@@ -1706,13 +1731,36 @@ fn main() {
             game.log(format!("Seed {}  world {:016x}", game.seed, whash));
         }
         if window.is_key_pressed(Key::F5, KeyRepeat::No) {
-            match std::fs::write("rl144.sav", save_bytes(seed0, &input_log)) {
-                Ok(()) => game.log(String::from("Saved to rl144.sav. Resume with --load rl144.sav")),
-                Err(_) => game.log(String::from("Save failed!")),
+            let fname = save_filename(whash);
+            if std::path::Path::new(&fname).exists() && !confirm_armed {
+                confirm_armed = true;
+                game.log(format!("{} exists. F5 again to overwrite.", fname));
+            } else {
+                confirm_armed = false;
+                match std::fs::write(&fname, save_bytes(seed0, &input_log)) {
+                    Ok(()) => game.log(format!("Saved to {}.", fname)),
+                    Err(_) => game.log(String::from("Save failed!")),
+                }
             }
         }
         render(&game, &mut buf);
         window.update_with_buffer(&buf, WIDTH, HEIGHT).expect("update");
+    }
+
+    // Autosave on quit: only for a still-live run with unsaved progress.
+    // Never clobber a manual save — if the hashed filename already exists,
+    // fall back to a .auto.sav sibling. Window is gone, so print, don't log.
+    if !game.dead && !game.won && !input_log.is_empty() {
+        let fname = save_filename(whash);
+        let path = if std::path::Path::new(&fname).exists() {
+            format!("rl144-{:016x}.auto.sav", whash)
+        } else {
+            fname
+        };
+        match std::fs::write(&path, save_bytes(seed0, &input_log)) {
+            Ok(()) => println!("Autosaved to {}.", path),
+            Err(e) => println!("Autosave failed: {}", e),
+        }
     }
 }
 
@@ -1973,5 +2021,25 @@ mod tests {
     fn scale_color_channels() {
         assert_eq!(scale(0xFF8040, 50), 0x7F4020);
         assert_eq!(scale(0xFFFFFF, 100), 0xFFFFFF);
+    }
+
+    /// Task-3: non-numeric --seed values hash stably and distinctly;
+    /// numeric strings parse through unchanged.
+    #[test]
+    fn string_seeds() {
+        assert_eq!(seed_from_arg("swordfish"), seed_from_arg("swordfish"));
+        assert_eq!(seed_from_arg("123"), 123);
+        assert_ne!(seed_from_arg("swordfish"), seed_from_arg("herring"));
+    }
+
+    /// Task-3: save filename format is frozen — F5 and autosave both derive
+    /// from this, so a golden-style test here catches drift in either.
+    #[test]
+    fn save_filename_format() {
+        let name = save_filename(0xDEAD_BEEF_1234_5678);
+        assert_eq!(name, "rl144-deadbeef12345678.sav");
+        assert_eq!(name.len(), 6 + 16 + 4);
+        assert!(name.starts_with("rl144-"));
+        assert!(name.ends_with(".sav"));
     }
 }
