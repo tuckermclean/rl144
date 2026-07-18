@@ -1,0 +1,8 @@
+{
+  "comment": "difficulty band for --solve 10000 (round-trip walk budget, 3x total BFS dist). Drift outside a range fails CI. Re-baselining is a MAJOR change: human sign-off required.",
+  "min": [120, 300],
+  "p50": [500, 750],
+  "p90": [700, 1000],
+  "p99": [850, 1250],
+  "max": [1000, 1600]
+}
