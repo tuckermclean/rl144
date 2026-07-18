@@ -1037,6 +1037,14 @@ fn state_hash(g: &Game) -> u64 {
     h
 }
 
+/// World identity: FNV-1a over the full 5-depth dump. The seed names the
+/// input; this names the OUTPUT, so it changes iff a worldgen MAJOR would
+/// (same role as the golden fixtures, condensed to 16 hex chars a player
+/// can compare over chat).
+fn world_hash(seed: u64) -> u64 {
+    fnv_bytes(0xcbf2_9ce4_8422_2325, dump(seed).as_bytes())
+}
+
 // ---------- Rendering ----------
 fn draw_char(buf: &mut [u32], col: usize, row: usize, ch: u8, color: u32) {
     let glyph = BASIC_LEGACY[ch as usize & 0x7F];
@@ -1380,8 +1388,16 @@ fn main() {
     // window. The window is presentation: minifb scales the fixed buffer,
     // preserving aspect. A DOS or mobile frontend swaps this block, not the
     // grid.
+    let title = |seed: u64| {
+        if daily {
+            format!("rl144 — daily #{} — seed {}", day, seed)
+        } else {
+            format!("rl144 — seed {}", seed)
+        }
+    };
+    let mut whash = world_hash(game.seed);
     let mut window = Window::new(
-        "rl144",
+        &title(game.seed),
         WIDTH,
         HEIGHT,
         WindowOptions {
@@ -1429,6 +1445,13 @@ fn main() {
             input_log.push(INPUT_RESTART);
             let s = h64(game.seed, &["restart"]);
             game = Game::new(s);
+            whash = world_hash(s);
+            window.set_title(&title(s));
+        }
+        // F1: identify the world. Log-only — consumes no turn, no input byte,
+        // and touches no RNG channel, so replay is unaffected.
+        if window.is_key_pressed(Key::F1, KeyRepeat::No) {
+            game.log(format!("Seed {}  world {:016x}", game.seed, whash));
         }
         if window.is_key_pressed(Key::F5, KeyRepeat::No) {
             match std::fs::write("rl144.sav", save_bytes(seed0, &input_log)) {
