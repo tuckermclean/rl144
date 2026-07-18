@@ -36,7 +36,8 @@ Report both numbers in your summary of work. Rules of thumb:
 There is no display in CI/container environments. The window cannot be opened there. Therefore:
 
 - **`--dump` mode is the test harness.** `./target/release/rl144 --dump --seed N` generates all 5 depths of seed N and prints each as ASCII (theme header + lore line + map + `monsters=N items=M`). It must always work and must not open a window. Without `--seed` it uses a time-derived seed.
-- **`--solve N`** (default 10000): the winnability + difficulty gate. Generates all depths per seed, BFS-checks the exit is reachable, computes the round-trip walk budget (descend ×1 + climb out ×2 per step), prints JSON stats (`min/p50/p90/p99/max`, worst seed), and exits nonzero on any unwinnable seed or drift outside `tests/solver-band.json`. Run it after ANY worldgen-adjacent change.
+- **`--solve N`** (default 10000): the winnability + difficulty gate. Generates all depths per seed, BFS-checks the exit is reachable, computes the round-trip walk budget (descend ×1 + climb out ×2 per step), prints JSON stats (`min/p50/p90/p99/max`, worst seed), and exits nonzero on any unwinnable seed or drift outside `tests/solver-band.json`. Run it after ANY worldgen-adjacent change. With `--report` it prints stats and exits 0 without gating (the re-baselining flow).
+- **`--daily`**: shared seed of the day (`h64(days_since_epoch, ["daily"])`). Precedence: `--seed` > `--daily` > launch entropy.
 - **`--replay <file>`**: replays a save headlessly and prints an FNV state hash + summary JSON. Two replays of one save must hash identically — if not, channel discipline broke. **`--load <file>`** resumes a save in the window (replays headlessly first).
 - Any new system (new gen algorithm, new entity type, new item) should be observable via `--dump` or a new headless flag. Extend headless modes rather than claiming "it probably works."
 - Sanity checks worth running after gen changes: `--solve 10000` green; every depth has one `<` at the entrance; depth 1–4 have exactly one `>`; depth 5 has the amulet and no `>`. (In dumps the player `@` sits on top of the entrance `<`.)
@@ -58,6 +59,7 @@ Worldgen output is a public API, frozen by the golden fixtures in `tests/golden/
 - Bumping a wall costs no turn and burns no light (intentional). Pickup is on walk-over (intentional for v0; an inventory is a v1 discussion, not a drive-by refactor).
 - Flavor is grounded: theme lore/adjectives may only restate things the engine did — never invent entities, exits, or events. Themes are const tables (`THEMES`); vaults are const strings (`VAULTS`) with the legend documented at the definition.
 - Saves are seed + input log (`RL14` header format in `save_bytes`), never serialized world state. Anything that makes replay diverge from live play is a bug by definition.
+- **The 80×30 cell grid is engine API; the window is presentation.** `COLS`/`MAP_H` are baked into `idx()` and worldgen — the grid must never follow the window size. Frontends scale the fixed 640×360 buffer (minifb: `resize` + `AspectRatioStretch`); a DOS/mobile port swaps the presentation block in `main`, not the grid. Likewise the input-byte vocabulary (0–5) is the platform boundary: any frontend that produces those bytes is a valid client.
 - Rendering writes glyphs into the `u32` framebuffer via `draw_char`/`draw_str` only. UI layout: rows `[0, MAP_H)` map, row `MAP_H` status, remaining rows log. Don't draw outside your band.
 - Message strings go through `Game::log`. Keep them under ~78 chars so they fit the log row.
 - `rustc` here is 1.75 (Ubuntu apt). Don't use language/std features newer than that, and don't pick crate versions whose MSRV exceeds it.
@@ -77,7 +79,7 @@ Deliberately cut from v0, in rough priority order for v0.1+:
 
 Landed in v0.1 (was cut from v0): save/load — implemented as seed + input log, single slot, no serde.
 
-Cut permanently unless the human says otherwise: networking, mod support, config files, localization.
+**Direction (2026-07-18, per the human): rl144 is drifting engine-ward, not just game-ward.** Two win conditions: (a) a ≤1.44MB executable game, (b) a tiny MMORPG. Networking is therefore no longer permanently cut — it may return behind a compile-time feature flag, built as lockstep input-sharing over the existing deterministic replay core (state = `replay(seed, input_log)`; multiplayer = relaying input bytes, never serializing the world). This makes channel discipline and replay convergence engine API, not test hygiene. Still cut permanently: mod support, config files, localization.
 
 ## Definition of done for any change
 
@@ -92,3 +94,4 @@ Cut permanently unless the human says otherwise: networking, mod support, config
 
 - **2026-07-18 — v0.1 landed.** Channel RNG (`h64`/`channel`, worldgen frozen by goldens); `--solve` winnability + difficulty-band gate (10K seeds, band in `tests/solver-band.json`); torch mechanic (run-wide light pool, tiered FOV, `START_LIGHT=2000` derived from worst-case round-trip budget 1503); return-trip win with up-stairs and persistent `LevelState` snapshots; exit/amulet in BFS-deepest room; 4 const themes with grounded slot-filled lore; 3 ASCII vaults stamped via their own channel; save/replay as seed + input log (`--replay`, `--load`, F5). Sizes (local rustc 1.97, Arch): stripped 478,680 B, packed 173,176 B (baseline was 440,912 / 157,664 on this box; Ubuntu 1.75 baseline in this doc predates it). Two authorized worldgen MAJOR re-baselines: task 3 (deepest-room placement + `<`), task 5 (vaults).
 - **2026-07-18 — human playtest:** F5 save + `--load` resume confirmed working in the window. Still unverified interactively: light-tier warning pacing, new status bar readability, stair-transition feel, whether the ~33% light margin plays fair.
+- **2026-07-18 — golem cheap wins + engine reframing.** `hash_vectors` test freezes the h64/channel primitive directly; `--solve --report` (ungated stats); `--daily` shared seed; room kinds+tones (message-only, goldens verified byte-identical); story-buried-by-depth lore inscriptions (`?` items at BFS shallow/mid/deep rooms — authorized worldgen MAJOR, goldens regenerated, solver stats unchanged); resizable window over the fixed 80×30 grid (needs playtest). Roadmap updated: engine direction, networking may return behind a compile flag.
