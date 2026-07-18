@@ -101,6 +101,8 @@ struct Theme {
     adjs: [&'static str; 4],
     lore: [&'static str; 3], // {A} is filled from slots
     slots: [&'static str; 4],
+    wall: u32,  // 0xRRGGBB, map render color for Tile::Wall
+    floor: u32, // 0xRRGGBB, map render color for Tile::Floor
 }
 
 const THEMES: [Theme; 4] = [
@@ -115,6 +117,8 @@ const THEMES: [Theme; 4] = [
             "The lower stairs were sealed {A}. Someone unsealed them.",
         ],
         slots: ["to count the dead hours", "in the wet year", "when the abbot went below", "against all writ"],
+        wall: 0x6E96A0,
+        floor: 0x3A5560,
     },
     Theme {
         label: "the salt counting-house",
@@ -127,6 +131,8 @@ const THEMES: [Theme; 4] = [
             "On the last page is a sum still being paid, {A}.",
         ],
         slots: ["by royal writ", "in the ninth audit", "in the short harvest year", "and sealed twice"],
+        wall: 0xA89878,
+        floor: 0x5E5442,
     },
     Theme {
         label: "the deep mine",
@@ -139,6 +145,8 @@ const THEMES: [Theme; 4] = [
             "The old galleries were abandoned in one shift, {A}.",
         ],
         slots: ["against the surveyor's oath", "in the dry season", "when the birds went quiet", "and told no one above"],
+        wall: 0xA07862,
+        floor: 0x54423A,
     },
     Theme {
         label: "the hollow library",
@@ -151,6 +159,8 @@ const THEMES: [Theme; 4] = [
             "Borrowing ended {A}. Returns were still accepted.",
         ],
         slots: ["in the third founding", "one volume at a time", "after the misfiling", "by unanimous silence"],
+        wall: 0x9080A8,
+        floor: 0x4E4460,
     },
 ];
 
@@ -1072,8 +1082,38 @@ fn dim(c: u32) -> u32 {
     (c >> 2) & 0x3F3F3F
 }
 
+/// Scale each RGB channel of `c` by `pct` percent (0..=100), independently.
+/// Used to dim visible tiles/items/monsters as the torch (light) burns down.
+fn scale(c: u32, pct: u32) -> u32 {
+    let r = (c >> 16) & 0xFF;
+    let g = (c >> 8) & 0xFF;
+    let b = c & 0xFF;
+    let r = r * pct / 100;
+    let g = g * pct / 100;
+    let b = b * pct / 100;
+    (r << 16) | (g << 8) | b
+}
+
+/// Brightness percentage for the current FOV radius: the torch burning down
+/// shrinks the radius (see `fov_radius`) and dims what's still visible.
+fn light_pct(radius: i32) -> u32 {
+    match radius {
+        8 => 100,
+        6 => 90,
+        5 => 80,
+        4 => 65,
+        3 => 50,
+        _ => 40,
+    }
+}
+
 fn render(g: &Game, buf: &mut [u32]) {
     buf.iter_mut().for_each(|p| *p = 0);
+    let theme = g.theme();
+    // Brightness percentage for currently-visible tiles/items/monsters only;
+    // seen-but-not-visible tiles keep the existing dim() treatment instead
+    // (memory stays legible; the dark closes in on what's currently seen).
+    let pct = light_pct(fov_radius(g.light));
     // map
     for y in 0..MAP_H as i32 {
         for x in 0..COLS as i32 {
@@ -1082,12 +1122,12 @@ fn render(g: &Game, buf: &mut [u32]) {
                 continue;
             }
             let (ch, color) = match g.map[i] {
-                Tile::Wall => (b'#', 0x9090A0),
-                Tile::Floor => (b'.', 0x606068),
+                Tile::Wall => (b'#', theme.wall),
+                Tile::Floor => (b'.', theme.floor),
                 Tile::Stairs => (b'>', 0xFFFF60),
                 Tile::UpStairs => (b'<', 0xFFFF60),
             };
-            let c = if g.vis[i] { color } else { dim(color) };
+            let c = if g.vis[i] { scale(color, pct) } else { dim(color) };
             draw_char(buf, x as usize, y as usize, ch, c);
         }
     }
@@ -1100,17 +1140,17 @@ fn render(g: &Game, buf: &mut [u32]) {
                 IKind::Amulet => (b'&', 0xFFD700),
                 IKind::LoreA | IKind::LoreB | IKind::LoreC => (b'?', 0xC0A0FF),
             };
-            draw_char(buf, it.x as usize, it.y as usize, ch, c);
+            draw_char(buf, it.x as usize, it.y as usize, ch, scale(c, pct));
         }
     }
     // monsters (visible only)
     for m in &g.monsters {
         if g.vis[idx(m.x, m.y)] {
             let (_, _, ch, c, _) = Monster::stats(m.kind);
-            draw_char(buf, m.x as usize, m.y as usize, ch, c);
+            draw_char(buf, m.x as usize, m.y as usize, ch, scale(c, pct));
         }
     }
-    // player
+    // player — the player is the torch; always full brightness
     draw_char(buf, g.px as usize, g.py as usize, b'@', 0xFFFFFF);
 
     // status; light is the run's clock, so it sits right after HP
@@ -1926,5 +1966,12 @@ mod tests {
             20,
             "every run must resolve to exactly one terminal outcome"
         );
+    }
+
+    /// Low-light brightness scaling: per-channel `channel * pct / 100`.
+    #[test]
+    fn scale_color_channels() {
+        assert_eq!(scale(0xFF8040, 50), 0x7F4020);
+        assert_eq!(scale(0xFFFFFF, 100), 0xFFFFFF);
     }
 }
