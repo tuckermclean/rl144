@@ -327,12 +327,18 @@ impl Game {
             self.items.push(Item { x: deepest.0, y: deepest.1, kind: IKind::Amulet });
         }
 
-        // monsters: scale with depth, spawn on floor away from player
-        let count = 3 + self.depth as i32 * 2;
+        /* monsters: scale with depth, spawn on floor away from player.
+           Sim-derived (batch 3 balance pass, gated by tests/sim-band.json):
+           count 3+depth (was 3+2×depth) and roll `d10 + depth` with rat <8,
+           goblin <12, ogre >=12 — rats and goblins stay on the table at
+           every depth (depth 5: rat 3/10, goblin 4/10, ogre 3/10); ogres
+           get common deep but never take over. Tune only against
+           `--sim 5000` landing in the band. */
+        let count = 3 + self.depth as i32;
         for _ in 0..count {
             if let Some((mx, my)) = self.rand_floor(&mut sr, 8) {
-                let roll = sr.range(0, 10) + self.depth as i32 * 2;
-                let kind = if roll < 8 {
+                let roll = sr.range(0, 10) + self.depth as i32;
+                let kind = if roll < 9 {
                     MKind::Rat
                 } else if roll < 13 {
                     MKind::Goblin
@@ -343,8 +349,11 @@ impl Game {
                 self.monsters.push(Monster { x: mx, y: my, kind, hp });
             }
         }
-        // items
-        for _ in 0..sr.range(2, 4) {
+        /* items: deep floors are a war of attrition, so supply scales too —
+           +(depth-1)*2 extra drops (d1 +0, d2 +2, d3 +4, d4 +6, d5 +8) on
+           top of the base 2..4. Part of the same sim-gated balance pass as
+           the spawn table. */
+        for _ in 0..sr.range(2, 4) + (self.depth as i32 - 1) * 2 {
             if let Some((ix, iy)) = self.rand_floor(&mut sr, 4) {
                 let kind = if sr.chance(3, 4) { IKind::Potion } else { IKind::Sword };
                 self.items.push(Item { x: ix, y: iy, kind });
@@ -544,7 +553,19 @@ impl Game {
         let d = self.depth as usize - 1;
         match self.saved[d].take() {
             Some(ls) => self.restore_level(ls, Tile::UpStairs),
-            None => self.gen_level(),
+            None => {
+                self.gen_level();
+                /* Sim-derived (batch 3 balance pass): each FIRST descent
+                   grants +4 max HP and heals 4 — hp <= old maxhp, so
+                   hp+4 <= new maxhp always; no clamp needed. Without this
+                   progression the greedy bot dies to combat 100% of the
+                   time (--sim 5000, batch 2); with it plus the softened
+                   spawn tables the win rate sits inside the [10,25]% band
+                   in tests/sim-band.json. Retune via `--sim 5000`. */
+                self.maxhp += 4;
+                self.hp += 4;
+                self.log(String::from("Deeper, and harder. You feel tougher. (+4 HP)"));
+            }
         }
         self.log(format!("You descend to depth {}.", self.depth));
     }

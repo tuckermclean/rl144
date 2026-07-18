@@ -1,11 +1,13 @@
 # Makefile — `make check` runs the whole AGENTS.md verification gate in one
 # command: warning-free release build, cargo test, golden-dump diff, solver
-# winnability gate, and UPX-packed size budget. POSIX sh recipes (no
-# bashisms); see AGENTS.md/CLAUDE.md for the manual workflow this encodes.
+# winnability gate, sim-bot balance gate, and UPX-packed size budget. POSIX
+# sh recipes (no bashisms); see AGENTS.md/CLAUDE.md for the manual workflow
+# this encodes.
 
 UPX ?= upx
 BUDGET ?= 1474560
 SOLVE_SEEDS ?= 10000
+SIM_SEEDS ?= 5000
 
 # upx itself reads an environment variable literally named UPX as a source
 # of default command-line options (see `upx --help`). make auto-exports
@@ -18,9 +20,9 @@ unexport UPX
 BIN := target/release/rl144
 GOLDEN_SEEDS := 1 2 3 42 1337
 
-.PHONY: check build test goldens solve size
+.PHONY: check build test goldens solve sim size
 
-check: build test goldens solve size
+check: build test goldens solve sim size
 
 build:
 	RUSTFLAGS="-D warnings" cargo build --release
@@ -53,6 +55,9 @@ goldens: build
 
 solve: build
 	./$(BIN) --solve $(SOLVE_SEEDS)
+
+sim: build
+	./$(BIN) --sim $(SIM_SEEDS)
 
 # Pack a copy of the release binary (never target/) and enforce the floppy
 # budget. If $(UPX) isn't runnable, warn and fall back to reporting the

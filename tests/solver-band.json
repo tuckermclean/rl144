@@ -1,5 +1,5 @@
 {
-  "comment": "difficulty band for --solve 10000 (round-trip walk budget: descend x1 + climb out x2 per BFS step; exits in BFS-deepest room). Baselined 2026-07-18: min 636 p50 957 p90 1119 p99 1278 max 1503. Drift outside a range fails CI. Re-baselining is a MAJOR change: human sign-off required.",
+  "comment": "difficulty band for --solve 10000 (round-trip walk budget: descend x1 + climb out x2 per BFS step; exits in BFS-deepest room). Re-verified 2026-07-18 for the batch-3 combat-balance re-baseline (spawns-channel-only change; layout untouched, confirmed via golden diff): min 636 p50 954 p90 1110 p99 1272 max 1503. These stats depend only on map layout, not on the monster/item balance pass, so they are unchanged by batch-3 itself; the prior comment text here (957/1119/1278) was stale from an earlier baseline (predates this working tree) and is corrected in this refresh. All values still sit inside the bands below. Drift outside a range fails CI. Re-baselining is a MAJOR change: human sign-off required.",
   "min": [500, 800],
   "p50": [850, 1100],
   "p90": [1000, 1250],

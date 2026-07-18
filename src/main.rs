@@ -71,7 +71,10 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--sim") {
-        sim_main(flag_val("--sim").unwrap_or(1000));
+        sim_main(
+            flag_val("--sim").unwrap_or(1000),
+            args.iter().any(|a| a == "--report"),
+        );
         return;
     }
     if args.iter().any(|a| a == "--dump") {
@@ -441,22 +444,21 @@ mod tests {
     /// Over a small seed range the bot should never get stuck (stuck would
     /// mean a policy bug or an unreachable objective, which the solver
     /// already guarantees can't happen), and every run must resolve to
-    /// exactly one terminal outcome. There is deliberately no `wins > 0`
-    /// assertion here: measured win_rate is 0.000 over seeds 0..20, and
-    /// stays 0.000 over much larger samples (checked up to 5000 seeds,
-    /// stuck==0 throughout) even with the loot-sweep policy — a confirmed
-    /// finding, not a bot bug (sword/potion pickups and multi-depth
-    /// navigation were traced and verified working when this landed).
-    /// Treat `win_rate` as data surfaced via `--sim`, not a pass/fail gate,
-    /// until/unless combat balance is revisited as separate, deliberate
-    /// work.
+    /// exactly one terminal outcome. Historical finding (batch 2): measured
+    /// win_rate was 0.000 over seeds 0..20 (and over samples up to 5000),
+    /// 100% combat deaths — combat lethality, not the light budget, was the
+    /// wall. The batch-3 balance pass (spawn count, roll table, potion
+    /// counts, per-depth HP bonus; see `descend` and `Monster::stats` in
+    /// `game.rs`) fixed this and is gated by `--sim`/`tests/sim-band.json`
+    /// (`make sim`). Seeds 0..50 now produce 3 deterministic wins, so this
+    /// test asserts `wins >= 1` as a floor against regression.
     #[test]
     fn sim_bot_wins_some() {
         let mut wins = 0u64;
         let mut deaths_combat = 0u64;
         let mut deaths_dark = 0u64;
         let mut stuck = 0u64;
-        for seed in 0..20u64 {
+        for seed in 0..50u64 {
             let r = sim_seed(seed);
             if r.won {
                 wins += 1;
@@ -468,10 +470,11 @@ mod tests {
                 stuck += 1;
             }
         }
-        assert_eq!(stuck, 0, "bot got stuck on {} of seeds 0..20", stuck);
+        assert_eq!(stuck, 0, "bot got stuck on {} of seeds 0..50", stuck);
+        assert!(wins >= 1, "expected at least one win over seeds 0..50, got 0");
         assert_eq!(
             wins + deaths_combat + deaths_dark,
-            20,
+            50,
             "every run must resolve to exactly one terminal outcome"
         );
     }

@@ -319,7 +319,14 @@ pub(crate) fn sim_seed(seed: u64) -> SimResult {
 /// bot and print aggregate JSON stats. Proves the actual game loop (combat,
 /// light burn, stair persistence, pickups) is playable end to end, and
 /// turns "does the light margin play fair?" into measured data.
-pub(crate) fn sim_main(n: u64) {
+///
+/// Since the batch-3 balance pass this is also a GATE (like --solve): the
+/// stats must sit inside tests/sim-band.json — win_pct in [10,25],
+/// deaths_dark nonzero but a minority — and stuck must be 0, or we exit
+/// nonzero. `--report` prints stats and exits 0 (the re-baselining flow).
+/// The band is calibrated for the default 5000-seed run (`make sim`);
+/// smaller runs may trip the deaths_dark floor spuriously.
+pub(crate) fn sim_main(n: u64, report: bool) {
     let mut wins = 0u64;
     let mut deaths_combat = 0u64;
     let mut deaths_dark = 0u64;
@@ -349,8 +356,9 @@ pub(crate) fn sim_main(n: u64) {
         if v.is_empty() { 0 } else { v[v.len() / 2] }
     };
     let win_rate = if n > 0 { wins as f64 / n as f64 } else { 0.0 };
+    let p10_light = if win_light.is_empty() { 0 } else { win_light[win_light.len() / 10] };
     println!(
-        "{{\"runs\":{},\"wins\":{},\"win_rate\":{:.3},\"deaths_combat\":{},\"deaths_dark\":{},\"stuck\":{},\"median_turns_win\":{},\"median_light_left_win\":{}}}",
+        "{{\"runs\":{},\"wins\":{},\"win_rate\":{:.3},\"deaths_combat\":{},\"deaths_dark\":{},\"stuck\":{},\"median_turns_win\":{},\"median_light_left_win\":{},\"p10_light_left_win\":{},\"min_light_left_win\":{}}}",
         n,
         wins,
         win_rate,
@@ -358,8 +366,43 @@ pub(crate) fn sim_main(n: u64) {
         deaths_dark,
         stuck,
         median_u32(&win_turns),
-        median_i32(&win_light)
+        median_i32(&win_light),
+        p10_light,
+        win_light.first().copied().unwrap_or(0)
     );
+    if report {
+        return;
+    }
+    if stuck > 0 {
+        eprintln!("sim: {} runs stuck — bot policy or reachability bug", stuck);
+        std::process::exit(1);
+    }
+    let win_pct = (wins * 100 / n.max(1)) as i32;
+    match std::fs::read_to_string("tests/sim-band.json") {
+        Ok(band) => {
+            let checks = [("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)];
+            for (k, v) in checks {
+                if let Some((lo, hi)) = band_range(&band, k) {
+                    if v < lo || v > hi {
+                        eprintln!("sim drift: {}={} outside [{},{}]", k, v, lo, hi);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            // "minority": darkness may claim runs, but combat must claim more.
+            if deaths_dark >= deaths_combat {
+                eprintln!(
+                    "sim drift: deaths_dark {} >= deaths_combat {} — the old wall in a new mask",
+                    deaths_dark, deaths_combat
+                );
+                std::process::exit(1);
+            }
+            println!("sim: {} runs, win_pct {} and dark deaths {} inside band", n, win_pct, deaths_dark);
+        }
+        Err(_) => {
+            eprintln!("warning: tests/sim-band.json not found; sim band check skipped");
+        }
+    }
 }
 
 /// Full-run dump: every depth of the seed's dungeon, generated directly.

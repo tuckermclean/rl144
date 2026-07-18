@@ -1,0 +1,5 @@
+{
+  "comment": "greedy-bot band for --sim 5000 (make sim). Baselined 2026-07-18 after the batch-3 balance pass: wins 729 (14.6%), deaths_combat 4266, deaths_dark 5, stuck 0, median win turns 1258, median light left 420, min light left 24. win_pct must stay in [10,25]; deaths_dark must be nonzero (torch claims some greedy runs) yet stay a minority vs combat (enforced in code). Band is calibrated for 5000 seeds; smaller runs can trip the deaths_dark floor. Re-baselining is a balance change: human sign-off required.",
+  "win_pct": [10, 25],
+  "deaths_dark": [1, 500]
+}
