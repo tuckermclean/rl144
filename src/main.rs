@@ -1986,7 +1986,7 @@ mod tests {
     /// stays 0.000 over much larger samples (checked up to 5000 seeds,
     /// stuck==0 throughout) even with the loot-sweep policy — a confirmed
     /// finding, not a bot bug (sword/potion pickups and multi-depth
-    /// navigation were traced and verified working; see task-1-report.md).
+    /// navigation were traced and verified working when this landed).
     /// Treat `win_rate` as data surfaced via `--sim`, not a pass/fail gate,
     /// until/unless combat balance is revisited as separate, deliberate
     /// work.
