@@ -1,6 +1,6 @@
 // rl144 — a roguelike in under 1.44MB. Zero asset files; everything procedural or const.
 use font8x8::legacy::BASIC_LEGACY;
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
 
 const COLS: usize = 80;
 const ROWS: usize = 30;
@@ -1375,11 +1375,20 @@ fn main() {
     if daily && input_log.is_empty() {
         game.log(format!("Daily dungeon #{}. Everyone gets this one today.", day));
     }
+    // The 80x30 cell grid (640x360 logical pixels) is engine API — COLS and
+    // MAP_H are baked into worldgen, so the grid can never follow the
+    // window. The window is presentation: minifb scales the fixed buffer,
+    // preserving aspect. A DOS or mobile frontend swaps this block, not the
+    // grid.
     let mut window = Window::new(
         "rl144",
         WIDTH,
         HEIGHT,
-        WindowOptions { resize: false, ..WindowOptions::default() },
+        WindowOptions {
+            resize: true,
+            scale_mode: ScaleMode::AspectRatioStretch,
+            ..WindowOptions::default()
+        },
     )
     .expect("window");
     window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
