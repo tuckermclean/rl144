@@ -796,6 +796,119 @@ impl Game {
     }
 }
 
+// ---------- Save / replay: state is deltas (seed + input log) ----------
+/* A save is the original seed plus one byte per input; the world is
+   reconstructed by replaying. Byte format, no serde:
+     "RL14" | version u8 (=1) | seed u64 LE | input bytes...
+   Inputs: 0=N 1=S 2=W 3=E 4=wait 5=restart. Tens of bytes per save. */
+const SAVE_MAGIC: &[u8; 4] = b"RL14";
+const SAVE_VERSION: u8 = 1;
+const INPUT_RESTART: u8 = 5;
+
+impl Game {
+    fn apply_input(&mut self, b: u8) {
+        match b {
+            0 => self.try_move_player(0, -1),
+            1 => self.try_move_player(0, 1),
+            2 => self.try_move_player(-1, 0),
+            3 => self.try_move_player(1, 0),
+            4 => self.wait_turn(),
+            _ => {}
+        }
+    }
+}
+
+fn save_bytes(seed0: u64, inputs: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(13 + inputs.len());
+    out.extend_from_slice(SAVE_MAGIC);
+    out.push(SAVE_VERSION);
+    out.extend_from_slice(&seed0.to_le_bytes());
+    out.extend_from_slice(inputs);
+    out
+}
+
+fn parse_save(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
+    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || bytes[4] != SAVE_VERSION {
+        return None;
+    }
+    let mut s = [0u8; 8];
+    s.copy_from_slice(&bytes[5..13]);
+    Some((u64::from_le_bytes(s), bytes[13..].to_vec()))
+}
+
+/// Reconstruct a game by replaying inputs from the original seed. Restart
+/// bytes re-derive the seed exactly as the R key does.
+fn replay(seed0: u64, inputs: &[u8]) -> Game {
+    let mut g = Game::new(seed0);
+    for &b in inputs {
+        if b == INPUT_RESTART {
+            g = Game::new(h64(g.seed, &["restart"]));
+        } else {
+            g.apply_input(b);
+        }
+    }
+    g
+}
+
+fn fnv_bytes(h: u64, bytes: &[u8]) -> u64 {
+    let mut h = h;
+    for &b in bytes {
+        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+/// FNV-1a over a canonical serialization of everything that defines the run:
+/// player, light, flags, RNG channel states, live level, and every stashed
+/// level. If two replays of one save ever hash differently, channel
+/// discipline broke somewhere.
+fn state_hash(g: &Game) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for v in [
+        g.seed,
+        g.depth as u64,
+        g.px as u64,
+        g.py as u64,
+        g.hp as u64,
+        g.maxhp as u64,
+        g.atk as u64,
+        g.light as u64,
+        g.kills as u64,
+        g.has_amulet as u64,
+        g.dead as u64,
+        g.won as u64,
+        g.combat_rng.0,
+        g.ai_rng.0,
+        g.flavor_rng.0,
+    ] {
+        h = fnv_bytes(h, &v.to_le_bytes());
+    }
+    let level = |h: u64, map: &[Tile], monsters: &[Monster], items: &[Item]| -> u64 {
+        let mut h = h;
+        for t in map {
+            h = fnv_bytes(h, &[*t as u8]);
+        }
+        for m in monsters {
+            h = fnv_bytes(h, &[m.x as u8, m.y as u8, m.kind as u8, m.hp as u8]);
+        }
+        for it in items {
+            h = fnv_bytes(h, &[it.x as u8, it.y as u8, it.kind as u8]);
+        }
+        h
+    };
+    h = level(h, &g.map, &g.monsters, &g.items);
+    for s in &g.saved {
+        match s {
+            Some(ls) => {
+                h = fnv_bytes(h, &[1]);
+                h = level(h, &ls.map, &ls.monsters, &ls.items);
+            }
+            None => h = fnv_bytes(h, &[0]),
+        }
+    }
+    h
+}
+
 // ---------- Rendering ----------
 fn draw_char(buf: &mut [u32], col: usize, row: usize, ch: u8, color: u32) {
     let glyph = BASIC_LEGACY[ch as usize & 0x7F];
@@ -1071,6 +1184,10 @@ fn main() {
             .unwrap_or(0xDEAD_BEEF)
     });
 
+    let str_val = |name: &str| -> Option<String> {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    };
+
     if args.iter().any(|a| a == "--solve") {
         solve_main(flag_val("--solve").unwrap_or(10000));
         return;
@@ -1079,8 +1196,36 @@ fn main() {
         print!("{}", dump(seed));
         return;
     }
+    if let Some(path) = str_val("--replay") {
+        match std::fs::read(&path).ok().and_then(|b| parse_save(&b)) {
+            Some((s0, inputs)) => {
+                let g = replay(s0, &inputs);
+                println!(
+                    "{{\"hash\":\"{:016x}\",\"seed\":{},\"turns\":{},\"depth\":{},\"hp\":{},\"light\":{},\"dead\":{},\"won\":{}}}",
+                    state_hash(&g), s0, inputs.len(), g.depth, g.hp, g.light, g.dead, g.won
+                );
+            }
+            None => {
+                eprintln!("bad save file: {}", path);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
-    let mut game = Game::new(seed);
+    let (seed0, mut input_log, mut game) = match str_val("--load") {
+        Some(path) => match std::fs::read(&path).ok().and_then(|b| parse_save(&b)) {
+            Some((s0, inputs)) => {
+                let g = replay(s0, &inputs);
+                (s0, inputs, g)
+            }
+            None => {
+                eprintln!("bad save file: {}", path);
+                std::process::exit(1);
+            }
+        },
+        None => (seed, Vec::new(), Game::new(seed)),
+    };
     let mut window = Window::new(
         "rl144",
         WIDTH,
@@ -1109,15 +1254,29 @@ fn main() {
     while window.is_open() && !window.is_key_down(Key::Escape) {
         for (key, (dx, dy)) in moves {
             if window.is_key_pressed(key, KeyRepeat::Yes) {
+                input_log.push(match (dx, dy) {
+                    (0, -1) => 0,
+                    (0, 1) => 1,
+                    (-1, 0) => 2,
+                    _ => 3,
+                });
                 game.try_move_player(dx, dy);
             }
         }
         if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
+            input_log.push(4);
             game.wait_turn();
         }
         if (game.dead || game.won) && window.is_key_pressed(Key::R, KeyRepeat::No) {
+            input_log.push(INPUT_RESTART);
             let s = h64(game.seed, &["restart"]);
             game = Game::new(s);
+        }
+        if window.is_key_pressed(Key::F5, KeyRepeat::No) {
+            match std::fs::write("rl144.sav", save_bytes(seed0, &input_log)) {
+                Ok(()) => game.log(String::from("Saved to rl144.sav. Resume with --load rl144.sav")),
+                Err(_) => game.log(String::from("Save failed!")),
+            }
         }
         render(&game, &mut buf);
         window.update_with_buffer(&buf, WIDTH, HEIGHT).expect("update");
@@ -1249,6 +1408,41 @@ mod tests {
         g.try_move_player(-dx, -dy); // back onto '<' with light 1 -> 0
         assert!(g.dead, "should die in the dark");
         assert!(!g.won, "lose is checked before win");
+    }
+
+    /// Play a scripted run live, save, replay the save: identical hashes.
+    /// This is the determinism regression harness — a failure here means
+    /// channel discipline broke somewhere.
+    #[test]
+    fn save_replay_roundtrip() {
+        let seed0 = 99;
+        let mut live = Game::new(seed0);
+        let mut log: Vec<u8> = Vec::new();
+        let mut script = channel(seed0, &["test", "script"]);
+        for _ in 0..500 {
+            let b = script.range(0, 5) as u8;
+            log.push(b);
+            live.apply_input(b);
+        }
+        let bytes = save_bytes(seed0, &log);
+        let (s2, log2) = parse_save(&bytes).expect("save parses");
+        assert_eq!(s2, seed0);
+        assert_eq!(log2, log);
+        let replayed = replay(s2, &log2);
+        assert_eq!(state_hash(&live), state_hash(&replayed));
+    }
+
+    /// Restart bytes replay deterministically too.
+    #[test]
+    fn replay_with_restart_deterministic() {
+        let mut log = vec![0u8, 3, 3, 1, 4, INPUT_RESTART, 1, 1, 3, 0, 4, 2];
+        let a = replay(5, &log);
+        let b = replay(5, &log);
+        assert_eq!(state_hash(&a), state_hash(&b));
+        // and the hash actually reflects state: one more input changes it
+        log.push(1);
+        let c = replay(5, &log);
+        assert!(state_hash(&c) != state_hash(&a) || (c.px, c.py) == (a.px, a.py));
     }
 
     /// Visited depths persist: descend and climb back into the same level.
