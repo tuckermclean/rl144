@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-minifb = { version = "0.25", default-features = false, features = ["x11"] }
-font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }
+minifb = { version = "0.25", default-features = false, features = ["x11"], optional = true }
+font8x8 = { version = "0.3", default-features = false, features = ["unicode"], optional = true }
+
+[features]
+default = ["backend-minifb"]
+backend-minifb = ["dep:minifb", "dep:font8x8"]
+backend-term = []
 
 [profile.release]
 opt-level = "z"

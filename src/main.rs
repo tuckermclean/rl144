@@ -1,4 +1,20 @@
 // rl144 — a roguelike in under 1.44MB. Zero asset files; everything procedural or const.
+// The backend-term stub (src/backend_term.rs) doesn't yet touch the core
+// render/save surface that only the minifb backend currently drives (task 3
+// wires the real terminal backend through render::render_cells and
+// save::save_bytes/save_filename the same way). Until then, a term-only
+// build sees those core items as unreachable; scoping the dead-code allow
+// to that feature combination here (not inside rng/content/game/save/
+// headless/render, which stay cfg-free) keeps the default build's dead-code
+// checking fully intact.
+#![cfg_attr(feature = "backend-term", allow(dead_code))]
+
+#[cfg(not(any(feature = "backend-minifb", feature = "backend-term")))]
+compile_error!("exactly one backend feature must be enabled: backend-minifb or backend-term");
+
+#[cfg(all(feature = "backend-minifb", feature = "backend-term"))]
+compile_error!("backend features are mutually exclusive");
+
 mod content;
 mod game;
 mod headless;
@@ -6,12 +22,15 @@ mod render;
 mod rng;
 mod save;
 
+#[cfg(feature = "backend-minifb")]
+mod backend_minifb;
+#[cfg(feature = "backend-term")]
+mod backend_term;
+
 use game::Game;
-use headless::{dump, sim_main, solve_main, world_hash};
-use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
-use render::{HEIGHT, WIDTH, render};
+use headless::{dump, sim_main, solve_main};
 use rng::h64;
-use save::{INPUT_RESTART, parse_save, replay, save_bytes, save_filename, state_hash};
+use save::{parse_save, replay, state_hash};
 
 #[cfg(test)]
 use content::{KINDS, THEMES, TONE_LINES, VAULTS};
@@ -23,6 +42,8 @@ use headless::{level_dump, sim_seed, solve_seed};
 use render::scale;
 #[cfg(test)]
 use rng::channel;
+#[cfg(test)]
+use save::{INPUT_RESTART, save_bytes, save_filename};
 
 /// Resolve a `--seed` argument: numeric strings parse directly, anything
 /// else is hashed into a u64 so `--seed swordfish` is stable and distinct
@@ -98,7 +119,7 @@ fn main() {
         return;
     }
 
-    let (seed0, mut input_log, mut game) = match str_val("--load") {
+    let (seed0, input_log, mut game) = match str_val("--load") {
         Some(path) => match std::fs::read(&path).ok().and_then(|b| parse_save(&b)) {
             Some((s0, inputs)) => {
                 let g = replay(s0, &inputs);
@@ -114,117 +135,16 @@ fn main() {
     if daily && input_log.is_empty() {
         game.log(format!("Daily dungeon #{}. Everyone gets this one today.", day));
     }
-    // The 80x30 cell grid (640x360 logical pixels) is engine API — COLS and
-    // MAP_H are baked into worldgen, so the grid can never follow the
-    // window. The window is presentation: minifb scales the fixed buffer,
-    // preserving aspect. A DOS or mobile frontend swaps this block, not the
-    // grid.
-    let title = |seed: u64| {
-        if daily {
-            format!("rl144 — daily #{} — seed {}", day, seed)
-        } else {
-            format!("rl144 — seed {}", seed)
-        }
-    };
-    let mut whash = world_hash(game.seed);
-    let mut window = Window::new(
-        &title(game.seed),
-        WIDTH,
-        HEIGHT,
-        WindowOptions {
-            resize: true,
-            scale_mode: ScaleMode::AspectRatioStretch,
-            ..WindowOptions::default()
-        },
-    )
-    .expect("window");
-    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
 
-    let mut buf = vec![0u32; WIDTH * HEIGHT];
-    let moves: [(Key, (i32, i32)); 12] = [
-        (Key::Up, (0, -1)),
-        (Key::Down, (0, 1)),
-        (Key::Left, (-1, 0)),
-        (Key::Right, (1, 0)),
-        (Key::W, (0, -1)),
-        (Key::S, (0, 1)),
-        (Key::A, (-1, 0)),
-        (Key::D, (1, 0)),
-        (Key::K, (0, -1)),
-        (Key::J, (0, 1)),
-        (Key::H, (-1, 0)),
-        (Key::L, (1, 0)),
-    ];
-
-    // F5 overwrite confirmation: first press on an existing save file arms
-    // this flag and logs a warning instead of writing; a second F5 press
-    // while armed writes. Any real game input (move/wait/restart) disarms
-    // it, so a stray F5 days later doesn't silently clobber a save.
-    let mut confirm_armed = false;
-
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        for (key, (dx, dy)) in moves {
-            if window.is_key_pressed(key, KeyRepeat::Yes) {
-                input_log.push(match (dx, dy) {
-                    (0, -1) => 0,
-                    (0, 1) => 1,
-                    (-1, 0) => 2,
-                    _ => 3,
-                });
-                game.try_move_player(dx, dy);
-                confirm_armed = false;
-            }
-        }
-        if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
-            input_log.push(4);
-            game.wait_turn();
-            confirm_armed = false;
-        }
-        if (game.dead || game.won) && window.is_key_pressed(Key::R, KeyRepeat::No) {
-            input_log.push(INPUT_RESTART);
-            let s = h64(game.seed, &["restart"]);
-            game = Game::new(s);
-            whash = world_hash(s);
-            window.set_title(&title(s));
-            confirm_armed = false;
-        }
-        // F1: identify the world. Log-only — consumes no turn, no input byte,
-        // and touches no RNG channel, so replay is unaffected.
-        if window.is_key_pressed(Key::F1, KeyRepeat::No) {
-            game.log(format!("Seed {}  world {:016x}", game.seed, whash));
-        }
-        if window.is_key_pressed(Key::F5, KeyRepeat::No) {
-            let fname = save_filename(whash);
-            if std::path::Path::new(&fname).exists() && !confirm_armed {
-                confirm_armed = true;
-                game.log(format!("{} exists. F5 again to overwrite.", fname));
-            } else {
-                confirm_armed = false;
-                match std::fs::write(&fname, save_bytes(seed0, &input_log)) {
-                    Ok(()) => game.log(format!("Saved to {}.", fname)),
-                    Err(_) => game.log(String::from("Save failed!")),
-                }
-            }
-        }
-        render(&game, &mut buf);
-        window.update_with_buffer(&buf, WIDTH, HEIGHT).expect("update");
-    }
-
-    // Autosave on quit: only for a still-live run with unsaved progress.
-    // Never clobber a manual save — if the hashed filename already exists,
-    // fall back to a .auto.sav sibling. Window is gone, so print, don't log.
-    if !game.dead && !game.won && !input_log.is_empty() {
-        let fname = save_filename(whash);
-        let path = if std::path::Path::new(&fname).exists() {
-            format!("rl144-{:016x}.auto.sav", whash)
-        } else {
-            fname
-        };
-        match std::fs::write(&path, save_bytes(seed0, &input_log)) {
-            Ok(()) => println!("Autosaved to {}.", path),
-            Err(e) => println!("Autosave failed: {}", e),
-        }
-    }
+    // Backend dispatch: exactly one of these compiles (see the
+    // compile_error! guards above). The backend owns everything
+    // platform-specific — window/terminal I/O, input polling, save-file
+    // writes on quit — and consumes the game purely through the core cell
+    // grid (render::render_cells) and the input-byte vocabulary.
+    #[cfg(feature = "backend-minifb")]
+    backend_minifb::run(seed0, input_log, game, daily, day);
+    #[cfg(feature = "backend-term")]
+    backend_term::run(seed0, input_log, game, daily, day);
 }
 
 #[cfg(test)]
