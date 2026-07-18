@@ -326,6 +326,14 @@ pub(crate) fn sim_seed(seed: u64) -> SimResult {
 /// nonzero. `--report` prints stats and exits 0 (the re-baselining flow).
 /// The band is calibrated for the default 5000-seed run (`make sim`);
 /// smaller runs may trip the deaths_dark floor spuriously.
+///
+/// Interface deviation from the batch-3 plan: the plan drafted a
+/// `dark_share_pct` percentage band, but measured dark deaths are ~0.1% of
+/// deaths (5 of 4271 at 5000 seeds) — an integer percent band can't encode
+/// "nonzero but tiny" (it floors to 0). So the band uses a raw
+/// `deaths_dark` count range instead, and the "minority" invariant
+/// (dark < combat) is structural, checked in code below like `stuck == 0`,
+/// not a tunable JSON band.
 pub(crate) fn sim_main(n: u64, report: bool) {
     let mut wins = 0u64;
     let mut deaths_combat = 0u64;
@@ -390,6 +398,8 @@ pub(crate) fn sim_main(n: u64, report: bool) {
                 }
             }
             // "minority": darkness may claim runs, but combat must claim more.
+            // Not a JSON band (see sim_main doc comment): at ~0.1% dark share
+            // a percent band floors to 0, so this is a structural code check.
             if deaths_dark >= deaths_combat {
                 eprintln!(
                     "sim drift: deaths_dark {} >= deaths_combat {} — the old wall in a new mask",

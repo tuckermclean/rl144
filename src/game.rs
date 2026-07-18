@@ -329,9 +329,9 @@ impl Game {
 
         /* monsters: scale with depth, spawn on floor away from player.
            Sim-derived (batch 3 balance pass, gated by tests/sim-band.json):
-           count 3+depth (was 3+2×depth) and roll `d10 + depth` with rat <8,
-           goblin <12, ogre >=12 — rats and goblins stay on the table at
-           every depth (depth 5: rat 3/10, goblin 4/10, ogre 3/10); ogres
+           count 3+depth (was 3+2×depth) and roll `d10 + depth` with rat <9,
+           goblin <13, ogre >=13 — rats and goblins stay on the table at
+           every depth (depth 5: rat 4/10, goblin 4/10, ogre 2/10); ogres
            get common deep but never take over. Tune only against
            `--sim 5000` landing in the band. */
         let count = 3 + self.depth as i32;
