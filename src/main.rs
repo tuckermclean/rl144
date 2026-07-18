@@ -154,6 +154,36 @@ const THEMES: [Theme; 4] = [
     },
 ];
 
+/* Room identity: every room gets a kind noun and a tone; the first time
+   the player steps into a room, one tone line (with {K} filled) is logged.
+   Same grounding rule as lore: atmosphere only, no invented entities.
+   KINDS[6] ("vault") is never drawn randomly — it is forced onto stamped
+   vault rooms. */
+const KINDS: [&str; 7] =
+    ["hall", "gallery", "cellar", "stairwell", "chapel", "storeroom", "vault"];
+const TONE_LINES: [[&str; 2]; 4] = [
+    // ominous
+    [
+        "Something in this {K} is waiting for you to leave.",
+        "This {K} swallows the torchlight a little too eagerly.",
+    ],
+    // still
+    [
+        "Dust lies unbroken across this {K}.",
+        "This {K} has been holding its breath for years.",
+    ],
+    // cold
+    [
+        "The chill of this {K} settles into your bones.",
+        "Cold air pools in this {K} like standing water.",
+    ],
+    // watchful
+    [
+        "You feel counted as you cross this {K}.",
+        "The walls of this {K} seem to lean in and listen.",
+    ],
+];
+
 /// Per-depth theme identity: (theme, lore template, lore slot) indices.
 /// Its own channel, so flavor can never perturb worldgen or spawns.
 fn theme_pick(seed: u64, depth: u32) -> (usize, usize, usize) {
@@ -252,6 +282,9 @@ struct LevelState {
     seen: Vec<bool>,
     monsters: Vec<Monster>,
     items: Vec<Item>,
+    rooms: Vec<(i32, i32, i32, i32)>,
+    room_meta: Vec<(u8, u8)>, // (kind, tone) indices
+    room_visited: Vec<bool>,
 }
 
 struct Game {
@@ -269,6 +302,9 @@ struct Game {
     has_amulet: bool,
     monsters: Vec<Monster>,
     items: Vec<Item>,
+    rooms: Vec<(i32, i32, i32, i32)>,
+    room_meta: Vec<(u8, u8)>,
+    room_visited: Vec<bool>,
     saved: Vec<Option<LevelState>>,
     msgs: Vec<String>,
     seed: u64,
@@ -303,6 +339,9 @@ impl Game {
             has_amulet: false,
             monsters: Vec::new(),
             items: Vec::new(),
+            rooms: Vec::new(),
+            room_meta: Vec::new(),
+            room_visited: Vec::new(),
             saved: (0..MAX_DEPTH).map(|_| None).collect(),
             msgs: Vec::new(),
             seed,
@@ -378,6 +417,7 @@ impl Game {
 
         // occasionally stamp one hand-authored vault as an extra room; the
         // corridor pass below connects its center like any other room
+        let mut vault_room: Option<usize> = None;
         let mut vr = channel(self.seed, &["vault", &depth_tag]);
         if vr.chance(2, 5) {
             let rows: Vec<&str> =
@@ -415,6 +455,7 @@ impl Game {
                         }
                     }
                 }
+                vault_room = Some(rooms.len());
                 rooms.push((x, y, vw, vh));
                 break;
             }
@@ -480,6 +521,21 @@ impl Game {
                 self.items.push(Item { x: ix, y: iy, kind });
             }
         }
+        // room identity: kind + tone per room from the "tone" channel (its
+        // own stream — adds zero draws to worldgen/spawns, so layouts and
+        // goldens are untouched). Spawn room counts as already entered.
+        let mut tn = channel(self.seed, &["tone", &depth_tag]);
+        self.room_meta = rooms
+            .iter()
+            .map(|_| (tn.range(0, 6) as u8, tn.range(0, 4) as u8))
+            .collect();
+        if let Some(vi) = vault_room {
+            self.room_meta[vi].0 = 6; // forced "vault"
+        }
+        self.room_visited = vec![false; rooms.len()];
+        self.room_visited[0] = true;
+        self.rooms = rooms;
+
         self.compute_fov();
 
         // first arrival: name the place and surface one line of its history
@@ -590,6 +646,9 @@ impl Game {
             seen: std::mem::take(&mut self.seen),
             monsters: std::mem::take(&mut self.monsters),
             items: std::mem::take(&mut self.items),
+            rooms: std::mem::take(&mut self.rooms),
+            room_meta: std::mem::take(&mut self.room_meta),
+            room_visited: std::mem::take(&mut self.room_visited),
         });
     }
 
@@ -600,6 +659,9 @@ impl Game {
         self.seen = ls.seen;
         self.monsters = ls.monsters;
         self.items = ls.items;
+        self.rooms = ls.rooms;
+        self.room_meta = ls.room_meta;
+        self.room_visited = ls.room_visited;
         self.vis = vec![false; COLS * MAP_H];
         let pos = (0..COLS as i32 * MAP_H as i32)
             .map(|i| (i % COLS as i32, i / COLS as i32))
@@ -651,6 +713,23 @@ impl Game {
         self.log(format!("You climb back to depth {}.", self.depth));
     }
 
+    /// First step into a room surfaces its tone line, once per level visit.
+    fn note_room_entry(&mut self) {
+        let (px, py) = (self.px, self.py);
+        let ri = self.rooms.iter().position(|&(rx, ry, rw, rh)| {
+            px >= rx && px < rx + rw && py >= ry && py < ry + rh
+        });
+        if let Some(ri) = ri {
+            if !self.room_visited[ri] {
+                self.room_visited[ri] = true;
+                let (k, t) = self.room_meta[ri];
+                let line = TONE_LINES[t as usize][self.flavor_rng.range(0, 2) as usize]
+                    .replace("{K}", KINDS[k as usize]);
+                self.log(line);
+            }
+        }
+    }
+
     fn try_move_player(&mut self, dx: i32, dy: i32) {
         if self.dead || self.won {
             return;
@@ -676,6 +755,7 @@ impl Game {
             if !self.spend_turn() {
                 return; // died in the dark: lose beats anything this tile offered
             }
+            self.note_room_entry();
             self.pickup();
             match self.map[idx(nx, ny)] {
                 Tile::Stairs => {
@@ -1401,6 +1481,13 @@ mod tests {
     /// and so must the fixed-shape flavor messages.
     #[test]
     fn theme_lines_fit_log_row() {
+        for lines in &TONE_LINES {
+            for line in lines {
+                for k in &KINDS {
+                    assert!(line.replace("{K}", k).len() <= 78);
+                }
+            }
+        }
         for t in &THEMES {
             assert!(format!("You enter {}.", t.label).len() <= 78);
             assert!(format!("You take {}. It is heavy. Climb, before dark!", t.amulet).len() <= 78);
