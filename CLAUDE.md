@@ -4,7 +4,14 @@ A top-down roguelike in Rust. **Hard constraint: shipped binary + all assets ≤
 
 ## Project shape
 
-- Single binary crate. All game code currently lives in `src/main.rs` (~550 lines). If you split it into modules, keep the module count low and justified — this is a small game, not a framework.
+- Single binary crate, split along engine seams (keep this module count; don't fragment further without justification):
+  - `src/rng.rs` — Rng, h64/channel, fnv (the frozen hash primitives)
+  - `src/content.rs` — themes, tones, vaults (authored const data)
+  - `src/game.rs` — engine core: tiles, entities, Game, worldgen, turns, `apply_input` (the client input-vocabulary boundary)
+  - `src/headless.rs` — dump/solve/sim/world_hash (verification tooling)
+  - `src/save.rs` — save format, replay, state_hash (state-is-deltas layer)
+  - `src/render.rs` — framebuffer presentation (the part a DOS/mobile port swaps)
+  - `src/main.rs` — arg parsing, window loop, tests
 - Two dependencies: `minifb` (window + pixel buffer) and `font8x8` (const glyph data). Treat the dependency list as frozen. Adding a crate requires demonstrating (a) it can't be hand-rolled in <150 lines, and (b) the size cost, measured (see below).
 - **No engines.** Bevy, ggez, macroquad, SDL bindings, etc. are all disqualified by the budget. No `serde`, no `rand` (we have xorshift), no `image` (we have no image files).
 - **No asset files.** All content is procedural or `const` data in source. If you want art/audio, generate it at runtime or embed it as compact const tables. Adding a `assets/` directory is a design smell here.
@@ -81,6 +88,8 @@ Landed in v0.1 (was cut from v0): save/load — implemented as seed + input log,
 
 **Direction (2026-07-18, per the human): rl144 is drifting engine-ward, not just game-ward.** Two win conditions: (a) a ≤1.44MB executable game, (b) a tiny MMORPG. Networking is therefore no longer permanently cut — it may return behind a compile-time feature flag, built as lockstep input-sharing over the existing deterministic replay core (state = `replay(seed, input_log)`; multiplayer = relaying input bytes, never serializing the world). This makes channel discipline and replay convergence engine API, not test hygiene. Still cut permanently: mod support, config files, localization.
 
+**`make check` is the whole gate in one command** (`make UPX=/path/to/upx check`): warnings-as-errors build, tests, golden cmp (temp-dir, tree untouched), `--solve 10000`, UPX size budget. Run it before calling anything done.
+
 ## Definition of done for any change
 
 1. `cargo build --release` clean (warnings count as not clean).
@@ -95,3 +104,4 @@ Landed in v0.1 (was cut from v0): save/load — implemented as seed + input log,
 - **2026-07-18 — v0.1 landed.** Channel RNG (`h64`/`channel`, worldgen frozen by goldens); `--solve` winnability + difficulty-band gate (10K seeds, band in `tests/solver-band.json`); torch mechanic (run-wide light pool, tiered FOV, `START_LIGHT=2000` derived from worst-case round-trip budget 1503); return-trip win with up-stairs and persistent `LevelState` snapshots; exit/amulet in BFS-deepest room; 4 const themes with grounded slot-filled lore; 3 ASCII vaults stamped via their own channel; save/replay as seed + input log (`--replay`, `--load`, F5). Sizes (local rustc 1.97, Arch): stripped 478,680 B, packed 173,176 B (baseline was 440,912 / 157,664 on this box; Ubuntu 1.75 baseline in this doc predates it). Two authorized worldgen MAJOR re-baselines: task 3 (deepest-room placement + `<`), task 5 (vaults).
 - **2026-07-18 — human playtest:** F5 save + `--load` resume confirmed working in the window. Still unverified interactively: light-tier warning pacing, new status bar readability, stair-transition feel, whether the ~33% light margin plays fair.
 - **2026-07-18 — golem cheap wins + engine reframing.** `hash_vectors` test freezes the h64/channel primitive directly; `--solve --report` (ungated stats); `--daily` shared seed; room kinds+tones (message-only, goldens verified byte-identical); story-buried-by-depth lore inscriptions (`?` items at BFS shallow/mid/deep rooms — authorized worldgen MAJOR, goldens regenerated, solver stats unchanged); resizable window over the fixed 80×30 grid (needs playtest). Roadmap updated: engine direction, networking may return behind a compile flag. Also: world identity in-game — seed in the window title, F1 logs `seed + world_hash` (FNV over the 5-depth dump: names the generator's *output*, so it shifts exactly when a worldgen MAJOR would).
+- **2026-07-18 — batch 2 (subagent-built) + module split.** `--sim N` deterministic greedy bot (drives the engine purely through input bytes; **finding: 0% win rate over 5000 seeds, 100% combat deaths, 0 darkness deaths — combat lethality, not the light budget, is the wall; balance pass needed, requires sign-off**); theme-tinted rendering + low-light brightness tiers (playtest pending); string seeds (`--seed swordfish`); saves renamed to `rl144-<worldhash>.sav` with F5 double-press overwrite confirm and autosave-on-quit (never clobbers a manual save; playtest pending); `Makefile` `check` gate; `src/main.rs` split into rng/content/game/headless/save/render modules (pure motion, gate-verified, output byte-identical). Packed size 189,072 B (12.8% of budget).
