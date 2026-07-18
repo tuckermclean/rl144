@@ -1,8 +1,8 @@
 {
-  "comment": "difficulty band for --solve 10000 (round-trip walk budget, 3x total BFS dist). Drift outside a range fails CI. Re-baselining is a MAJOR change: human sign-off required.",
-  "min": [120, 300],
-  "p50": [500, 750],
-  "p90": [700, 1000],
-  "p99": [850, 1250],
-  "max": [1000, 1600]
+  "comment": "difficulty band for --solve 10000 (round-trip walk budget: descend x1 + climb out x2 per BFS step; exits in BFS-deepest room). Baselined 2026-07-18: min 636 p50 957 p90 1119 p99 1278 max 1503. Drift outside a range fails CI. Re-baselining is a MAJOR change: human sign-off required.",
+  "min": [500, 800],
+  "p50": [850, 1100],
+  "p90": [1000, 1250],
+  "p99": [1150, 1450],
+  "max": [1300, 1700]
 }

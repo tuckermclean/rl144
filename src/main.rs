@@ -10,7 +10,27 @@ const CH: usize = 12;
 const WIDTH: usize = COLS * CW; // 640
 const HEIGHT: usize = ROWS * CH; // 360
 const MAX_DEPTH: u32 = 5;
-const FOV_R: i32 = 8;
+const MONSTER_SIGHT: i32 = 8;
+
+/* Solver-derived: worst-case round-trip walk budget over the 10K CI seed
+   set is 1503 (--solve 10000, worstSeed 2592; budget = descend ×1 + climb
+   out ×2 per step, see solve_seed). Start light 2000 leaves ~33% margin for
+   combat, detours and loot runs. Changing this re-tunes every run: rerun
+   --solve and re-commit tests/solver-band.json alongside it. */
+const START_LIGHT: i32 = 2000;
+
+/// Player FOV radius shrinks as the torch burns down. Percent of START_LIGHT.
+fn fov_radius(light: i32) -> i32 {
+    let pct = light * 100 / START_LIGHT;
+    match pct {
+        _ if pct > 50 => 8,
+        _ if pct > 30 => 6,
+        _ if pct > 18 => 5,
+        _ if pct > 10 => 4,
+        _ if pct > 4 => 3,
+        _ => 2,
+    }
+}
 
 // ---------- RNG (xorshift64) ----------
 struct Rng(u64);
@@ -73,7 +93,8 @@ fn channel(seed: u64, tags: &[&str]) -> Rng {
 enum Tile {
     Wall,
     Floor,
-    Stairs,
+    Stairs,   // '>' down
+    UpStairs, // '<' up; on depth 1 it is the way out (win tile, amulet in hand)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -83,6 +104,7 @@ enum MKind {
     Ogre,
 }
 
+#[derive(Clone)]
 struct Monster {
     x: i32,
     y: i32,
@@ -108,10 +130,21 @@ enum IKind {
     Amulet,
 }
 
+#[derive(Clone)]
 struct Item {
     x: i32,
     y: i32,
     kind: IKind,
+}
+
+/// Snapshot of a visited depth, so the climb back out with the amulet is
+/// through the world you left: same layout, taken items stay taken, dead
+/// monsters stay dead, live ones where they last stood.
+struct LevelState {
+    map: Vec<Tile>,
+    seen: Vec<bool>,
+    monsters: Vec<Monster>,
+    items: Vec<Item>,
 }
 
 struct Game {
@@ -125,8 +158,11 @@ struct Game {
     atk: i32,
     depth: u32,
     kills: u32,
+    light: i32,
+    has_amulet: bool,
     monsters: Vec<Monster>,
     items: Vec<Item>,
+    saved: Vec<Option<LevelState>>,
     msgs: Vec<String>,
     seed: u64,
     combat_rng: Rng,
@@ -155,8 +191,11 @@ impl Game {
             atk: 3,
             depth: 1,
             kills: 0,
+            light: START_LIGHT,
+            has_amulet: false,
             monsters: Vec::new(),
             items: Vec::new(),
+            saved: (0..MAX_DEPTH).map(|_| None).collect(),
             msgs: Vec::new(),
             seed,
             combat_rng: channel(seed, &["combat"]),
@@ -165,7 +204,7 @@ impl Game {
             won: false,
         };
         g.gen_level();
-        g.log(String::from("Welcome. Find the Amulet on depth 5!"));
+        g.log(String::from("Fetch the Amulet from depth 5 and climb back before dark!"));
         g
     }
 
@@ -235,11 +274,21 @@ impl Game {
         let (sx, sy) = centers[0];
         self.px = sx;
         self.py = sy;
-        let last = *centers.last().unwrap();
+        // BFS depth from the entrance is the level's act structure: the exit
+        // (down-stairs, or the amulet on the last depth) goes in the DEEPEST
+        // reachable room, not the last-generated one.
+        let dist = bfs_dist(&self.map, (sx, sy));
+        let deepest = centers
+            .iter()
+            .filter(|&&c| c != (sx, sy))
+            .max_by_key(|&&(cx, cy)| dist[idx(cx, cy)])
+            .copied()
+            .unwrap_or((sx + 1, sy));
+        self.map[idx(sx, sy)] = Tile::UpStairs;
         if self.depth < MAX_DEPTH {
-            self.map[idx(last.0, last.1)] = Tile::Stairs;
+            self.map[idx(deepest.0, deepest.1)] = Tile::Stairs;
         } else {
-            self.items.push(Item { x: last.0, y: last.1, kind: IKind::Amulet });
+            self.items.push(Item { x: deepest.0, y: deepest.1, kind: IKind::Amulet });
         }
 
         // monsters: scale with depth, spawn on floor away from player
@@ -285,12 +334,13 @@ impl Game {
 
     // ---------- FOV: raycast to every tile within radius ----------
     fn compute_fov(&mut self) {
+        let r = fov_radius(self.light);
         self.vis.iter_mut().for_each(|v| *v = false);
         self.vis[idx(self.px, self.py)] = true;
         self.seen[idx(self.px, self.py)] = true;
-        for dy in -FOV_R..=FOV_R {
-            for dx in -FOV_R..=FOV_R {
-                if dx * dx + dy * dy > FOV_R * FOV_R {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx * dx + dy * dy > r * r {
                     continue;
                 }
                 let (tx, ty) = (self.px + dx, self.py + dy);
@@ -333,6 +383,102 @@ impl Game {
     }
 
     // ---------- Turn logic ----------
+    /// Burn the torch for one player turn: 1 light, 2 while carrying the
+    /// amulet (it is heavy). Light 0 is death in the dark — checked before
+    /// any win condition, golem-style. Returns false if the player died.
+    fn spend_turn(&mut self) -> bool {
+        let before = fov_radius(self.light);
+        self.light -= if self.has_amulet { 2 } else { 1 };
+        if self.light <= 0 {
+            self.light = 0;
+            self.dead = true;
+            self.log(String::from("Your torch dies. The darkness takes you. [R] to restart"));
+            self.compute_fov();
+            return false;
+        }
+        let after = fov_radius(self.light);
+        if after < before {
+            let warn = match after {
+                6 => "Your torch burns low. The shadows edge closer.",
+                5 => "The flame gutters; you can see less and less.",
+                4 => "Darkness presses in around your failing light.",
+                3 => "Your torch is nearly spent. Hurry.",
+                _ => "The last embers. The dark is almost total.",
+            };
+            self.log(String::from(warn));
+        }
+        true
+    }
+
+    /// Snapshot the current depth so it persists exactly as left.
+    fn stash_level(&mut self) {
+        let d = self.depth as usize - 1;
+        self.saved[d] = Some(LevelState {
+            map: std::mem::take(&mut self.map),
+            seen: std::mem::take(&mut self.seen),
+            monsters: std::mem::take(&mut self.monsters),
+            items: std::mem::take(&mut self.items),
+        });
+    }
+
+    /// Restore a previously visited depth and place the player at `arrive`.
+    /// A monster that wandered onto the arrival tile is shoved aside.
+    fn restore_level(&mut self, ls: LevelState, arrive: Tile) {
+        self.map = ls.map;
+        self.seen = ls.seen;
+        self.monsters = ls.monsters;
+        self.items = ls.items;
+        self.vis = vec![false; COLS * MAP_H];
+        let pos = (0..COLS as i32 * MAP_H as i32)
+            .map(|i| (i % COLS as i32, i / COLS as i32))
+            .find(|&(x, y)| self.map[idx(x, y)] == arrive)
+            .unwrap_or((self.px, self.py));
+        self.px = pos.0;
+        self.py = pos.1;
+        if let Some(mi) = self.monsters.iter().position(|m| (m.x, m.y) == pos) {
+            let (mx, my) = (self.monsters[mi].x, self.monsters[mi].y);
+            let spot = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().find_map(|&(dx, dy)| {
+                let (tx, ty) = (mx + dx, my + dy);
+                let free = in_map(tx, ty)
+                    && self.map[idx(tx, ty)] != Tile::Wall
+                    && !self.monsters.iter().any(|m| (m.x, m.y) == (tx, ty));
+                if free { Some((tx, ty)) } else { None }
+            });
+            match spot {
+                Some((tx, ty)) => {
+                    self.monsters[mi].x = tx;
+                    self.monsters[mi].y = ty;
+                }
+                None => {
+                    self.monsters.remove(mi);
+                }
+            }
+        }
+        self.compute_fov();
+    }
+
+    fn descend(&mut self) {
+        self.stash_level();
+        self.depth += 1;
+        let d = self.depth as usize - 1;
+        match self.saved[d].take() {
+            Some(ls) => self.restore_level(ls, Tile::UpStairs),
+            None => self.gen_level(),
+        }
+        self.log(format!("You descend to depth {}.", self.depth));
+    }
+
+    fn ascend(&mut self) {
+        self.stash_level();
+        self.depth -= 1;
+        let d = self.depth as usize - 1;
+        match self.saved[d].take() {
+            Some(ls) => self.restore_level(ls, Tile::Stairs),
+            None => self.gen_level(), // unreachable in play; belt and braces
+        }
+        self.log(format!("You climb back to depth {}.", self.depth));
+    }
+
     fn try_move_player(&mut self, dx: i32, dy: i32) {
         if self.dead || self.won {
             return;
@@ -355,15 +501,38 @@ impl Game {
         } else if self.map[idx(nx, ny)] != Tile::Wall {
             self.px = nx;
             self.py = ny;
-            self.pickup();
-            if self.map[idx(nx, ny)] == Tile::Stairs {
-                self.depth += 1;
-                self.log(format!("You descend to depth {}.", self.depth));
-                self.gen_level();
-                return; // fresh level: monsters don't get a free hit
+            if !self.spend_turn() {
+                return; // died in the dark: lose beats anything this tile offered
             }
+            self.pickup();
+            match self.map[idx(nx, ny)] {
+                Tile::Stairs => {
+                    self.descend();
+                    return; // fresh level: monsters don't get a free hit
+                }
+                Tile::UpStairs => {
+                    if self.depth > 1 {
+                        self.ascend();
+                        return; // same courtesy on arrival upstairs
+                    }
+                    if self.has_amulet {
+                        self.won = true;
+                        self.log(String::from("You climb into daylight. You made it! [R] new run"));
+                        return;
+                    }
+                    self.log(String::from("The way out. You won't leave without the Amulet."));
+                }
+                _ => {}
+            }
+            self.monsters_act();
+            self.compute_fov();
+            return;
         } else {
             return; // bumped a wall: no turn passes
+        }
+        // attack path: the swing costs a turn too
+        if !self.spend_turn() {
+            return;
         }
         self.monsters_act();
         self.compute_fov();
@@ -371,6 +540,9 @@ impl Game {
 
     fn wait_turn(&mut self) {
         if self.dead || self.won {
+            return;
+        }
+        if !self.spend_turn() {
             return;
         }
         self.monsters_act();
@@ -392,8 +564,8 @@ impl Game {
                     self.log(String::from("A sharper sword! (+2 ATK)"));
                 }
                 IKind::Amulet => {
-                    self.won = true;
-                    self.log(String::from("The AMULET is yours! You win! [R] new run"));
+                    self.has_amulet = true;
+                    self.log(String::from("The AMULET is yours! It is heavy. Climb, before dark!"));
                 }
             }
         }
@@ -405,7 +577,7 @@ impl Game {
         for i in 0..self.monsters.len() {
             let (mx, my) = (self.monsters[i].x, self.monsters[i].y);
             let dist = (px - mx).abs().max((py - my).abs());
-            let sees = dist <= FOV_R && self.los(mx, my, px, py);
+            let sees = dist <= MONSTER_SIGHT && self.los(mx, my, px, py);
             if dist == 1 && sees {
                 let (_, atk, _, _, _) = Monster::stats(self.monsters[i].kind);
                 let dmg = atk + self.combat_rng.range(0, 2);
@@ -489,6 +661,7 @@ fn render(g: &Game, buf: &mut [u32]) {
                 Tile::Wall => (b'#', 0x9090A0),
                 Tile::Floor => (b'.', 0x606068),
                 Tile::Stairs => (b'>', 0xFFFF60),
+                Tile::UpStairs => (b'<', 0xFFFF60),
             };
             let c = if g.vis[i] { color } else { dim(color) };
             draw_char(buf, x as usize, y as usize, ch, c);
@@ -515,12 +688,20 @@ fn render(g: &Game, buf: &mut [u32]) {
     // player
     draw_char(buf, g.px as usize, g.py as usize, b'@', 0xFFFFFF);
 
-    // status
+    // status; light is the run's clock, so it sits right after HP
     let status = format!(
-        "HP {:>2}/{}  ATK {}  Depth {}/{}  Kills {}",
-        g.hp, g.maxhp, g.atk, g.depth, MAX_DEPTH, g.kills
+        "HP {:>2}/{}  Light {:>4}  ATK {}  Depth {}/{}  Kills {}{}",
+        g.hp,
+        g.maxhp,
+        g.light,
+        g.atk,
+        g.depth,
+        MAX_DEPTH,
+        g.kills,
+        if g.has_amulet { "  [&]" } else { "" }
     );
-    let sc = if g.hp <= g.maxhp / 4 { 0xFF5050 } else { 0xE0E0E0 };
+    let low_light = fov_radius(g.light) <= 4;
+    let sc = if g.hp <= g.maxhp / 4 || low_light { 0xFF5050 } else { 0xE0E0E0 };
     draw_str(buf, 1, MAP_H, &status, sc);
     // log: last 4, older lines faded
     let n = g.msgs.len();
@@ -541,6 +722,7 @@ fn level_dump(g: &Game) -> String {
                 Tile::Wall => '#',
                 Tile::Floor => '.',
                 Tile::Stairs => '>',
+                Tile::UpStairs => '<',
             };
             for it in &g.items {
                 if (it.x, it.y) == (x, y) {
@@ -816,5 +998,57 @@ mod tests {
         for seed in 0..50 {
             assert!(solve_seed(seed).is_some(), "seed {} unwinnable", seed);
         }
+    }
+
+    /// A turn burns 1 light, 2 while carrying the amulet; walls burn nothing.
+    #[test]
+    fn light_burn_rates() {
+        let mut g = Game::new(7);
+        let l0 = g.light;
+        g.wait_turn();
+        assert_eq!(g.light, l0 - 1);
+        g.has_amulet = true;
+        g.wait_turn();
+        assert_eq!(g.light, l0 - 3);
+    }
+
+    /// Running out of light on the exit tile is a LOSE, not a win.
+    #[test]
+    fn lose_beats_win_at_zero_light() {
+        let mut g = Game::new(7);
+        g.has_amulet = true;
+        g.light = 2; // burn of 2 lands exactly on 0
+        // step off the entrance and back onto it
+        let (ex, ey) = (g.px, g.py);
+        let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                in_map(ex + dx, ey + dy) && g.map[idx(ex + dx, ey + dy)] == Tile::Floor
+            })
+            .unwrap();
+        g.monsters.clear(); // keep the test about light, not combat
+        g.light = 3;
+        g.try_move_player(dx, dy);
+        assert!(!g.dead && !g.won);
+        g.try_move_player(-dx, -dy); // back onto '<' with light 1 -> 0
+        assert!(g.dead, "should die in the dark");
+        assert!(!g.won, "lose is checked before win");
+    }
+
+    /// Visited depths persist: descend and climb back into the same level.
+    #[test]
+    fn levels_persist_across_stairs() {
+        let mut g = Game::new(11);
+        let map1: Vec<u8> = g.map.iter().map(|t| *t as u8).collect();
+        let items1 = g.items.len();
+        g.descend();
+        assert_eq!(g.depth, 2);
+        g.ascend();
+        assert_eq!(g.depth, 1);
+        let map1b: Vec<u8> = g.map.iter().map(|t| *t as u8).collect();
+        assert_eq!(map1, map1b, "depth 1 layout changed across a round trip");
+        assert_eq!(items1, g.items.len(), "items respawned across a round trip");
+        // and the player came back out standing on the down-stairs
+        assert!(g.map[idx(g.px, g.py)] == Tile::Stairs);
     }
 }
