@@ -13,7 +13,7 @@ const MAX_DEPTH: u32 = 5;
 const MONSTER_SIGHT: i32 = 8;
 
 /* Solver-derived: worst-case round-trip walk budget over the 10K CI seed
-   set is 1503 (--solve 10000, worstSeed 2592; budget = descend ×1 + climb
+   set is 1503 (--solve 10000, worstSeed 6592; budget = descend ×1 + climb
    out ×2 per step, see solve_seed). Start light 2000 leaves ~33% margin for
    combat, detours and loot runs. Changing this re-tunes every run: rerun
    --solve and re-commit tests/solver-band.json alongside it. */
@@ -164,6 +164,36 @@ fn theme_pick(seed: u64, depth: u32) -> (usize, usize, usize) {
         tr.range(0, 4) as usize,
     )
 }
+
+// ---------- Vaults ----------
+/* Hand-authored rooms, stamped whole into a level by the "vault" channel.
+   Legend: '#' wall, '.' floor, '!' potion, ')' sword, 'r'/'g'/'O' monster
+   of that stat row. Rules: rectangular, solid '#' border, center tile '.'
+   (corridors target the center and will punch through walls to reach it —
+   sealed chambers are opened by the carver, and the solver gate proves the
+   exit stays reachable on every CI seed). */
+const VAULTS: [&str; 3] = [
+    // sealed reliquary: the carver breaks in
+    "#########\n\
+     #g.....g#\n\
+     #.#####.#\n\
+     #.#!.)#.#\n\
+     #.#####.#\n\
+     #O......#\n\
+     #########",
+    // guard post: loot on the walls, teeth in the corners
+    "#######\n\
+     #r...r#\n\
+     #)...!#\n\
+     #r...r#\n\
+     #######",
+    // ogre den: two big ones, two prizes
+    "#########\n\
+     #O.....!#\n\
+     #.##.##.#\n\
+     #!.....O#\n\
+     #########",
+];
 
 // ---------- Map ----------
 #[derive(Clone, Copy, PartialEq)]
@@ -344,6 +374,50 @@ impl Game {
                 }
             }
             rooms.push((x, y, w, h));
+        }
+
+        // occasionally stamp one hand-authored vault as an extra room; the
+        // corridor pass below connects its center like any other room
+        let mut vr = channel(self.seed, &["vault", &depth_tag]);
+        if vr.chance(2, 5) {
+            let rows: Vec<&str> =
+                VAULTS[vr.range(0, VAULTS.len() as i32) as usize].lines().collect();
+            let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
+            for _ in 0..40 {
+                let x = vr.range(1, COLS as i32 - vw - 1);
+                let y = vr.range(1, MAP_H as i32 - vh - 1);
+                let clash = rooms.iter().any(|&(rx, ry, rw, rh)| {
+                    x < rx + rw + 1 && rx < x + vw + 1 && y < ry + rh + 1 && ry < y + vh + 1
+                });
+                if clash {
+                    continue;
+                }
+                for (j, row) in rows.iter().enumerate() {
+                    for (i, c) in row.bytes().enumerate() {
+                        let (tx, ty) = (x + i as i32, y + j as i32);
+                        if c == b'#' {
+                            continue; // already wall
+                        }
+                        self.map[idx(tx, ty)] = Tile::Floor;
+                        match c {
+                            b'!' => self.items.push(Item { x: tx, y: ty, kind: IKind::Potion }),
+                            b')' => self.items.push(Item { x: tx, y: ty, kind: IKind::Sword }),
+                            b'r' | b'g' | b'O' => {
+                                let kind = match c {
+                                    b'r' => MKind::Rat,
+                                    b'g' => MKind::Goblin,
+                                    _ => MKind::Ogre,
+                                };
+                                let (hp, ..) = Monster::stats(kind);
+                                self.monsters.push(Monster { x: tx, y: ty, kind, hp });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                rooms.push((x, y, vw, vh));
+                break;
+            }
         }
         // corridors between consecutive room centers (L-shaped)
         let centers: Vec<(i32, i32)> =
@@ -1101,6 +1175,28 @@ mod tests {
     fn solver_smoke() {
         for seed in 0..50 {
             assert!(solve_seed(seed).is_some(), "seed {} unwinnable", seed);
+        }
+    }
+
+    /// Vault authoring rules: rectangular, solid border, open center,
+    /// legend chars only. Reachability itself is proven by the solver gate.
+    #[test]
+    fn vaults_well_formed() {
+        for (vi, v) in VAULTS.iter().enumerate() {
+            let rows: Vec<&str> = v.lines().collect();
+            let w = rows[0].len();
+            assert!(rows.len() >= 3 && w >= 3, "vault {} too small", vi);
+            for (j, row) in rows.iter().enumerate() {
+                assert_eq!(row.len(), w, "vault {} row {} ragged", vi, j);
+                for (i, c) in row.bytes().enumerate() {
+                    assert!(b"#.!)rgO".contains(&c), "vault {} bad char {}", vi, c as char);
+                    if j == 0 || j == rows.len() - 1 || i == 0 || i == w - 1 {
+                        assert_eq!(c, b'#', "vault {} border open at {},{}", vi, i, j);
+                    }
+                }
+            }
+            let (cx, cy) = (w / 2, rows.len() / 2);
+            assert_eq!(rows[cy].as_bytes()[cx], b'.', "vault {} center not floor", vi);
         }
     }
 
