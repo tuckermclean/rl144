@@ -184,15 +184,19 @@ const TONE_LINES: [[&str; 2]; 4] = [
     ],
 ];
 
-/// Per-depth theme identity: (theme, lore template, lore slot) indices.
-/// Its own channel, so flavor can never perturb worldgen or spawns.
-fn theme_pick(seed: u64, depth: u32) -> (usize, usize, usize) {
+/// Per-depth theme identity: theme index plus one slot index per lore tier
+/// (templates 0/1/2 = shallow/mid/deep — the story assembles in act order
+/// as the player pushes deeper). Its own channel, so flavor can never
+/// perturb worldgen or spawns.
+fn theme_pick(seed: u64, depth: u32) -> (usize, [usize; 3]) {
     let mut tr = channel(seed, &["theme", &depth.to_string()]);
-    (
-        tr.range(0, THEMES.len() as i32) as usize,
-        tr.range(0, 3) as usize,
+    let ti = tr.range(0, THEMES.len() as i32) as usize;
+    let slots = [
         tr.range(0, 4) as usize,
-    )
+        tr.range(0, 4) as usize,
+        tr.range(0, 4) as usize,
+    ];
+    (ti, slots)
 }
 
 // ---------- Vaults ----------
@@ -265,6 +269,20 @@ enum IKind {
     Potion,
     Sword,
     Amulet,
+    LoreA, // shallow-tier inscription: theme lore template 0
+    LoreB, // mid-tier: template 1
+    LoreC, // deep-tier: template 2
+}
+
+impl IKind {
+    fn lore_tier(self) -> Option<usize> {
+        match self {
+            IKind::LoreA => Some(0),
+            IKind::LoreB => Some(1),
+            IKind::LoreC => Some(2),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -358,6 +376,13 @@ impl Game {
 
     fn theme(&self) -> &'static Theme {
         &THEMES[theme_pick(self.seed, self.depth).0]
+    }
+
+    /// The filled lore line for a tier of the current depth's theme.
+    fn lore_line(&self, tier: usize) -> String {
+        let (ti, slots) = theme_pick(self.seed, self.depth);
+        let t = &THEMES[ti];
+        t.lore[tier].replace("{A}", t.slots[slots[tier]])
     }
 
     fn mob_name(&self, k: MKind) -> &'static str {
@@ -521,6 +546,26 @@ impl Game {
                 self.items.push(Item { x: ix, y: iy, kind });
             }
         }
+        // story buried by depth: three inscriptions at shallow / mid / deep
+        // rooms (by BFS distance from the entrance), read on walk-over.
+        // Placement is a pure function of `dist` — zero extra RNG draws.
+        let mut by_depth = centers.clone();
+        by_depth.sort_by_key(|&(cx, cy)| dist[idx(cx, cy)]);
+        let n = by_depth.len();
+        let picks = [by_depth[1.min(n - 1)], by_depth[n / 2], by_depth[n.saturating_sub(2)]];
+        for (tier, &(cx, cy)) in picks.iter().enumerate() {
+            if (cx, cy) == deepest
+                || (cx, cy) == (sx, sy)
+                || self.map[idx(cx, cy)] != Tile::Floor
+                || self.items.iter().any(|it| (it.x, it.y) == (cx, cy))
+                || self.monsters.iter().any(|m| (m.x, m.y) == (cx, cy))
+            {
+                continue;
+            }
+            let kind = [IKind::LoreA, IKind::LoreB, IKind::LoreC][tier];
+            self.items.push(Item { x: cx, y: cy, kind });
+        }
+
         // room identity: kind + tone per room from the "tone" channel (its
         // own stream — adds zero draws to worldgen/spawns, so layouts and
         // goldens are untouched). Spawn room counts as already entered.
@@ -538,11 +583,9 @@ impl Game {
 
         self.compute_fov();
 
-        // first arrival: name the place and surface one line of its history
-        let (ti, li, si) = theme_pick(self.seed, self.depth);
-        let t = &THEMES[ti];
+        // first arrival: name the place; its history is buried in the rooms
+        let t = self.theme();
         self.log(format!("You enter {}.", t.label));
-        self.log(t.lore[li].replace("{A}", t.slots[si]));
     }
 
     fn rand_floor(&mut self, rng: &mut Rng, min_player_dist: i32) -> Option<(i32, i32)> {
@@ -822,6 +865,11 @@ impl Game {
                     let name = self.theme().amulet;
                     self.log(format!("You take {}. It is heavy. Climb, before dark!", name));
                 }
+                IKind::LoreA | IKind::LoreB | IKind::LoreC => {
+                    let line = self.lore_line(kind.lore_tier().unwrap());
+                    self.log(String::from("A carved inscription:"));
+                    self.log(line);
+                }
             }
         }
     }
@@ -1042,6 +1090,7 @@ fn render(g: &Game, buf: &mut [u32]) {
                 IKind::Potion => (b'!', 0xFF50A0),
                 IKind::Sword => (b')', 0x70B0FF),
                 IKind::Amulet => (b'&', 0xFFD700),
+                IKind::LoreA | IKind::LoreB | IKind::LoreC => (b'?', 0xC0A0FF),
             };
             draw_char(buf, it.x as usize, it.y as usize, ch, c);
         }
@@ -1098,6 +1147,7 @@ fn level_dump(g: &Game) -> String {
                         IKind::Potion => '!',
                         IKind::Sword => ')',
                         IKind::Amulet => '&',
+                        IKind::LoreA | IKind::LoreB | IKind::LoreC => '?',
                     };
                 }
             }
@@ -1244,10 +1294,8 @@ fn dump(seed: u64) -> String {
     for d in 1..=MAX_DEPTH {
         g.depth = d;
         g.gen_level();
-        let (ti, li, si) = theme_pick(seed, d);
-        let t = &THEMES[ti];
+        let t = &THEMES[theme_pick(seed, d).0];
         out.push_str(&format!("-- depth {} : {} --\n", d, t.label));
-        out.push_str(&format!("{}\n", t.lore[li].replace("{A}", t.slots[si])));
         out.push_str(&level_dump(&g));
     }
     out
