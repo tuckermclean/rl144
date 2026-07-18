@@ -60,16 +60,16 @@ solve: build
 size: build
 	@stripped=`wc -c < $(BIN) | tr -d ' '`; \
 	echo "stripped size: $$stripped bytes"; \
-	if ! $(UPX) --version >/dev/null 2>&1; then \
+	if ! "$(UPX)" --version >/dev/null 2>&1; then \
 		echo "warning: \$$(UPX)='$(UPX)' not runnable; skipping pack/budget check"; \
 		exit 0; \
 	fi; \
 	tmpfile=`mktemp` || exit 1; \
 	trap 'rm -f "$$tmpfile"' EXIT INT TERM HUP; \
-	cp $(BIN) "$$tmpfile"; \
-	chmod +x "$$tmpfile"; \
-	if ! $(UPX) --best --lzma -qq "$$tmpfile" >/dev/null 2>&1; then \
-		echo "warning: $(UPX) failed to pack binary; skipping budget check"; \
+	cp $(BIN) "$$tmpfile" || exit 1; \
+	chmod +x "$$tmpfile" || exit 1; \
+	if ! "$(UPX)" --best --lzma -qq "$$tmpfile" >/dev/null 2>&1; then \
+		echo "warning: '$(UPX)' failed to pack binary; skipping budget check"; \
 		rm -f "$$tmpfile"; \
 		trap - EXIT INT TERM HUP; \
 		exit 0; \
