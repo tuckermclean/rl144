@@ -1097,8 +1097,9 @@ fn band_range(json: &str, key: &str) -> Option<(i32, i32)> {
 
 /// `--solve N`: winnability + difficulty gate over seeds 0..N. Prints JSON
 /// stats; exits nonzero on any unwinnable seed or drift outside the band
-/// committed in tests/solver-band.json.
-fn solve_main(n: u64) {
+/// committed in tests/solver-band.json. With `--report`, prints the stats
+/// and exits 0 without gating (for re-baselining after an authorized MAJOR).
+fn solve_main(n: u64, report: bool) {
     let mut budgets: Vec<i32> = Vec::new();
     let mut losers: Vec<u64> = Vec::new();
     let (mut worst_seed, mut worst) = (0u64, -1i32);
@@ -1131,6 +1132,9 @@ fn solve_main(n: u64) {
     println!("  \"worstSeed\": {},", worst_seed);
     println!("  \"unwinnable\": {}", losers.len());
     println!("}}");
+    if report {
+        return;
+    }
     if !losers.is_empty() {
         eprintln!("UNWINNABLE: {}/{} seeds, e.g. {:?}", losers.len(), n, &losers[..losers.len().min(5)]);
         std::process::exit(1);
@@ -1177,11 +1181,22 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .and_then(|v| v.parse().ok())
     };
+    // seed precedence: explicit --seed > --daily (shared seed of the day) >
+    // launch-time entropy. The only entropy in the whole program is here.
+    let daily = args.iter().any(|a| a == "--daily");
+    let day = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86400)
+        .unwrap_or(0);
     let seed = flag_val("--seed").unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0xDEAD_BEEF)
+        if daily {
+            h64(day, &["daily"])
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0xDEAD_BEEF)
+        }
     });
 
     let str_val = |name: &str| -> Option<String> {
@@ -1189,7 +1204,10 @@ fn main() {
     };
 
     if args.iter().any(|a| a == "--solve") {
-        solve_main(flag_val("--solve").unwrap_or(10000));
+        solve_main(
+            flag_val("--solve").unwrap_or(10000),
+            args.iter().any(|a| a == "--report"),
+        );
         return;
     }
     if args.iter().any(|a| a == "--dump") {
@@ -1226,6 +1244,9 @@ fn main() {
         },
         None => (seed, Vec::new(), Game::new(seed)),
     };
+    if daily && input_log.is_empty() {
+        game.log(format!("Daily dungeon #{}. Everyone gets this one today.", day));
+    }
     let mut window = Window::new(
         "rl144",
         WIDTH,
@@ -1304,6 +1325,23 @@ mod tests {
         b.depth = 2;
         b.gen_level();
         assert_eq!(dirty, level_dump(&b));
+    }
+
+    /// The hash is a public API: these literals were captured by running the
+    /// implementation (2026-07-18). A failure here means the PRIMITIVE
+    /// changed — every seed and save in the wild breaks (MAJOR), regardless
+    /// of whether the worldgen goldens happen to still pass.
+    #[test]
+    fn hash_vectors() {
+        assert_eq!(h64(0, &[]), 0x7bd3_144f_29c0_cc9e);
+        assert_eq!(h64(0, &["worldgen", "1"]), 0x34bd_1025_0333_b247);
+        assert_eq!(h64(1, &["combat"]), 0xfbeb_6048_ae90_1312);
+        assert_eq!(h64(42, &["spawns", "5"]), 0x2973_9991_fe04_caf0);
+        assert_eq!(h64(0xDEAD_BEEF, &["a", "b"]), 0x856c_83b2_7284_ba1e);
+        let mut c = channel(42, &["worldgen", "1"]);
+        assert_eq!(c.next(), 0xeda9_7859_383a_600c);
+        assert_eq!(c.next(), 0xf4e6_8a47_e74b_97cc);
+        assert_eq!(c.next(), 0x7162_bb71_2f5f_73e3);
     }
 
     /// Same seed, same full dungeon — twice.
