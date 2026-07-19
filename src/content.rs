@@ -172,7 +172,7 @@ pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
         ],
         [
             "The {M} still won't near the torch, but stays put.",
-            "The {M} watches you, still too scared to bite again.",
+            "The {M} watches you, still too scared to come closer.",
         ],
         [
             "The {M} goes still. It won't cross you again.",
@@ -182,7 +182,7 @@ pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
     // goblin
     [
         [
-            "The {M} lowers its blade, watching your torch, not you.",
+            "The {M} goes still, watching your torch instead of you.",
             "The {M} pauses mid-step, weighing the light in your hand.",
         ],
         [
@@ -197,11 +197,11 @@ pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
     // ogre
     [
         [
-            "The {M} stops mid-swing, breathing slow in the torchlight.",
+            "The {M} stands motionless, breathing slow in the torchlight.",
             "The {M} lowers one fist, unhurried, and studies your torch.",
         ],
         [
-            "The {M} still hasn't swung again. It is thinking, slowly.",
+            "The {M} has not moved against you. It is thinking, slowly.",
             "The {M} shifts its weight, in no hurry to fight you now.",
         ],
         [
