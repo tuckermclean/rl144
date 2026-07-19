@@ -1,14 +1,11 @@
 // rl144 — a roguelike in under 1.44MB. Zero asset files; everything procedural or const.
-// The backend-term stub (src/backend_term.rs) doesn't yet touch the core
-// render/save surface that only the minifb backend currently drives (task 3
-// wires the real terminal backend through render::render_cells and
-// save::save_bytes/save_filename the same way). Until then, a term-only
-// build sees those core items as unreachable; scoping the dead-code allow
-// to that feature combination here (not inside rng/content/game/save/
-// headless/render, which stay cfg-free) keeps the default build's dead-code
-// checking fully intact.
-#![cfg_attr(feature = "backend-term", allow(dead_code))]
-
+// Exactly one backend feature is compiled in: backend-minifb (window/pixel
+// presentation) or backend-term (ANSI terminal presentation, task 3). Both
+// backends consume the same core render::render_cells/save:: surface, so
+// every core item is reachable under either feature — no crate-wide
+// dead-code allow needed. cfg is confined to this file's backend wiring and
+// to backend_minifb.rs/backend_term.rs themselves; the rest of the crate
+// stays cfg-free.
 #[cfg(not(any(feature = "backend-minifb", feature = "backend-term")))]
 compile_error!("exactly one backend feature must be enabled: backend-minifb or backend-term");
 
@@ -69,6 +66,11 @@ fn main() {
     // --seed accepts a raw string: numeric parses directly, anything else
     // is hashed (seed_from_arg) so e.g. --seed swordfish is stable.
     let daily = args.iter().any(|a| a == "--daily");
+    // --ascii is only meaningful to backend-term (--render-frame and the
+    // interactive loop's 7-bit fallback); cfg'd so a backend-minifb build
+    // never sees an unused variable.
+    #[cfg(feature = "backend-term")]
+    let ascii = args.iter().any(|a| a == "--ascii");
     let day = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() / 86400)
@@ -100,6 +102,14 @@ fn main() {
     }
     if args.iter().any(|a| a == "--dump") {
         print!("{}", dump(seed));
+        return;
+    }
+    // --render-frame: render one initial frame straight to stdout and exit,
+    // no termios/alt-screen setup at all — safe with stdout redirected to a
+    // file (this is the frame-golden capture path). Term-only.
+    #[cfg(feature = "backend-term")]
+    if args.iter().any(|a| a == "--render-frame") {
+        backend_term::render_frame_main(seed, ascii);
         return;
     }
     if let Some(path) = str_val("--replay") {
@@ -144,7 +154,7 @@ fn main() {
     #[cfg(feature = "backend-minifb")]
     backend_minifb::run(seed0, input_log, game, daily, day);
     #[cfg(feature = "backend-term")]
-    backend_term::run(seed0, input_log, game, daily, day);
+    backend_term::run(seed0, input_log, game, daily, day, ascii);
 }
 
 #[cfg(test)]

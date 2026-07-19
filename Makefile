@@ -20,15 +20,26 @@ unexport UPX
 BIN := target/release/rl144
 GOLDEN_SEEDS := 1 2 3 42 1337
 
-.PHONY: check build test goldens solve sim size
+TERM_BIN := target/term/release/rl144
+FRAME_SEEDS := 1 42
 
-check: build test goldens solve sim size
+.PHONY: check build test goldens solve sim size build-term test-term frames
+
+check: build test test-term goldens frames solve sim size
 
 build:
 	RUSTFLAGS="-D warnings" cargo build --release
 
 test:
 	cargo test --quiet
+
+# Term-flavor build: separate target-dir so it never clobbers the default
+# (backend-minifb) build artifacts checked by `build`/`size`.
+build-term:
+	RUSTFLAGS="-D warnings" cargo build --release --no-default-features --features backend-term --target-dir target/term
+
+test-term:
+	cargo test --quiet --no-default-features --features backend-term
 
 # Regenerate dumps for the golden seeds into a scratch temp dir and cmp them
 # against the committed fixtures in tests/golden/. Never writes into the
@@ -52,6 +63,34 @@ goldens: build
 		exit 1; \
 	fi; \
 	echo "goldens: OK ($(GOLDEN_SEEDS))"
+
+# Regenerate --render-frame output for the frame-golden seeds (plus the
+# --ascii variant) into a scratch temp dir and cmp them against the
+# committed fixtures in tests/golden/. Same never-touch-the-working-tree
+# discipline as `goldens`.
+frames: build-term
+	@tmpdir=`mktemp -d` || exit 1; \
+	trap 'rm -rf "$$tmpdir"' EXIT INT TERM HUP; \
+	status=0; \
+	for seed in $(FRAME_SEEDS); do \
+		./$(TERM_BIN) --render-frame --seed $$seed > "$$tmpdir/frame_seed_$$seed.bin"; \
+		if ! cmp -s "$$tmpdir/frame_seed_$$seed.bin" "tests/golden/frame_seed_$$seed.bin"; then \
+			echo "frame golden mismatch for seed $$seed"; \
+			status=1; \
+		fi; \
+	done; \
+	./$(TERM_BIN) --render-frame --seed 1 --ascii > "$$tmpdir/frame_seed_1_ascii.bin"; \
+	if ! cmp -s "$$tmpdir/frame_seed_1_ascii.bin" "tests/golden/frame_seed_1_ascii.bin"; then \
+		echo "frame golden mismatch for seed 1 (ascii)"; \
+		status=1; \
+	fi; \
+	rm -rf "$$tmpdir"; \
+	trap - EXIT INT TERM HUP; \
+	if [ "$$status" -ne 0 ]; then \
+		echo "frames: FAIL"; \
+		exit 1; \
+	fi; \
+	echo "frames: OK ($(FRAME_SEEDS), +ascii)"
 
 solve: build
 	./$(BIN) --solve $(SOLVE_SEEDS)
