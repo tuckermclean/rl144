@@ -39,7 +39,7 @@ interiority, the wrong shape for a seed-scoped cast.
 
 | # | Beat | Campbell folded in | Engine trigger (pure predicate) | Carried by |
 |---|------|--------------------|--------------------------------|-----------|
-| 1 | Threshold | First Threshold + Belly of the Whale | first arrival, depth 1 | the `<` entrance; descending IS the swallowing |
+| 1 | Threshold | First Threshold + Belly of the Whale | `depth == 1 && saved[1].is_none() && !has_amulet` (the whole first floor, until the first descent) | the `<` entrance; the first floor IS the swallowing — a duration, not an instant |
 | 2 | Road of Trials | Trials; Donor-function echoes | `1 <= depth <= 4 && !has_amulet` | ordinary play: combat/mercy economy, light spend, lore tiers |
 | 3 | Ordeal + Boon (fused) | Ordeal, Apotheosis, Ultimate Boon | `depth == MAX_DEPTH`, then amulet pickup | pickup-on-walk-over fuses transformation and theft-of-the-boon into one input — deliberately not separated |
 | 4 | Road Back | Magic Flight | `has_amulet && depth > 1` | the 2× burn. Don't narrate it; the doubled number IS the beat |
@@ -77,10 +77,22 @@ Same pattern as `THEMES`/`VAULTS`/lore tiers: const tables the generator librari
 - **IP-5 Rescue from Without** *(the narratologist's re-target — Phase 4)* — aid arriving after
   your own strength runs out, so: **return leg only, never the descent.** A same-seed ghost's
   death tile (including *abandoned* ghosts — an unresolved dead, not a "refusal" gimmick)
-  yields a one-time small light stipend or a revealed safe tile on the climb. Grounded: the
-  engine can prove a run ended there. *Balance-gated: enters solver/sim models; sign-off.*
+  yields a one-time small light stipend on the climb. Grounded: the engine can prove a run
+  ended there. *Balance-gated: enters solver/sim models; sign-off.*
+  **The self-rescue loop is adopted on purpose, not tolerated** (decided 2026-07-18): a player
+  on retry-same-seed can deliberately die on the return path to seed a stipend for the next
+  life. That is not an exploit to patch — it is the best myth in the document: sacrifice
+  propagating across world-ages, the player becoming their own ancestor-spirit. The economy is
+  capped structurally (ONE rescue per run — `rescued: bool`, not per-tile) and the sim band for
+  this mechanic is sized ASSUMING players do it (the sim gains a martyr-then-retry policy
+  variant when IP-5 lands, so the band prices in deliberate seeding rather than discovering it
+  from a speedrun).
 - **IP-6 The Judge** — Return Threshold reads the log: kills, spared, lore read, retries vs
   rerolls, ghosts witnessed, light left. Every line an engine fact (adopted from Proposal A).
+  This is the scene the whole architecture converges on: the engine's constitutional honesty,
+  the log-as-biography, and the myth meet in one screen, at the run's lowest resources — the
+  self that exits mechanically thinner than the one that entered. Beat 5 is the climax; budget
+  the writing and the leitmotif resolution accordingly.
 - **IP-7 Leitmotif spine** — C's pitch-delta melody keyed by *beat*, not depth: plain at the
   Call; staccato-comic through Trials; minor and half-speed at the Ordeal; transposed up and
   urgent on the Road Back; resolved at the Elixir. One melody, five renderings — the monomyth
@@ -110,7 +122,14 @@ pub(crate) fn beat(g: &Game) -> Beat {
     if g.has_amulet && g.depth == 1   { return Beat::ReturnThreshold; }
     if g.has_amulet                   { return Beat::RoadBack; }
     if g.depth == MAX_DEPTH           { return Beat::Ordeal; }
-    if g.turns == 0                   { return Beat::Threshold; }
+    // Threshold is a DURATION (Belly of the Whale), not the arrival instant:
+    // the whole first floor, until the first descent. Derivable today with no
+    // new state: while the player has never left depth 1, the depth-2 snapshot
+    // slot has never been filled. (saved[1] is Some exactly when depth 2 has
+    // been visited and exited — i.e. the player is past the swallowing.)
+    // Decided pre-goldens (2026-07-18 review): regenerating journey fixtures
+    // later is a lens-MAJOR by this doc's own logic, so this is frozen now.
+    if g.depth == 1 && g.saved[1].is_none() { return Beat::Threshold; }
     Beat::Trials
 }
 
@@ -179,11 +198,19 @@ none of them.
 
 ## 5. What we'd need (the mission list)
 
+**Sequencing rule (decided 2026-07-18): instrument before writing.** Items 1–2 land ALONE as
+a standalone first batch, and the funnel runs on the game as it stands. The per-beat death
+distribution then informs the whiplash writing: if greedy runs die overwhelmingly in Trials
+and rarely see the Road Back, the sincere column would be authored for a beat almost nobody
+reaches — a balance conversation before a writing one. Measurement first is the house style;
+it applies to myth too.
+
 1. **`monomyth.rs`** — beat/register lens + monotone test. Small, zero-risk, no sign-off. ~1 KB.
 2. **`--journey` + journey goldens + funnel bands in sim.** ~2 KB. The verification spine.
 3. **Second register column** (IP-2) + Call/Ordeal lines (IP-1/3) + corpse notes (IP-4) —
    writing, ~10–15 KB, grounding doctrine binds all of it. The whiplash table (IP-2) is where
-   the design lives or dies: **prototype it first.**
+   the design lives or dies — **prototyped only after the funnel data from items 1–2 says
+   which beats the writing will actually be read in.**
 4. **Phase-2 mercy** (already decided) — the Trials need it to mean anything.
 5. **Phase-4 ghost playback** (mentor watching, IP-5 rescue — the one new *mechanic*, gated).
 6. **Leitmotif-by-beat** — retargets C's committed audio system; ~0 KB new.
