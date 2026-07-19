@@ -7,6 +7,7 @@
 use crate::content::{
     KINDS, PAL_GOBLIN, PAL_OGRE, PAL_RAT, TONE_LINES, Theme, VAULTS, lore_line, theme_for,
 };
+use crate::render::Facing;
 use crate::rng::{Rng, channel};
 
 pub(crate) const COLS: usize = 80;
@@ -180,6 +181,34 @@ pub(crate) struct Game {
     /// and every replay recomputes `echo` fresh from the state the
     /// PRECEDING Game was in the instant before byte 6 fired.
     pub(crate) echo: Option<(i32, i32, u32)>,
+    /// Direction the player last SUCCESSFULLY faced: updated in
+    /// `try_move_player` on both branches that actually take an action (a
+    /// landed move onto floor, and a landed attack swing) from the same
+    /// `(dx, dy)` those branches already receive as parameters — deriving
+    /// it costs no new RNG draw and no extra worldgen/spawns state. A wall
+    /// bump does NOT update it (that branch returns first). Defaults to
+    /// `Facing::S` (`Game::new`). `render::scene()` reads this for the
+    /// player's `SceneEntity::facing`; monster facing is derived
+    /// separately and needs no stored field (see
+    /// `Game::monster_sees_player`/`render::scene`'s `monster_facing`).
+    /// Presentation-only: NOT hashed by `state_hash`, NOT printed by
+    /// `--dump`, NOT itself saved — see `save::state_hash`'s doc comment
+    /// for the shared exclusion-list rationale (`killer`/`echo`/`facing`/
+    /// `fx_hit` are all in the same boat).
+    pub(crate) facing: Facing,
+    /// Grid tile of the last melee impact this attempt: set in
+    /// `try_move_player` when the player lands a hit (to the target
+    /// monster's tile) and in `monsters_act` when a monster hits the
+    /// player (to the player's tile) — every attack in this game always
+    /// lands (no miss chance), so this is set unconditionally on either
+    /// event. Cleared at the very START of the next player action
+    /// (`try_move_player`/`wait_turn`'s first statement, before the
+    /// dead/won early return), so it reads `Some` for exactly the frames
+    /// between the hit and the next input. `backend_minifb`'s screen-feel
+    /// (palette flash + vertical squash) reads this; the term backend
+    /// deliberately doesn't (see the note near `backend_term::frame_bytes`).
+    /// Presentation-only, same exclusion list as `facing` above.
+    pub(crate) fx_hit: Option<(i32, i32)>,
     pub(crate) has_amulet: bool,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
@@ -220,6 +249,8 @@ impl Game {
             turns: 0,
             killer: None,
             echo: None,
+            facing: Facing::S,
+            fx_hit: None,
             has_amulet: false,
             monsters: Vec::new(),
             items: Vec::new(),
@@ -526,6 +557,17 @@ impl Game {
         }
     }
 
+    /// Whether `m` can currently see (and, in `monsters_act`, therefore
+    /// chase or attack) the player: within `MONSTER_SIGHT` (Chebyshev
+    /// distance) AND unobstructed line of sight. `pub(crate)` so
+    /// `render::scene()` can derive monster facing from the SAME predicate
+    /// `monsters_act` uses for chase/attack — one definition, not two that
+    /// could drift — without storing any new per-monster state.
+    pub(crate) fn monster_sees_player(&self, m: &Monster) -> bool {
+        let dist = (self.px - m.x).abs().max((self.py - m.y).abs());
+        dist <= MONSTER_SIGHT && self.los(m.x, m.y, self.px, self.py)
+    }
+
     // ---------- Turn logic ----------
     /// Burn the torch for one player turn: 1 light, 2 while carrying the
     /// amulet (it is heavy), plus `extra` (the violence tax on attack
@@ -668,6 +710,11 @@ impl Game {
     }
 
     pub(crate) fn try_move_player(&mut self, dx: i32, dy: i32) {
+        // Screen-feel state (batch 4 task 3): cleared at the START of every
+        // player action, before the dead/won early return, so a stale
+        // flash/squash never survives past the input that should have
+        // cleared it — see `Game::fx_hit`'s doc comment.
+        self.fx_hit = None;
         if self.dead || self.won {
             return;
         }
@@ -676,9 +723,11 @@ impl Game {
             return;
         }
         if let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) {
+            self.facing = Facing::from_delta(dx, dy);
             let dmg = self.atk + self.combat_rng.range(0, 3);
             let name = self.mob_name(self.monsters[mi].kind);
             self.monsters[mi].hp -= dmg;
+            self.fx_hit = Some((nx, ny));
             if self.monsters[mi].hp <= 0 {
                 self.monsters.remove(mi);
                 self.kills += 1;
@@ -687,6 +736,7 @@ impl Game {
                 self.log(format!("You hit the {} for {}.", name, dmg));
             }
         } else if self.map[idx(nx, ny)] != Tile::Wall {
+            self.facing = Facing::from_delta(dx, dy);
             self.px = nx;
             self.py = ny;
             if !self.spend_turn(0) {
@@ -730,6 +780,9 @@ impl Game {
     }
 
     pub(crate) fn wait_turn(&mut self) {
+        // Same fx_hit-clearing discipline as try_move_player — see
+        // `Game::fx_hit`'s doc comment.
+        self.fx_hit = None;
         if self.dead || self.won {
             return;
         }
@@ -776,7 +829,7 @@ impl Game {
         for i in 0..self.monsters.len() {
             let (mx, my) = (self.monsters[i].x, self.monsters[i].y);
             let dist = (px - mx).abs().max((py - my).abs());
-            let sees = dist <= MONSTER_SIGHT && self.los(mx, my, px, py);
+            let sees = self.monster_sees_player(&self.monsters[i]);
             if dist == 1 && sees {
                 let (_, atk, _, _, _) = Monster::stats(self.monsters[i].kind);
                 let dmg = atk + self.combat_rng.range(0, 2);
@@ -808,6 +861,7 @@ impl Game {
         }
         for (kind, dmg) in attacks {
             self.hp -= dmg;
+            self.fx_hit = Some((self.px, self.py));
             let name = self.mob_name(kind);
             if self.hp <= 0 {
                 self.hp = 0;

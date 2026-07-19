@@ -12,8 +12,8 @@ use crate::content::{
     PAL_PLAYER, PAL_POTION, PAL_STAIRS, PAL_STATUS, PAL_SWORD, lore_line, theme_for,
 };
 use crate::game::{
-    COLS, Game, IKind, MAP_H, MAX_DEPTH, Monster, ROWS, START_LIGHT, Tile, fov_radius, idx,
-    in_map,
+    COLS, Game, IKind, MAP_H, MAX_DEPTH, MKind, Monster, ROWS, START_LIGHT, Tile, fov_radius,
+    idx, in_map,
 };
 
 /// A single terminal-style cell: one glyph plus its foreground/background
@@ -225,6 +225,182 @@ fn draw_border(cells: &mut [Cell], x0: usize, y0: usize, w: usize, h: usize, fg:
     put(cells, x0 + w - 1, y0 + h - 1, BOX_BR, fg);
 }
 
+// ---------- scene() core surface (batch 4 task 3, C-impossible-object.md
+// §3, DECISION.md sign-off item 5) ----------
+/* `render_cells`/`Cell` throw away identity: a glyph carries no facing, no
+   animation phase, no "this is entity #N, still alive next frame"
+   continuity — exactly what a sprite backend (a later batch) needs and a
+   flat character grid can't give it. `scene()` is the additive answer:
+   every field on `SceneEntity` is DERIVED from `Game` with zero new stored
+   state beyond `Game::facing` itself (see that field's doc comment for why
+   even that one field is cheap and presentation-only). Nothing here is
+   hashed, saved, or dumped — `--dump`'s `level_dump` (headless.rs) never
+   calls into this module at all, so `scene()` existing has zero effect on
+   any golden. */
+
+/// Cardinal facing for a `SceneEntity`'s sprite. Presentation-only, same
+/// exclusion list as `Game::facing`/`Game::fx_hit`/`Game::killer`/
+/// `Game::echo` (see `save::state_hash`'s doc comment).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Facing {
+    N,
+    S,
+    W,
+    E,
+}
+
+impl Facing {
+    /// Facing implied by a movement/attack delta. Every real caller passes
+    /// a delta with exactly one nonzero axis (the four cardinal
+    /// `try_move_player` directions, or a monster's `(signum, signum)`
+    /// toward the player) — dx is checked first, so a genuinely diagonal
+    /// delta would read as E/W, never a crash or a fifth direction. `(0,0)`
+    /// (never a real move) falls through to the default `S`.
+    pub(crate) fn from_delta(dx: i32, dy: i32) -> Facing {
+        if dx > 0 {
+            Facing::E
+        } else if dx < 0 {
+            Facing::W
+        } else if dy < 0 {
+            Facing::N
+        } else if dy > 0 {
+            Facing::S
+        } else {
+            Facing::S
+        }
+    }
+}
+
+/// What kind of sprite a `SceneEntity` is. `Echo` carries no payload beyond
+/// the entity's own `x`/`y` (see `scene()`'s echo block).
+///
+/// `#[allow(dead_code)]` on this and the four items below it
+/// (`SceneEntity`, `monster_facing`, `anim_phase`, `scene`): this is Phase 1
+/// substrate exactly like `save::Ghost`/`parse_ghost` — the roadmap's own
+/// words are "sprites arrive in a later phase" (this task's scope note).
+/// `scene()` exists now so the surface is frozen and unit-tested
+/// (`scene_is_deterministic`, `echo_appears_only_under_three_conditions`),
+/// but its first real caller (a sprite-rasterizing backend) is a later
+/// batch — a release build has no live path into any of these five items
+/// yet, hence the explicit allow rather than a false "unused" signal.
+#[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum SpriteKind {
+    Player,
+    Monster(MKind),
+    Item(IKind),
+    Echo,
+}
+
+/// One thing to draw this frame, richer than a `Cell`: kind, grid position
+/// (same coordinate convention as `Cell`/`idx()` — no second coordinate
+/// system), facing, an animation phase, and the current light percentage
+/// (reuses `light_pct(fov_radius(..))`, the same brightness `render_play`
+/// already applies to visible tiles/items/monsters). All fields
+/// `pub(crate)`, all derived — see this section's header comment.
+#[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+pub(crate) struct SceneEntity {
+    pub(crate) kind: SpriteKind,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) facing: Facing,
+    pub(crate) anim_phase: u8,
+    pub(crate) light_pct: u32,
+}
+
+/// Monster facing: the sign of (player - monster) when the monster can
+/// currently see the player (`Game::monster_sees_player` — the SAME
+/// predicate `monsters_act` uses to decide whether to chase/attack, so this
+/// never drifts from what the monster is "actually" doing), else the
+/// default `S`. Pure: no stored per-monster state, no RNG draw.
+#[allow(dead_code)]
+fn monster_facing(g: &Game, m: &Monster) -> Facing {
+    if g.monster_sees_player(m) {
+        Facing::from_delta((g.px - m.x).signum(), (g.py - m.y).signum())
+    } else {
+        Facing::S
+    }
+}
+
+/// `anim_phase` formula: `(g.turns + x + y) mod 4`, cast to `u8`. Folding
+/// the entity's own grid position in means two entities on screen the same
+/// turn land on different phases (no synchronized-blink look) without
+/// persisting anything — it's a pure function of `(g.turns, x, y)`, so two
+/// `scene()` calls on an unchanged `Game` are byte-identical (see
+/// `scene_is_deterministic`). `rem_euclid` keeps the result in `[0, 4)`
+/// even though `x`/`y` are signed (they never are in practice, since every
+/// caller passes an in-map coordinate, but the formula stays correct either
+/// way).
+#[allow(dead_code)]
+fn anim_phase(g: &Game, x: i32, y: i32) -> u8 {
+    (g.turns as i64 + x as i64 + y as i64).rem_euclid(4) as u8
+}
+
+/// Compose this frame's sprite-level scene: the player (always), every
+/// currently-visible monster and item, and the last-death echo. The echo
+/// appears iff ALL THREE hold: `g.echo` is `Some`, its depth matches the
+/// CURRENT depth (an echo from a depth the player isn't on right now must
+/// not leak through), and the tile has actually been `seen` (same
+/// never-leak-unseen-topology discipline `wall_mask` already applies to
+/// walls). Zero RNG draws, zero mutation of `g`: calling `scene(g)` twice
+/// in a row with no `Game` mutation between returns equal vectors.
+#[allow(dead_code)]
+pub(crate) fn scene(g: &Game) -> Vec<SceneEntity> {
+    let pct = light_pct(fov_radius(g.light));
+    let mut out = Vec::new();
+
+    out.push(SceneEntity {
+        kind: SpriteKind::Player,
+        x: g.px,
+        y: g.py,
+        facing: g.facing,
+        anim_phase: anim_phase(g, g.px, g.py),
+        light_pct: pct,
+    });
+
+    for m in &g.monsters {
+        if g.vis[idx(m.x, m.y)] {
+            out.push(SceneEntity {
+                kind: SpriteKind::Monster(m.kind),
+                x: m.x,
+                y: m.y,
+                facing: monster_facing(g, m),
+                anim_phase: anim_phase(g, m.x, m.y),
+                light_pct: pct,
+            });
+        }
+    }
+
+    for it in &g.items {
+        if g.vis[idx(it.x, it.y)] {
+            out.push(SceneEntity {
+                kind: SpriteKind::Item(it.kind),
+                x: it.x,
+                y: it.y,
+                facing: Facing::S, // items have no orientation
+                anim_phase: anim_phase(g, it.x, it.y),
+                light_pct: pct,
+            });
+        }
+    }
+
+    if let Some((ex, ey, ed)) = g.echo {
+        if ed == g.depth && g.seen[idx(ex, ey)] {
+            out.push(SceneEntity {
+                kind: SpriteKind::Echo,
+                x: ex,
+                y: ey,
+                facing: Facing::S,
+                anim_phase: anim_phase(g, ex, ey),
+                light_pct: pct,
+            });
+        }
+    }
+
+    out
+}
+
 /// Compose the current frame as an 80x30 grid of cells. `cells` must be
 /// exactly `CELLS` long.
 pub(crate) fn render_cells(g: &Game, screen: Screen, cells: &mut [Cell]) {
@@ -261,6 +437,21 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
             };
             let c = if g.vis[i] { scale(color, pct) } else { dim(color) };
             put(cells, x as usize, y as usize, ch, c);
+        }
+    }
+    // last-death echo (batch 4 task 3, C's shrunk "one echo, not a ghost
+    // system" pitch): a dim '@' at the previous attempt's death tile,
+    // drawn UNDER live entities (before items/monsters/player below, which
+    // take visual priority if they share this tile) — same three-condition
+    // visibility gate `scene()` uses (see its doc comment): matches
+    // `g.echo`'s depth to the CURRENT depth, and requires the tile to have
+    // actually been seen. Presentation-only; `--dump`'s `level_dump` never
+    // calls into this file, so dump goldens are untouched regardless, and
+    // a fresh game's `echo` is always `None` (`Game::new`), so frame
+    // goldens are untouched too.
+    if let Some((ex, ey, ed)) = g.echo {
+        if ed == g.depth && g.seen[idx(ex, ey)] {
+            put(cells, ex as usize, ey as usize, b'@' as u16, scale(PAL_PLAYER, 35));
         }
     }
     // items (visible only)
@@ -489,5 +680,76 @@ mod tests {
         let mut cells = vec![BLANK; CELLS];
         let end_col = draw_status(&mut cells, 0, 40, 40, 2000, 8, 99, MAX_DEPTH, 9999, true);
         assert!(end_col <= COLS, "status row overflowed: ended at col {}", end_col);
+    }
+
+    /// scene() is a pure function of `Game`: two calls with no mutation in
+    /// between must produce identical output. `SceneEntity: PartialEq`, so
+    /// a plain `==` on the two `Vec`s is the whole assertion — this is what
+    /// makes a later sprite backend's "same entity, still alive next
+    /// frame" identity tracking trustworthy.
+    #[test]
+    fn scene_is_deterministic() {
+        let g = Game::new(1);
+        assert!(scene(&g) == scene(&g));
+    }
+
+    /// The echo entity appears iff ALL THREE conditions hold: `g.echo` is
+    /// `Some`, its depth matches the CURRENT depth, and the tile has
+    /// actually been `seen`. Each condition is falsified independently to
+    /// prove none of the three is redundant with the others.
+    #[test]
+    fn echo_appears_only_under_three_conditions() {
+        fn has_echo(g: &Game) -> bool {
+            scene(g).iter().any(|e| e.kind == SpriteKind::Echo)
+        }
+
+        let g0 = Game::new(1);
+        assert!(!has_echo(&g0), "no echo set: must not appear");
+
+        // Matching depth, tile seen (the entrance tile is always seen —
+        // compute_fov marks the player's own tile on every gen_level):
+        // appears.
+        let mut g1 = Game::new(1);
+        let (ex, ey) = (g1.px, g1.py);
+        g1.echo = Some((ex, ey, g1.depth));
+        assert!(has_echo(&g1), "matching depth + seen tile: must appear");
+
+        // Wrong depth: must not appear, even though the tile is seen.
+        let mut g2 = Game::new(1);
+        g2.echo = Some((ex, ey, g2.depth + 1));
+        assert!(!has_echo(&g2), "depth mismatch: must not appear");
+
+        // Right depth, but a tile that hasn't been seen: must not appear.
+        let mut g3 = Game::new(1);
+        let unseen = (0, 0); // map corner: never touched by starting FOV
+        assert!(!g3.seen[idx(unseen.0, unseen.1)], "fixture assumption: (0,0) unseen at turn 0");
+        g3.echo = Some((unseen.0, unseen.1, g3.depth));
+        assert!(!has_echo(&g3), "unseen tile: must not appear");
+    }
+
+    /// `Game::facing` updates to the move direction on a successful move,
+    /// and stays at its default `S` when nothing moves (a wall bump returns
+    /// before any facing update — see `try_move_player`).
+    #[test]
+    fn facing_updates_on_move() {
+        let g0 = Game::new(1);
+        assert!(g0.facing == Facing::S, "default facing is S");
+
+        // Every room is larger than 1x1, so at least one of the four
+        // cardinal directions from the entrance is floor; try each and
+        // check the one that actually moves the player.
+        let dirs = [(0, -1, Facing::N), (0, 1, Facing::S), (-1, 0, Facing::W), (1, 0, Facing::E)];
+        let (px0, py0) = (g0.px, g0.py);
+        let mut moved = false;
+        for (dx, dy, want) in dirs {
+            let mut g = Game::new(1);
+            g.try_move_player(dx, dy);
+            if (g.px, g.py) != (px0, py0) {
+                assert!(g.facing == want, "facing must match the move direction");
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "fixture assumption: at least one cardinal direction from spawn is floor");
     }
 }

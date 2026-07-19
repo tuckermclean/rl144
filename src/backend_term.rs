@@ -301,6 +301,19 @@ fn ascii_fallback(ch: u16) -> u16 {
 /// Pure: no I/O, no statics, deterministic in cells+prev+ascii alone. This
 /// is the verification surface — the interactive loop and `--render-frame`
 /// both just write whatever this returns.
+///
+/// No screen-feel here, by design (batch 4 task 3 scoped it to
+/// `backend_minifb` only): `Game::fx_hit`'s palette flash is a per-pixel
+/// brighten this backend could in principle fake with a bolder SGR color,
+/// but the vertical-squash half is fundamentally sub-cell pixel work — one
+/// character IS one cell here, there's no glyph rect to redraw into a
+/// shorter band. More importantly, `frame_bytes`'s whole design is
+/// dirty-cell equality (`cell == p[i]` above): an ephemeral effect that
+/// clears itself on the next input would make the SAME game state
+/// (unchanged `Cell` grid) round-trip through two different rendered
+/// byte streams depending on `fx_hit`'s timing, which is exactly the kind
+/// of transient-vs-diff mismatch this encoder's purity is designed to
+/// avoid. Cheaper to skip it than to fight it.
 pub(crate) fn frame_bytes(cells: &[Cell], prev: Option<&[Cell]>, ascii: bool) -> Vec<u8> {
     let mut out = Vec::new();
     let full = prev.is_none();

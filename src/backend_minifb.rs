@@ -69,12 +69,73 @@ fn draw_glyph(buf: &mut [u32], ox: usize, oy: usize, ch: u16, fg: u32, bg: u32) 
     }
 }
 
+/// One-frame damage flash: brighten each RGB channel of `c` by 30%,
+/// clamped to 255 per channel. `render::scale`'s multiply/divide has no
+/// clamp because every caller there passes `pct <= 100` (a genuine
+/// dimming); `flash` is the one place in this backend that legitimately
+/// wants to scale PAST 100%, so it needs its own saturating math instead.
+/// Pure RGB arithmetic, no game state, no RNG — headlessly testable
+/// (`flash_channel_math`) even though the visual result (does a 1-frame
+/// brighten actually read as "hit" at 60fps) is playtest-only.
+fn flash(c: u32) -> u32 {
+    let ch = |v: u32| -> u32 { (v * 13 / 10).min(255) };
+    let r = ch((c >> 16) & 0xFF);
+    let g = ch((c >> 8) & 0xFF);
+    let b = ch(c & 0xFF);
+    (r << 16) | (g << 8) | b
+}
+
+/// Squashed variant of `draw_glyph`, used only for the cell at
+/// `Game::fx_hit` while it's `Some` (screen-feel, batch 4 task 3). A "real"
+/// vertical squash would resample each glyph row through an interpolated
+/// scale; this is the simple version the task scope asked for instead:
+/// draw only the EVEN source rows of the 8-row glyph bitmap (0, 2, 4, 6 —
+/// literally skipping every odd row, 4 of the 8 kept) into the LOWER 6
+/// rows of the cell (`oy + CH - 6 ..= oy + CH - 1`, vs. `draw_glyph`'s
+/// vertically-centered `oy + (CH - 8) / 2`). The combined effect — half
+/// the scanlines, compressed toward the cell's bottom edge — reads as a
+/// one-frame vertical flatten/impact squash with no resampling math at
+/// all. Deterministic and render-only: same `(ch, fg, bg)` in, same pixels
+/// out, every call.
+fn draw_glyph_squashed(buf: &mut [u32], ox: usize, oy: usize, ch: u16, fg: u32, bg: u32) {
+    for y in 0..CH {
+        for x in 0..CW {
+            buf[(oy + y) * WIDTH + ox + x] = bg;
+        }
+    }
+    let Some(glyph) = glyph_bits(ch) else {
+        return;
+    };
+    let base = oy + CH - 6; // bottom-aligned 6-row band
+    for (gy, bits) in glyph.iter().enumerate() {
+        if gy % 2 == 1 {
+            continue; // skip every other glyph row
+        }
+        let dy = base + gy / 2;
+        for gx in 0..8 {
+            if bits >> gx & 1 == 1 {
+                buf[dy * WIDTH + ox + gx] = fg;
+            }
+        }
+    }
+}
+
 /// Rasterize a full Cell grid into the WIDTH*HEIGHT pixel framebuffer.
-fn rasterize(cells: &[Cell], buf: &mut [u32]) {
+/// `fx_hit`, when `Some((x, y))`, is the grid cell to render with the
+/// screen-feel treatment (palette flash + vertical squash) instead of the
+/// plain glyph draw — callers pass `None` outside `Screen::Play` (see
+/// `run`'s call site) so a stale `Game::fx_hit` can never paint a random
+/// cell on the Title/End screens, which don't share Play's coordinate
+/// meaning.
+fn rasterize(cells: &[Cell], buf: &mut [u32], fx_hit: Option<(i32, i32)>) {
     for row in 0..ROWS {
         for col in 0..COLS {
             let c = cells[row * COLS + col];
-            draw_glyph(buf, col * CW, row * CH, c.ch, c.fg, c.bg);
+            if fx_hit == Some((col as i32, row as i32)) {
+                draw_glyph_squashed(buf, col * CW, row * CH, c.ch, flash(c.fg), c.bg);
+            } else {
+                draw_glyph(buf, col * CW, row * CH, c.ch, c.fg, c.bg);
+            }
         }
     }
 }
@@ -265,7 +326,12 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
             }
         }
         render_cells(&game, screen, &mut cells);
-        rasterize(&cells, &mut buf);
+        // Screen-feel only applies to the Play-screen map grid, whose
+        // coordinates are what `Game::fx_hit` is expressed in — Title/End
+        // panels use a different layout, so a leftover fx_hit from the run
+        // that just ended must not paint one of their cells.
+        let fx = if screen == Screen::Play { game.fx_hit } else { None };
+        rasterize(&cells, &mut buf, fx);
         window.update_with_buffer(&buf, WIDTH, HEIGHT).expect("update");
     }
 
@@ -283,5 +349,21 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
             Ok(()) => println!("Autosaved to {}.", path),
             Err(e) => println!("Autosave failed: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// flash() channel math: 30% brighten per channel, clamped to 255.
+    /// Pure RGB arithmetic — the visual feel is playtest-only, but the
+    /// math itself is headlessly checkable.
+    #[test]
+    fn flash_channel_math() {
+        assert_eq!(flash(0x000000), 0x000000);
+        assert_eq!(flash(0x646464), 0x828282); // 100 * 1.3 = 130, no clamp
+        assert_eq!(flash(0xC8C8C8), 0xFFFFFF); // 200 * 1.3 = 260 -> clamp 255
+        assert_eq!(flash(0xFFFFFF), 0xFFFFFF); // already saturated
     }
 }

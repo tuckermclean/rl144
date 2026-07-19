@@ -85,10 +85,15 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// level. If two replays of one save ever hash differently, channel
 /// discipline broke somewhere.
 ///
-/// `g.killer` is deliberately NOT hashed: it's presentation-only (the End
-/// screen's cause-of-death line), doesn't affect anything replay needs to
-/// reproduce, and is fully determined by state that IS hashed anyway (the
-/// attack sequence that led to `dead`).
+/// `g.killer`, `g.echo`, `g.facing`, and `g.fx_hit` are all deliberately
+/// NOT hashed: every one of them is presentation-only (the End screen's
+/// cause-of-death line; the retry-echo tile; the player sprite's facing;
+/// the screen-feel flash/squash tile, respectively), none affects anything
+/// replay needs to reproduce, and each is fully determined by state that
+/// IS hashed anyway (the same move/attack/death sequence that produces
+/// `dead`/`px`/`py`/the monster-hp deltas). See each field's own doc
+/// comment in `game.rs` for the field-specific rationale; this is the one
+/// place that enumerates them together as a set.
 pub(crate) fn state_hash(g: &Game) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for v in [
