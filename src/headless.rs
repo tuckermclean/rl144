@@ -328,12 +328,12 @@ pub(crate) fn sim_seed(seed: u64) -> SimResult {
 /// smaller runs may trip the deaths_dark floor spuriously.
 ///
 /// Interface deviation from the batch-3 plan: the plan drafted a
-/// `dark_share_pct` percentage band, but measured dark deaths are ~0.1% of
-/// deaths (5 of 4271 at 5000 seeds) — an integer percent band can't encode
-/// "nonzero but tiny" (it floors to 0). So the band uses a raw
-/// `deaths_dark` count range instead, and the "minority" invariant
-/// (dark < combat) is structural, checked in code below like `stuck == 0`,
-/// not a tunable JSON band.
+/// `dark_share_pct` percentage band, but measured dark deaths are ~0.2% of
+/// deaths (8 of 4274 at 5000 seeds, post-violence-tax — see VIOLENCE_TAX in
+/// game.rs) — an integer percent band can't encode "nonzero but tiny" (it
+/// floors to 0). So the band uses a raw `deaths_dark` count range instead,
+/// and the "minority" invariant (dark < combat) is structural, checked in
+/// code below like `stuck == 0`, not a tunable JSON band.
 pub(crate) fn sim_main(n: u64, report: bool) {
     let mut wins = 0u64;
     let mut deaths_combat = 0u64;

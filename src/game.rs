@@ -25,6 +25,19 @@ const MONSTER_SIGHT: i32 = 8;
    value is never written from outside this module. */
 pub(crate) const START_LIGHT: i32 = 2000;
 
+/* Violence tax (batch 4, DECISION.md item 1 — mercy economy's first brick):
+   every bump-attack burns 1 extra light on top of the normal per-turn cost,
+   folded into spend_turn's single deduction so the light-0 death check
+   still runs exactly once and lose-before-win ordering holds. A wall bump
+   still burns nothing (try_move_player returns before any spend_turn call).
+   Re-baselined `--sim 5000` after adding the tax (2026-07-18): wins
+   726/5000 (14.5%, was 729/14.6%), deaths_combat 4266 (unchanged —
+   the greedy bot only fights when routing forces it through a monster,
+   so the tax rarely flips a run's outcome), deaths_dark 8 (was 5), stuck
+   0. tests/sim-band.json updated accordingly; win_pct band [10,25]
+   unchanged, deaths_dark band tightened around the new value. */
+pub(crate) const VIOLENCE_TAX: i32 = 1;
+
 /// Player FOV radius shrinks as the torch burns down. Percent of START_LIGHT.
 pub(crate) fn fov_radius(light: i32) -> i32 {
     let pct = light * 100 / START_LIGHT;
@@ -501,12 +514,14 @@ impl Game {
 
     // ---------- Turn logic ----------
     /// Burn the torch for one player turn: 1 light, 2 while carrying the
-    /// amulet (it is heavy). Light 0 is death in the dark — checked before
-    /// any win condition, golem-style. Returns false if the player died.
-    fn spend_turn(&mut self) -> bool {
+    /// amulet (it is heavy), plus `extra` (the violence tax on attack
+    /// turns; 0 for movement/waiting). Light 0 is death in the dark —
+    /// checked once, after the combined deduction, before any win
+    /// condition, golem-style. Returns false if the player died.
+    fn spend_turn(&mut self, extra: i32) -> bool {
         self.turns += 1;
         let before = fov_radius(self.light);
-        self.light -= if self.has_amulet { 2 } else { 1 };
+        self.light -= (if self.has_amulet { 2 } else { 1 }) + extra;
         if self.light <= 0 {
             self.light = 0;
             self.dead = true;
@@ -660,7 +675,7 @@ impl Game {
         } else if self.map[idx(nx, ny)] != Tile::Wall {
             self.px = nx;
             self.py = ny;
-            if !self.spend_turn() {
+            if !self.spend_turn(0) {
                 return; // died in the dark: lose beats anything this tile offered
             }
             self.note_room_entry();
@@ -690,8 +705,10 @@ impl Game {
         } else {
             return; // bumped a wall: no turn passes
         }
-        // attack path: the swing costs a turn too
-        if !self.spend_turn() {
+        // attack path: the swing costs a turn too, plus the violence tax
+        // (see VIOLENCE_TAX doc comment) — folded into one deduction inside
+        // spend_turn so the light-0 death check still runs exactly once.
+        if !self.spend_turn(VIOLENCE_TAX) {
             return;
         }
         self.monsters_act();
@@ -702,7 +719,7 @@ impl Game {
         if self.dead || self.won {
             return;
         }
-        if !self.spend_turn() {
+        if !self.spend_turn(0) {
             return;
         }
         self.monsters_act();

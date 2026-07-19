@@ -32,7 +32,7 @@ use save::{parse_save, replay, state_hash};
 #[cfg(test)]
 use content::{KINDS, THEMES, TONE_LINES, VAULTS};
 #[cfg(test)]
-use game::{TIER_WARNINGS, Tile, idx, in_map};
+use game::{MKind, Monster, TIER_WARNINGS, Tile, idx, in_map};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -295,6 +295,55 @@ mod tests {
         g.has_amulet = true;
         g.wait_turn();
         assert_eq!(g.light, l0 - 3);
+    }
+
+    /// Violence tax (batch 4, DECISION.md item 1): a bump-attack burns the
+    /// normal 1-per-turn cost plus VIOLENCE_TAX (1) = 2 total, vs 1 for a
+    /// plain wait turn.
+    #[test]
+    fn violence_tax_burns_extra_light() {
+        let mut g = Game::new(7);
+        let l0 = g.light;
+        g.wait_turn();
+        assert_eq!(g.light, l0 - 1, "a wait turn should burn 1 light");
+        let l1 = g.light;
+        let (px, py) = (g.px, g.py);
+        let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                in_map(px + dx, py + dy) && g.map[idx(px + dx, py + dy)] != Tile::Wall
+            })
+            .unwrap();
+        g.monsters.clear();
+        // High hp so the swing doesn't kill it — isolates the tax from the
+        // kill path (that's covered by the darkness-death test below).
+        g.monsters.push(Monster { x: px + dx, y: py + dy, kind: MKind::Ogre, hp: 999 });
+        g.try_move_player(dx, dy);
+        assert_eq!(g.light, l1 - 2, "bump-attack should burn 1 turn + 1 violence tax = 2 light");
+    }
+
+    /// Violence tax: if the tax itself lands light at/below 0 on a killing
+    /// blow, that's a darkness death — the light-0 check still runs exactly
+    /// once (inside spend_turn) and lose-before-win ordering holds. No
+    /// `killer` is attributed, since monsters_act never runs on this turn.
+    #[test]
+    fn violence_tax_kill_can_cause_darkness_death() {
+        let mut g = Game::new(7);
+        let (px, py) = (g.px, g.py);
+        let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                in_map(px + dx, py + dy) && g.map[idx(px + dx, py + dy)] != Tile::Wall
+            })
+            .unwrap();
+        g.monsters.clear();
+        g.monsters.push(Monster { x: px + dx, y: py + dy, kind: MKind::Rat, hp: 1 }); // guaranteed 1-hit kill
+        g.light = 2; // 1 (turn) + 1 (tax) lands exactly on 0
+        g.try_move_player(dx, dy);
+        assert!(g.dead, "should die in the dark from the violence tax");
+        assert_eq!(g.light, 0);
+        assert!(!g.won, "lose is checked before win");
+        assert!(g.killer.is_none(), "a darkness death has no combat killer");
     }
 
     /// Running out of light on the exit tile is a LOSE, not a win.

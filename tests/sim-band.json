@@ -1,5 +1,5 @@
 {
-  "comment": "greedy-bot band for --sim 5000 (make sim). Baselined 2026-07-18 after the batch-3 balance pass: wins 729 (14.6%), deaths_combat 4266, deaths_dark 5, stuck 0, median win turns 1258, median light left 420, min light left 24. win_pct must stay in [10,25]; deaths_dark must be nonzero (torch claims some greedy runs) yet stay a minority vs combat (enforced in code). Band is calibrated for 5000 seeds; smaller runs can trip the deaths_dark floor. Re-baselining is a balance change: human sign-off required.",
+  "comment": "greedy-bot band for --sim 5000 (make sim). Re-baselined 2026-07-18 after the violence tax landed (batch 4, DECISION.md item 1: +1 light per bump-attack, folded into spend_turn — see VIOLENCE_TAX in src/game.rs): wins 726 (14.5%), deaths_combat 4266 (unchanged from the pre-tax baseline of 729/14.6%/4266 — the greedy bot only fights when routing forces it through a monster, so the tax rarely flips a run's outcome), deaths_dark 8 (was 5, as expected: violence now costs a sliver of the torch too), stuck 0, median win turns 1258, median light left 393, min light left 17. win_pct must stay in [10,25]; deaths_dark band tightened to [2,40] to bracket the new measured value (8) with sane headroom while still catching regressions, and must stay a minority vs combat (enforced in code). Band is calibrated for 5000 seeds; smaller runs can trip the deaths_dark floor. Re-baselining is a balance change: human sign-off required (granted here via DECISION.md item 1).",
   "win_pct": [10, 25],
-  "deaths_dark": [1, 500]
+  "deaths_dark": [2, 40]
 }
