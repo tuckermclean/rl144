@@ -72,3 +72,33 @@ House process: subagent implementer → reviewer → fix rounds per task; final 
 review; `make check` green after every task (greedy sim numbers must NOT move until T2 tuning
 touches shared knobs — if T1 shifts greedy sim, something leaked). Sizes reported (budget
 ≤ +8 KB packed). rustc 1.75, zero deps, no cfg in core, grounding doctrine on every line.
+
+## Addendum (2026-07-19, human direction): the parley algorithm + rename
+
+**Rename (human ruling):** "ACT" is Undertale menu jargon, not an acronym — the verb is TALK.
+Rename identifiers/comments/docs: try_act_player → try_talk_player, act_threshold →
+talk_threshold, ACT bytes → talk bytes, chord naming likewise. Bytes 7-10, save v3, bands:
+unchanged. "regard"/"becalmed" stay.
+
+**Parley (human direction: "needs to be algorithm'd"):** becalming was a flat counter with a
+guaranteed stayed swing — root cause of the pacifist-dominance finding. Replace with a
+receptivity roll per talk, integer math, all inputs already tracked:
+
+    receptivity = BASE[kind]            // rat 55, goblin 35, ogre 20   (tunable)
+                + 18 * regard           // persistence pays             (tunable)
+                + 40 * (maxhp-hp)/maxhp // wounds open ears
+                + 6 * (atk - 3)         // visible strength impresses
+                - 10 if fov_radius(light) <= 4   // guttering torch
+                clamp(5, 95)
+    landed (roll < receptivity): +1 regard, monster stayed this turn
+    failed: no regard, NOT stayed (monsters_act treats it normally)
+    becalm at regard >= talk_threshold (2/3/4 unchanged); talk always costs the turn, no tax.
+
+Rolls from a NEW per-run named channel `parley` (Game field, hashed like combat/ai/flavor) —
+never combat_rng, never worldgen. Talk lines: landed vs failed may voice differently (failed =
+the monster is unmoved — grounded, no new invented claims; reuse/extend TALK_LINES shape).
+Greedy sim must stay exact (726/4266/8/0). Pacifist band: REMEASURE at 5000 and re-baseline
+tests/pacifist-band.json (sign-off = this addendum); pacifist policy may need a
+retreat-or-persist rule when talks fail — keep it deterministic, document the policy change.
+Constants above are starting values; tune within [5,40] win_pct with the same honesty rules
+(STOP clause stands).
