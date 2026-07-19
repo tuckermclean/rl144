@@ -1,8 +1,13 @@
 # Makefile — `make check` runs the whole AGENTS.md verification gate in one
-# command: warning-free release build, cargo test, golden-dump diff, solver
-# winnability gate, sim-bot balance gate, and UPX-packed size budget. POSIX
-# sh recipes (no bashisms); see AGENTS.md/CLAUDE.md for the manual workflow
-# this encodes.
+# command: warning-free release build (both cargo backends), cargo test
+# (both backends), golden-dump diff, frame-golden diff, cross-backend
+# replay-hash gate, solver winnability gate, sim-bot balance gate, and
+# UPX-packed size budget. POSIX sh recipes (no bashisms); see
+# AGENTS.md/CLAUDE.md for the manual workflow this encodes.
+#
+# `make targets` is a separate reporting tool: it prints a stripped/packed
+# size scoreboard for both backends. It is not part of `check` — `xhash`
+# already builds both flavors as the correctness gate.
 
 UPX ?= upx
 BUDGET ?= 1474560
@@ -23,9 +28,11 @@ GOLDEN_SEEDS := 1 2 3 42 1337
 TERM_BIN := target/term/release/rl144
 FRAME_SEEDS := 1 42
 
-.PHONY: check build test goldens solve sim size build-term test-term frames
+REF_SAVE := tests/fixtures/ref.sav
 
-check: build test test-term goldens frames solve sim size
+.PHONY: check build test goldens solve sim size build-term test-term frames targets xhash
+
+check: build test test-term goldens frames xhash solve sim size
 
 build:
 	RUSTFLAGS="-D warnings" cargo build --release
@@ -92,6 +99,24 @@ frames: build-term
 	fi; \
 	echo "frames: OK ($(FRAME_SEEDS), +ascii)"
 
+# Cross-backend replay-hash gate: replay the committed fixture save through
+# both flavors and require an identical state hash. This is the proof that
+# the core/crust seam is real — backend-minifb and backend-term share the
+# same deterministic core, so the same seed + input log must converge to
+# the same state regardless of which frontend built the binary.
+xhash: build build-term
+	@h1=`./$(BIN) --replay $(REF_SAVE) | sed -n 's/.*"hash":"\([0-9a-f]*\)".*/\1/p'`; \
+	h2=`./$(TERM_BIN) --replay $(REF_SAVE) | sed -n 's/.*"hash":"\([0-9a-f]*\)".*/\1/p'`; \
+	if [ -z "$$h1" ] || [ -z "$$h2" ]; then \
+		echo "xhash: FAIL — could not extract hash from --replay output"; \
+		exit 1; \
+	fi; \
+	if [ "$$h1" != "$$h2" ]; then \
+		echo "xhash: FAIL — minifb=$$h1 term=$$h2"; \
+		exit 1; \
+	fi; \
+	echo "xhash: OK ($$h1)"
+
 solve: build
 	./$(BIN) --solve $(SOLVE_SEEDS)
 
@@ -127,3 +152,49 @@ size: build
 		exit 1; \
 	fi; \
 	echo "size: OK"
+
+# Size scoreboard across both cargo backends: stripped and UPX-packed bytes
+# for minifb and term, plus percent of the floppy budget each consumes.
+# Reporting only — not part of `check` (`xhash` already builds and
+# exercises both flavors as the correctness gate; this target is for
+# watching the number). Still enforces the budget per row, same
+# graceful-degradation-if-UPX-is-missing pattern as `size`.
+targets: build build-term
+	@upx_ok=1; \
+	if ! "$(UPX)" --version >/dev/null 2>&1; then \
+		echo "warning: \$$(UPX)='$(UPX)' not runnable; packed column will be n/a"; \
+		upx_ok=0; \
+	fi; \
+	status=0; \
+	printf '%-8s %12s %12s %6s\n' target stripped packed pct; \
+	for pair in "minifb:$(BIN)" "term:$(TERM_BIN)"; do \
+		name=$${pair%%:*}; bin=$${pair#*:}; \
+		stripped=`wc -c < "$$bin" | tr -d ' '`; \
+		packed=""; \
+		if [ "$$upx_ok" -eq 1 ]; then \
+			tmpfile=`mktemp` || exit 1; \
+			trap 'rm -f "$$tmpfile"' EXIT INT TERM HUP; \
+			cp "$$bin" "$$tmpfile" || exit 1; \
+			chmod +x "$$tmpfile" || exit 1; \
+			if "$(UPX)" --best --lzma -qq "$$tmpfile" >/dev/null 2>&1; then \
+				packed=`wc -c < "$$tmpfile" | tr -d ' '`; \
+			else \
+				echo "warning: '$(UPX)' failed to pack $$name binary; skipping its budget check"; \
+			fi; \
+			rm -f "$$tmpfile"; \
+			trap - EXIT INT TERM HUP; \
+		fi; \
+		if [ -n "$$packed" ]; then \
+			pct=$$(( $$packed * 100 / $(BUDGET) )); \
+			printf '%-8s %12s %12s %5s%%\n' "$$name" "$$stripped" "$$packed" "$$pct"; \
+			if [ "$$packed" -gt "$(BUDGET)" ]; then \
+				echo "targets: FAIL — $$name packed $$packed bytes exceeds budget $(BUDGET) bytes"; \
+				status=1; \
+			fi; \
+		else \
+			printf '%-8s %12s %12s %6s\n' "$$name" "$$stripped" "n/a" "n/a"; \
+		fi; \
+	done; \
+	if [ "$$status" -ne 0 ]; then \
+		exit 1; \
+	fi
