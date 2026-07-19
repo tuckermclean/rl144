@@ -8,8 +8,8 @@
 // "what does the world look like," backends answer "how do I draw that."
 
 use crate::content::{
-    PAL_ALERT, PAL_AMULET, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_LOG_FADE, PAL_LORE,
-    PAL_PLAYER, PAL_POTION, PAL_STAIRS, PAL_STATUS, PAL_SWORD, lore_line, theme_for,
+    PAL_ALERT, PAL_AMULET, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_CALM_TINT, PAL_LOG_FADE,
+    PAL_LORE, PAL_PLAYER, PAL_POTION, PAL_STAIRS, PAL_STATUS, PAL_SWORD, lore_line, theme_for,
 };
 use crate::game::{
     COLS, Game, IKind, MAP_H, MAX_DEPTH, MKind, Monster, ROWS, START_LIGHT, Tile, fov_radius,
@@ -466,11 +466,17 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
             put(cells, it.x as usize, it.y as usize, ch as u16, scale(c, pct));
         }
     }
-    // monsters (visible only)
+    // monsters (visible only). Becalmed monsters (batch 5) render with
+    // PAL_CALM_TINT wholesale in place of the kind's own stats color — see
+    // that const's doc comment for why a fixed tint rather than a blend.
+    // Impossible in a fresh game (Monster::calm starts false, only set by
+    // Game::try_act_player), so this branch never fires for a turn-0 render
+    // and frame goldens are untouched.
     for m in &g.monsters {
         if g.vis[idx(m.x, m.y)] {
             let (_, _, ch, c, _) = Monster::stats(m.kind);
-            put(cells, m.x as usize, m.y as usize, ch as u16, scale(c, pct));
+            let fg = if m.calm { PAL_CALM_TINT } else { c };
+            put(cells, m.x as usize, m.y as usize, ch as u16, scale(fg, pct));
         }
     }
     // player — the torch itself gutters at the lowest radius (dim to 85%);
@@ -508,7 +514,7 @@ fn render_title(g: &Game, cells: &mut [Cell]) {
     row += 2;
     put_centered(cells, row, &format!("seed {}", g.seed), PAL_STATUS);
     row += 2;
-    put_centered(cells, row, "Move: arrows / wasd / hjkl    Wait: .", PAL_STATUS);
+    put_centered(cells, row, "Move: arrows / wasd / hjkl    Wait: .    Talk: t+dir", PAL_STATUS);
     row += 1;
     put_centered(cells, row, "Save: F5    World info: F1    Quit: q", PAL_STATUS);
     row += 2;
@@ -751,5 +757,56 @@ mod tests {
             }
         }
         assert!(moved, "fixture assumption: at least one cardinal direction from spawn is floor");
+    }
+
+    /// Becalmed-monster tint (batch 5 task 3): a monster with `calm = true`
+    /// renders with `PAL_CALM_TINT` in place of its kind's own stats color,
+    /// while an otherwise-identical non-calm monster renders with its
+    /// normal color — proving the two differ AND that the calm cell equals
+    /// the documented tint exactly (Game::new's initial light is full,
+    /// light_pct(fov_radius(START_LIGHT)) == 100, so `scale` is a no-op
+    /// here). Seed 1 depth 1 always spawns >=1 monster (golden fixture:
+    /// `monsters=4`), so indexing `g.monsters[0]` is safe.
+    #[test]
+    fn becalmed_monster_uses_calm_tint() {
+        let mut g_normal = Game::new(1);
+        assert!(!g_normal.monsters.is_empty(), "fixture assumption: seed 1 depth 1 has a monster");
+        let (mx, my) = (g_normal.monsters[0].x, g_normal.monsters[0].y);
+        let normal_kind = g_normal.monsters[0].kind;
+        g_normal.vis[idx(mx, my)] = true;
+        g_normal.seen[idx(mx, my)] = true;
+        let mut cells_normal = vec![BLANK; CELLS];
+        render_cells(&g_normal, Screen::Play, &mut cells_normal);
+        let normal_fg = cells_normal[my as usize * COLS + mx as usize].fg;
+        let (_, _, _, kind_color, _) = Monster::stats(normal_kind);
+        assert_eq!(normal_fg, kind_color, "non-calm monster renders its kind's own color");
+
+        let mut g_calm = Game::new(1);
+        g_calm.monsters[0].calm = true;
+        g_calm.vis[idx(mx, my)] = true;
+        g_calm.seen[idx(mx, my)] = true;
+        let mut cells_calm = vec![BLANK; CELLS];
+        render_cells(&g_calm, Screen::Play, &mut cells_calm);
+        let calm_fg = cells_calm[my as usize * COLS + mx as usize].fg;
+
+        assert_eq!(calm_fg, PAL_CALM_TINT, "calm monster renders the documented tint exactly");
+        assert_ne!(calm_fg, normal_fg, "calm tint must differ from the normal kind color");
+    }
+
+    /// Title-screen legend lines (incl. the ACT chord addition, batch 5 task
+    /// 3) must fit the 80-col grid with margin to spare for `put_centered`'s
+    /// centering — same 78-col discipline the log-row flavor lines use
+    /// (`main.rs::theme_lines_fit_log_row`), even though these are drawn via
+    /// `put_centered` rather than `Game::log`.
+    #[test]
+    fn title_legend_fits_78_cols() {
+        let lines = [
+            "Move: arrows / wasd / hjkl    Wait: .    Talk: t+dir",
+            "Save: F5    World info: F1    Quit: q",
+            "[R] retry this world  [N] new world  [Q] quit",
+        ];
+        for line in lines {
+            assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
+        }
     }
 }

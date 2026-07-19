@@ -235,6 +235,17 @@ pub(crate) const PAL_LOG_FADE: [u32; 4] = [0x707070, 0x909090, 0xB0B0B0, 0xE0E0E
 pub(crate) const PAL_BAR_HP: u32 = 0x50C050;
 pub(crate) const PAL_BAR_TORCH: u32 = 0xE0A030;
 pub(crate) const PAL_BAR_EMPTY: u32 = 0x404040;
+/// Becalmed-monster tint (batch 5 task 3, frontend half of the Henson
+/// ruling): a fixed soft blue-gray, chosen over blending with the kind's own
+/// color (PAL_RAT/PAL_GOBLIN/PAL_OGRE are all warm — brown/green/red) so a
+/// calmed monster reads at a glance as "not a threat" regardless of which
+/// kind it was, the same way a status-effect tint works in most roguelikes.
+/// `render::render_play` substitutes this wholesale for the kind's stats
+/// color (not a blend) when `Monster::calm` is true, then applies the same
+/// `scale(_, pct)` light-tier dimming every other monster glyph gets — so at
+/// full light the rendered fg is this constant exactly, and it dims exactly
+/// like anything else does as the torch burns down.
+pub(crate) const PAL_CALM_TINT: u32 = 0x9AB0C0;
 
 // ---------- Vaults ----------
 /* Hand-authored rooms, stamped whole into a level by the "vault" channel.

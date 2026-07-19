@@ -158,9 +158,12 @@ fn set_timing(mut base: Termios, vmin: u8, vtime: u8) {
 /// (0=N,1=S,2=W,3=E) directly so callers don't re-derive it. `Restart` is
 /// the End screen's R (retry, same seed, byte 6 — save v2); `NewWorld` is
 /// its N (reroll, byte 5 — same meaning R used to have, see save v2's End-
-/// screen key change).
+/// screen key change). `Act` carries the apply_input ACT byte (7=N,8=S,9=W,
+/// 10=E — batch 5, the Henson ruling's `t`+direction chord, see
+/// `read_act_chord`) directly, same convention as `Move`.
 enum Input {
     Move(u8),
+    Act(u8),
     Wait,
     Restart,
     NewWorld,
@@ -217,7 +220,8 @@ fn read_escape_seq() -> Input {
 /// before returning. wasd/hjkl/arrows move, '.' waits, 'r' requests a retry
 /// (same seed) and 'n' a new world (reroll) — both are only acted on by the
 /// End screen, matching the minifb backend's R/N keys — 'q'/lone-ESC/Ctrl-C
-/// quit. Unknown bytes are ignored.
+/// quit, 't' begins the ACT chord (batch 5, see `read_act_chord`). Unknown
+/// bytes are ignored.
 fn read_input(raw: Termios) -> Input {
     let Some(b) = raw_read_byte() else { return Input::Quit }; // EOF (stdin closed)
     match b {
@@ -236,7 +240,50 @@ fn read_input(raw: Termios) -> Input {
         b'.' => Input::Wait,
         b'r' => Input::Restart,
         b'n' => Input::NewWorld,
+        b't' => read_act_chord(raw),
         _ => Input::Ignore,
+    }
+}
+
+/// ACT chord, second half (batch 5, DECISION.md item 3 — the Henson ruling:
+/// mercy is a verb and the verb is TALK). Called the instant a lone `t` byte
+/// is consumed by `read_input`; reads exactly one more input the same way
+/// `read_input` would (wasd/hjkl move directly, an ESC sequence via the same
+/// `read_escape_seq` lookahead `read_input`'s own ESC arm uses, so arrow
+/// keys complete the chord too) and resolves it to an ACT byte (7=N,8=S,9=
+/// W,10=E, mirroring the move bytes' direction order — see
+/// `Game::apply_input`'s vocabulary doc). ANY other byte — a non-direction
+/// key, a second `t`, EOF, or an escape sequence that isn't an arrow key
+/// (F1/F5/an unrecognized sequence/a lone-ESC timeout) — cancels the chord
+/// SILENTLY: `Input::Ignore`, no ACT byte, no fallback to that byte's usual
+/// meaning. This matches the task spec exactly ("any other byte cancels
+/// silently") and the "lone t with no direction does nothing and logs
+/// nothing" invariant: unlike the minifb backend (which polls all keys held
+/// this frame and can let an unrelated key like F5 still fire on top of
+/// disarming), the terminal backend consumes bytes one at a time, so
+/// "cancel" here means the consumed byte's usual action never happens
+/// either — there is no frame to inspect afterward.
+fn read_act_chord(raw: Termios) -> Input {
+    let Some(b) = raw_read_byte() else { return Input::Ignore }; // EOF cancels silently
+    let dir = match b {
+        0x1b => {
+            set_timing(raw, 0, 1);
+            let ev = read_escape_seq();
+            set_timing(raw, 1, 0);
+            match ev {
+                Input::Move(d) => Some(d),
+                _ => None, // F1/F5/unrecognized/timeout: cancel silently
+            }
+        }
+        b'w' | b'k' => Some(0),
+        b's' | b'j' => Some(1),
+        b'a' | b'h' => Some(2),
+        b'd' | b'l' => Some(3),
+        _ => None,
+    };
+    match dir {
+        Some(d) => Input::Act(d + 7),
+        None => Input::Ignore,
     }
 }
 
@@ -448,6 +495,16 @@ pub(crate) fn run(
                 match read_input(raw) {
                     Input::Quit => break,
                     Input::Move(b) => {
+                        input_log.push(b);
+                        attempt_log.push(b);
+                        game.apply_input(b);
+                        confirm_armed = false;
+                    }
+                    // ACT chord completion (batch 5 task 3): `b` is already
+                    // the resolved 7-10 byte (see `read_act_chord`) — same
+                    // input_log/attempt_log/apply_input/confirm_armed
+                    // discipline as a Move.
+                    Input::Act(b) => {
                         input_log.push(b);
                         attempt_log.push(b);
                         game.apply_input(b);
