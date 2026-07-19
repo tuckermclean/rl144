@@ -5,7 +5,8 @@
 // boundary between this engine and any frontend (window loop, replay, sim).
 
 use crate::content::{
-    KINDS, PAL_GOBLIN, PAL_OGRE, PAL_RAT, TONE_LINES, Theme, VAULTS, lore_line, theme_for,
+    KINDS, PAL_GOBLIN, PAL_OGRE, PAL_RAT, TALK_LINES, TONE_LINES, Theme, VAULTS, lore_line,
+    theme_for,
 };
 use crate::render::Facing;
 use crate::rng::{Rng, channel};
@@ -91,6 +92,21 @@ pub(crate) struct Monster {
     pub(crate) y: i32,
     pub(crate) kind: MKind,
     pub(crate) hp: i32,
+    /// ACTs received so far (batch 5, DECISION.md item 3 — the Henson
+    /// ruling: mercy is a verb and the verb is TALK). Counts toward
+    /// `Monster::act_threshold(kind)`; naturally capped there —
+    /// `Game::try_act_player`'s already-calm branch returns before ever
+    /// touching this field again. Hashed in `save::state_hash` (mercy is
+    /// run-defining state, unlike the presentation-only exclusion set
+    /// documented at `state_hash`).
+    pub(crate) regard: u8,
+    /// Becalmed (batch 5): set true on the ACT that crosses
+    /// `Monster::act_threshold`. A calm monster never attacks and never
+    /// chases — `Game::monsters_act` skips it outright, every turn,
+    /// forever after (the simplest deterministic becalmed behavior: it
+    /// stands). Bumping it swaps positions instead of attacking (see
+    /// `Game::try_move_player`). Hashed, same rationale as `regard`.
+    pub(crate) calm: bool,
 }
 
 impl Monster {
@@ -100,6 +116,20 @@ impl Monster {
             MKind::Rat => (3, 1, b'r', PAL_RAT, "rat"),
             MKind::Goblin => (6, 2, b'g', PAL_GOBLIN, "goblin"),
             MKind::Ogre => (13, 4, b'O', PAL_OGRE, "ogre"),
+        }
+    }
+
+    /// Number of ACTs (batch 5) a monster must receive before it becomes
+    /// calm. Rat 2 (small, quick to back down), goblin 3 (wary, takes
+    /// convincing), ogre 4 (slow and heavy, takes the longest to stand
+    /// down) — starting values per the batch-5 plan, tuned against the
+    /// pacifist gate (T2/`tests/pacifist-band.json`), never retuned by
+    /// feel alone.
+    pub(crate) fn act_threshold(kind: MKind) -> u8 {
+        match kind {
+            MKind::Rat => 2,
+            MKind::Goblin => 3,
+            MKind::Ogre => 4,
         }
     }
 }
@@ -156,6 +186,11 @@ pub(crate) struct Game {
     pub(crate) atk: i32,
     pub(crate) depth: u32,
     pub(crate) kills: u32,
+    /// Monsters becalmed via ACT (batch 5, DECISION.md item 3), incremented
+    /// once per monster the instant it crosses `Monster::act_threshold` —
+    /// mercy's counterpart to `kills`. Hashed by `save::state_hash` like
+    /// every other run-defining `u32` counter.
+    pub(crate) spared: u32,
     pub(crate) light: i32,
     /// Player turns taken: incremented once per `spend_turn` call (move
     /// onto floor, an attack swing, or a wait — see spend_turn). Hashed
@@ -182,11 +217,15 @@ pub(crate) struct Game {
     /// PRECEDING Game was in the instant before byte 6 fired.
     pub(crate) echo: Option<(i32, i32, u32)>,
     /// Direction the player last SUCCESSFULLY faced: updated in
-    /// `try_move_player` on both branches that actually take an action (a
-    /// landed move onto floor, and a landed attack swing) from the same
-    /// `(dx, dy)` those branches already receive as parameters — deriving
-    /// it costs no new RNG draw and no extra worldgen/spawns state. A wall
-    /// bump does NOT update it (that branch returns first). Defaults to
+    /// `try_move_player` on every branch that actually takes an action (a
+    /// landed move onto floor, a landed attack swing, or a becalmed-
+    /// monster swap) and in `try_act_player` on a landed ACT (whether the
+    /// target monster is calm already or not — both are directed
+    /// interactions with a monster) — all from the same `(dx, dy)` those
+    /// branches already receive as parameters, so deriving it costs no new
+    /// RNG draw and no extra worldgen/spawns state. A wall bump, or an ACT
+    /// at a wall/empty tile, does NOT update it (those branches return
+    /// first). Defaults to
     /// `Facing::S` (`Game::new`). `render::scene()` reads this for the
     /// player's `SceneEntity::facing`; monster facing is derived
     /// separately and needs no stored field (see
@@ -245,6 +284,7 @@ impl Game {
             atk: 3,
             depth: 1,
             kills: 0,
+            spared: 0,
             light: START_LIGHT,
             turns: 0,
             killer: None,
@@ -369,7 +409,14 @@ impl Game {
                                     _ => MKind::Ogre,
                                 };
                                 let (hp, ..) = Monster::stats(kind);
-                                self.monsters.push(Monster { x: tx, y: ty, kind, hp });
+                                self.monsters.push(Monster {
+                                    x: tx,
+                                    y: ty,
+                                    kind,
+                                    hp,
+                                    regard: 0,
+                                    calm: false,
+                                });
                             }
                             _ => {}
                         }
@@ -437,7 +484,7 @@ impl Game {
                     MKind::Ogre
                 };
                 let (hp, ..) = Monster::stats(kind);
-                self.monsters.push(Monster { x: mx, y: my, kind, hp });
+                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false });
             }
         }
         /* items: deep floors are a war of attrition, so supply scales too —
@@ -724,6 +771,21 @@ impl Game {
         }
         if let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) {
             self.facing = Facing::from_delta(dx, dy);
+            if self.monsters[mi].calm {
+                // Mercy's second economy lever (batch 5, DECISION.md item
+                // 3): bumping a becalmed monster SWAPS positions instead
+                // of attacking — it yields. Costs a turn like any move, no
+                // violence tax, no damage. Only `calm == true` swaps; a
+                // monster mid-being-persuaded (regard > 0 but not yet
+                // calm) still gets attacked below, unchanged.
+                let (ox, oy) = (self.px, self.py);
+                self.monsters[mi].x = ox;
+                self.monsters[mi].y = oy;
+                self.px = nx;
+                self.py = ny;
+                self.land_on_tile(nx, ny, None);
+                return;
+            }
             let dmg = self.atk + self.combat_rng.range(0, 3);
             let name = self.mob_name(self.monsters[mi].kind);
             self.monsters[mi].hp -= dmg;
@@ -739,32 +801,7 @@ impl Game {
             self.facing = Facing::from_delta(dx, dy);
             self.px = nx;
             self.py = ny;
-            if !self.spend_turn(0) {
-                return; // died in the dark: lose beats anything this tile offered
-            }
-            self.note_room_entry();
-            self.pickup();
-            match self.map[idx(nx, ny)] {
-                Tile::Stairs => {
-                    self.descend();
-                    return; // fresh level: monsters don't get a free hit
-                }
-                Tile::UpStairs => {
-                    if self.depth > 1 {
-                        self.ascend();
-                        return; // same courtesy on arrival upstairs
-                    }
-                    if self.has_amulet {
-                        self.won = true;
-                        self.log(String::from("You climb into daylight. You made it! [R] new run"));
-                        return;
-                    }
-                    self.log(String::from("The way out. You won't leave without the Amulet."));
-                }
-                _ => {}
-            }
-            self.monsters_act();
-            self.compute_fov();
+            self.land_on_tile(nx, ny, None);
             return;
         } else {
             return; // bumped a wall: no turn passes
@@ -775,7 +812,76 @@ impl Game {
         if !self.spend_turn(VIOLENCE_TAX) {
             return;
         }
-        self.monsters_act();
+        self.monsters_act(None);
+        self.compute_fov();
+    }
+
+    /// ACT: the mercy verb (batch 5, DECISION.md item 3 — the Henson
+    /// ruling: mercy is a verb and the verb is TALK). Input bytes 7-10
+    /// (`apply_input`) map to N/S/W/E, mirroring the move bytes' 0-3
+    /// direction order exactly. ACT at a wall or empty tile is a no-op, no
+    /// turn — same as a wall bump. ACT at a live monster costs a normal
+    /// turn (`spend_turn(0)`: no violence tax, talk is not violence) and
+    /// logs one `content::TALK_LINES` line keyed by the monster's kind and
+    /// how many ACTs it has now received (`Monster::regard`, capped at
+    /// `Monster::act_threshold`): the monster's first ACT (stage 0), a
+    /// later ACT still below threshold (stage 1), or the ACT that crosses
+    /// the threshold (stage 2 — the monster becomes `calm` and
+    /// `self.spared` counts it, exactly as `kills` counts a kill). The
+    /// monster just talked to does not get to attack THIS turn (it is
+    /// listening) — passed to `monsters_act` as a plain function
+    /// parameter (`stayed`), not a stored field: it exists only for the
+    /// one `monsters_act` call this method makes and is gone the instant
+    /// that call returns, so it can never leak into a later turn or into
+    /// `state_hash` (unlike `regard`/`calm`, which ARE hashed — see
+    /// `save::state_hash`). ACTing an already-calm monster logs one more
+    /// stage-2 line (same flavor_rng-picked variety) but costs no turn;
+    /// `regard` is naturally capped since this branch returns before ever
+    /// touching it again.
+    pub(crate) fn try_act_player(&mut self, dx: i32, dy: i32) {
+        self.fx_hit = None;
+        if self.dead || self.won {
+            return;
+        }
+        let (nx, ny) = (self.px + dx, self.py + dy);
+        if !in_map(nx, ny) {
+            return;
+        }
+        let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) else {
+            return; // ACT at a wall/empty tile: no-op, no turn
+        };
+        self.facing = Facing::from_delta(dx, dy);
+        let kind = self.monsters[mi].kind;
+        let name = self.mob_name(kind);
+        if self.monsters[mi].calm {
+            let v = self.flavor_rng.range(0, 2) as usize;
+            let line = TALK_LINES[kind as usize][2][v].replace("{M}", name);
+            self.log(line);
+            return; // no turn cost change; regard stays capped
+        }
+        let threshold = Monster::act_threshold(kind);
+        let before = self.monsters[mi].regard;
+        self.monsters[mi].regard = before.saturating_add(1);
+        let regard = self.monsters[mi].regard;
+        let became_calm = regard >= threshold;
+        let stage = if became_calm {
+            2
+        } else if before == 0 {
+            0
+        } else {
+            1
+        };
+        if became_calm {
+            self.monsters[mi].calm = true;
+            self.spared += 1;
+        }
+        let v = self.flavor_rng.range(0, 2) as usize;
+        let line = TALK_LINES[kind as usize][stage][v].replace("{M}", name);
+        self.log(line);
+        if !self.spend_turn(0) {
+            return; // died in the dark on a talk turn: lose beats anything else
+        }
+        self.monsters_act(Some(mi));
         self.compute_fov();
     }
 
@@ -789,7 +895,43 @@ impl Game {
         if !self.spend_turn(0) {
             return;
         }
-        self.monsters_act();
+        self.monsters_act(None);
+        self.compute_fov();
+    }
+
+    /// Shared tail for any player action that LANDS the player on
+    /// `(nx, ny)` — a normal move onto floor, or a becalmed-monster swap
+    /// (batch 5) — both of which spend a turn (no tax), fire room-entry/
+    /// pickup/stairs-transition handling, then resume monster turns and
+    /// refresh FOV. `stayed` is forwarded to `monsters_act` untouched (see
+    /// its doc comment); both call sites here pass `None` since neither a
+    /// move nor a swap is an ACT.
+    fn land_on_tile(&mut self, nx: i32, ny: i32, stayed: Option<usize>) {
+        if !self.spend_turn(0) {
+            return; // died in the dark: lose beats anything this tile offered
+        }
+        self.note_room_entry();
+        self.pickup();
+        match self.map[idx(nx, ny)] {
+            Tile::Stairs => {
+                self.descend();
+                return; // fresh level: monsters don't get a free hit
+            }
+            Tile::UpStairs => {
+                if self.depth > 1 {
+                    self.ascend();
+                    return; // same courtesy on arrival upstairs
+                }
+                if self.has_amulet {
+                    self.won = true;
+                    self.log(String::from("You climb into daylight. You made it! [R] new run"));
+                    return;
+                }
+                self.log(String::from("The way out. You won't leave without the Amulet."));
+            }
+            _ => {}
+        }
+        self.monsters_act(stayed);
         self.compute_fov();
     }
 
@@ -823,18 +965,41 @@ impl Game {
         }
     }
 
-    fn monsters_act(&mut self) {
+    /// `stayed`: the index (into `self.monsters` at the moment of the
+    /// call) of a monster that received an ACT THIS turn and so does not
+    /// get to attack this pass — it is listening, though it may still
+    /// move (see `Game::try_act_player`'s doc comment on why this is a
+    /// plain parameter and not a stored field). `None` from every call
+    /// site except `try_act_player`'s. Separate from, and secondary to,
+    /// `calm`: a becalmed monster is skipped outright below regardless of
+    /// `stayed` — `stayed` only matters for a monster mid-being-persuaded
+    /// (regard > 0, not yet calm).
+    fn monsters_act(&mut self, stayed: Option<usize>) {
         let (px, py) = (self.px, self.py);
         let mut attacks: Vec<(MKind, i32)> = Vec::new();
         for i in 0..self.monsters.len() {
+            if self.monsters[i].calm {
+                // Becalmed (batch 5): never attacks, never chases — the
+                // simplest deterministic option per the batch-5 plan's
+                // Design (decided) section is to stand. Skipped every
+                // turn, forever, once calm.
+                continue;
+            }
             let (mx, my) = (self.monsters[i].x, self.monsters[i].y);
             let dist = (px - mx).abs().max((py - my).abs());
             let sees = self.monster_sees_player(&self.monsters[i]);
             if dist == 1 && sees {
-                let (_, atk, _, _, _) = Monster::stats(self.monsters[i].kind);
-                let dmg = atk + self.combat_rng.range(0, 2);
-                attacks.push((self.monsters[i].kind, dmg));
-                continue;
+                if stayed == Some(i) {
+                    // Stayed swing (batch 5): listening this turn, no
+                    // attack — falls through to the movement code below
+                    // instead (it may still move; other monsters act
+                    // normally, so a crowd stays dangerous).
+                } else {
+                    let (_, atk, _, _, _) = Monster::stats(self.monsters[i].kind);
+                    let dmg = atk + self.combat_rng.range(0, 2);
+                    attacks.push((self.monsters[i].kind, dmg));
+                    continue;
+                }
             }
             let (dx, dy) = if sees {
                 ((px - mx).signum(), (py - my).signum())
@@ -876,6 +1041,13 @@ impl Game {
 }
 
 impl Game {
+    /// Input-byte vocabulary, 0-10 (save v3, batch 5): 0-4 move/wait (see
+    /// below), 5-6 are frontend/reconstruction-layer only (restart/retry —
+    /// handled in `save::replay`, never reach here), 7-10 = ACT-N/S/W/E,
+    /// direction order mirroring the move bytes exactly. Any other byte is
+    /// silently ignored (`_ => {}`) — this is the one place old logs (no
+    /// bytes 7-10) and this build's own bytes 5-6 both fall through
+    /// harmlessly.
     pub(crate) fn apply_input(&mut self, b: u8) {
         match b {
             0 => self.try_move_player(0, -1),
@@ -883,6 +1055,10 @@ impl Game {
             2 => self.try_move_player(-1, 0),
             3 => self.try_move_player(1, 0),
             4 => self.wait_turn(),
+            7 => self.try_act_player(0, -1),
+            8 => self.try_act_player(0, 1),
+            9 => self.try_act_player(-1, 0),
+            10 => self.try_act_player(1, 0),
             _ => {}
         }
     }

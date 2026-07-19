@@ -12,14 +12,23 @@ use crate::rng::{fnv_bytes, h64};
 // ---------- Save / replay: state is deltas (seed + input log) ----------
 /* A save is the original seed plus one byte per input; the world is
    reconstructed by replaying. Byte format, no serde:
-     "RL14" | version u8 (=1 or 2) | seed u64 LE | input bytes...
+     "RL14" | version u8 (=1, 2, or 3) | seed u64 LE | input bytes...
    Inputs: 0=N 1=S 2=W 3=E 4=wait 5=restart(reroll to a new seed)
-   6=retry(same seed, save v2 — see INPUT_RETRY). Tens of bytes per save.
-   `save_bytes` always writes v2; `parse_save` accepts v1 or v2 — a v1 log
-   only ever contains bytes 0-5, so it replays byte-identical either way
-   (see the `v1_save_replays_under_v2_parsing` test in main.rs). */
+   6=retry(same seed, save v2 — see INPUT_RETRY) 7=ACT-N 8=ACT-S 9=ACT-W
+   10=ACT-E (save v3, batch 5, DECISION.md item 3 — the Henson ruling;
+   direction order mirrors move bytes 0-3 exactly, see
+   `game::Game::apply_input`). Tens of bytes per save. `save_bytes` always
+   writes v3; `parse_save` accepts v1, v2, or v3 — a v1 or v2 log never
+   contains bytes 7-10 (ACT didn't exist yet), so it replays byte-identical
+   under v3 parsing either way (see the
+   `v1_save_replays_under_v3_parsing`/`v2_save_replays_under_v3_parsing`
+   tests in main.rs, and `make xhash`, whose fixture is a v1 blob). This is
+   a version bump rather than a silent superset precisely so an OLD binary
+   (whose own `parse_save` only ever accepted 1 or 2) REJECTS a v3 save
+   cleanly instead of silently ignoring ACT bytes and diverging from what
+   was actually played. */
 const SAVE_MAGIC: &[u8; 4] = b"RL14";
-const SAVE_VERSION: u8 = 2;
+const SAVE_VERSION: u8 = 3;
 pub(crate) const INPUT_RESTART: u8 = 5;
 /// Save v2 (batch 4 task 2, DECISION.md sign-off item 2): reconstruct
 /// `Game::new(g.seed)` — same world, next attempt — instead of rerolling
@@ -38,7 +47,7 @@ pub(crate) fn save_bytes(seed0: u64, inputs: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn parse_save(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
-    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || (bytes[4] != 1 && bytes[4] != 2) {
+    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=3).contains(&bytes[4]) {
         return None;
     }
     let mut s = [0u8; 8];
@@ -110,6 +119,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         g.has_amulet as u64,
         g.dead as u64,
         g.won as u64,
+        g.spared as u64,
         g.combat_rng.0,
         g.ai_rng.0,
         g.flavor_rng.0,
@@ -122,7 +132,13 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
             h = fnv_bytes(h, &[*t as u8]);
         }
         for m in monsters {
-            h = fnv_bytes(h, &[m.x as u8, m.y as u8, m.kind as u8, m.hp as u8]);
+            // regard/calm (batch 5, DECISION.md item 3) are hashed — mercy
+            // is run-defining state, not presentation-only like the
+            // killer/echo/facing/fx_hit exclusion set below.
+            h = fnv_bytes(
+                h,
+                &[m.x as u8, m.y as u8, m.kind as u8, m.hp as u8, m.regard, m.calm as u8],
+            );
         }
         for it in items {
             h = fnv_bytes(h, &[it.x as u8, it.y as u8, it.kind as u8]);

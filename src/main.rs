@@ -30,7 +30,7 @@ use rng::h64;
 use save::{parse_save, replay, state_hash};
 
 #[cfg(test)]
-use content::{GHOST_LABELS, KINDS, THEMES, TONE_LINES, VAULTS, ghost_label_idx};
+use content::{GHOST_LABELS, KINDS, TALK_LINES, THEMES, TONE_LINES, VAULTS, ghost_label_idx};
 #[cfg(test)]
 use game::{MKind, Monster, TIER_WARNINGS, Tile, idx, in_map};
 #[cfg(test)]
@@ -285,6 +285,27 @@ mod tests {
         }
     }
 
+    /// Every TALK_LINES template (batch 5, DECISION.md item 3 — the Henson
+    /// ruling) must fit the 78-char log row for EVERY theme's mob-name
+    /// filling — same length-test discipline as `theme_lines_fit_log_row`
+    /// above, just keyed by `[MKind as usize]` into `Theme::mobs` instead
+    /// of a flat slot table. `TALK_LINES`'s outer index is kind (rat=0,
+    /// goblin=1, ogre=2 — `MKind`'s declared order), matching
+    /// `Theme::mobs`'s index exactly (see `Game::mob_name`).
+    #[test]
+    fn talk_lines_fit_log_row() {
+        for (ki, kind_lines) in TALK_LINES.iter().enumerate() {
+            for stage_lines in kind_lines {
+                for line in stage_lines {
+                    for t in &THEMES {
+                        let filled = line.replace("{M}", t.mobs[ki]);
+                        assert!(filled.len() <= 78, "too long ({}): {}", filled.len(), filled);
+                    }
+                }
+            }
+        }
+    }
+
     /// A turn burns 1 light, 2 while carrying the amulet; walls burn nothing.
     #[test]
     fn light_burn_rates() {
@@ -317,7 +338,14 @@ mod tests {
         g.monsters.clear();
         // High hp so the swing doesn't kill it — isolates the tax from the
         // kill path (that's covered by the darkness-death test below).
-        g.monsters.push(Monster { x: px + dx, y: py + dy, kind: MKind::Ogre, hp: 999 });
+        g.monsters.push(Monster {
+            x: px + dx,
+            y: py + dy,
+            kind: MKind::Ogre,
+            hp: 999,
+            regard: 0,
+            calm: false,
+        });
         g.try_move_player(dx, dy);
         assert_eq!(g.light, l1 - 2, "bump-attack should burn 1 turn + 1 violence tax = 2 light");
     }
@@ -337,7 +365,14 @@ mod tests {
             })
             .unwrap();
         g.monsters.clear();
-        g.monsters.push(Monster { x: px + dx, y: py + dy, kind: MKind::Rat, hp: 1 }); // guaranteed 1-hit kill
+        g.monsters.push(Monster {
+            x: px + dx,
+            y: py + dy,
+            kind: MKind::Rat,
+            hp: 1, // guaranteed 1-hit kill
+            regard: 0,
+            calm: false,
+        });
         g.light = 2; // 1 (turn) + 1 (tax) lands exactly on 0
         g.try_move_player(dx, dy);
         assert!(g.dead, "should die in the dark from the violence tax");
@@ -367,6 +402,169 @@ mod tests {
         g.try_move_player(-dx, -dy); // back onto '<' with light 1 -> 0
         assert!(g.dead, "should die in the dark");
         assert!(!g.won, "lose is checked before win");
+    }
+
+    /// Stayed swing (batch 5, DECISION.md item 3): a monster that received
+    /// an ACT this turn does not attack this turn (it is listening) — a
+    /// second, un-ACTed monster adjacent and seeing the player attacks
+    /// normally the SAME turn, proving the mercy is per-monster, not a
+    /// blanket "combat is off" toggle (crowds stay dangerous).
+    #[test]
+    fn stayed_swing_no_damage_this_turn() {
+        let mut g = Game::new(21);
+        g.monsters.clear();
+        // Find a floor tile with at least two open (non-wall) axis
+        // neighbors, so two monsters can flank the player.
+        let mut spot = None;
+        'outer: for y in 1..(game::MAP_H as i32 - 1) {
+            for x in 1..(game::COLS as i32 - 1) {
+                if g.map[idx(x, y)] != Tile::Floor {
+                    continue;
+                }
+                let dirs: Vec<(i32, i32)> = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .into_iter()
+                    .filter(|&(dx, dy)| {
+                        in_map(x + dx, y + dy) && g.map[idx(x + dx, y + dy)] != Tile::Wall
+                    })
+                    .collect();
+                if dirs.len() >= 2 {
+                    spot = Some((x, y, dirs));
+                    break 'outer;
+                }
+            }
+        }
+        let (px, py, dirs) = spot.expect("map should have a floor tile with 2 open neighbors");
+        g.px = px;
+        g.py = py;
+        let (adx, ady) = dirs[0];
+        let (bdx, bdy) = dirs[1];
+        g.monsters.push(Monster {
+            x: px + adx,
+            y: py + ady,
+            kind: MKind::Rat,
+            hp: 3,
+            regard: 0,
+            calm: false,
+        });
+        g.monsters.push(Monster {
+            x: px + bdx,
+            y: py + bdy,
+            kind: MKind::Goblin,
+            hp: 6,
+            regard: 0,
+            calm: false,
+        });
+        let hp0 = g.hp;
+        g.try_act_player(adx, ady); // ACT the rat: regard 0->1, threshold 2, not yet calm
+        let rat = g.monsters.iter().find(|m| m.kind == MKind::Rat).unwrap();
+        assert_eq!(rat.regard, 1, "the ACTed rat's regard should have incremented");
+        assert!(!rat.calm, "one ACT (of 2) should not yet calm a rat");
+        assert!(
+            g.hp < hp0,
+            "the un-ACTed adjacent goblin should still attack this same turn"
+        );
+    }
+
+    /// Becalm threshold + swap-on-bump (batch 5, DECISION.md item 3): a
+    /// rat (threshold 2) is not calm after one ACT, becomes calm (and
+    /// `spared` increments) on the second, and bumping a calmed monster
+    /// swaps positions — no damage, no violence tax — instead of attacking.
+    #[test]
+    fn becalm_threshold_and_swap_on_bump() {
+        let mut g = Game::new(5);
+        g.monsters.clear();
+        let (px, py) = (g.px, g.py);
+        let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                in_map(px + dx, py + dy) && g.map[idx(px + dx, py + dy)] != Tile::Wall
+            })
+            .unwrap();
+        g.monsters.push(Monster {
+            x: px + dx,
+            y: py + dy,
+            kind: MKind::Rat,
+            hp: 3,
+            regard: 0,
+            calm: false,
+        });
+        let spared0 = g.spared;
+
+        g.try_act_player(dx, dy); // regard 0->1: below threshold 2
+        assert!(!g.monsters[0].calm);
+        assert_eq!(g.spared, spared0);
+
+        g.try_act_player(dx, dy); // regard 1->2: threshold reached
+        assert!(g.monsters[0].calm, "the rat should be calm after 2 ACTs");
+        assert_eq!(g.spared, spared0 + 1, "spared must increment exactly once, on the crossing");
+
+        let hp_before = g.monsters[0].hp;
+        let (mx, my) = (g.monsters[0].x, g.monsters[0].y);
+        let (old_px, old_py) = (g.px, g.py);
+        g.try_move_player(dx, dy); // bump the now-calm rat: swap, not attack
+        assert_eq!(g.monsters[0].hp, hp_before, "a swap must not damage the calmed monster");
+        assert_eq!((g.px, g.py), (mx, my), "the player takes the monster's old tile");
+        assert_eq!(
+            (g.monsters[0].x, g.monsters[0].y),
+            (old_px, old_py),
+            "the monster takes the player's old tile"
+        );
+    }
+
+    /// `spared` is hashed (batch 5, DECISION.md item 3): two otherwise-
+    /// identical games diverge in `state_hash` the instant `spared` differs
+    /// — the same pattern `state_hash`'s own doc comment uses to justify
+    /// what's IN the hash vs. the presentation-only exclusion set.
+    #[test]
+    fn spared_is_hashed() {
+        let a = Game::new(9);
+        let b = Game::new(9);
+        assert_eq!(state_hash(&a), state_hash(&b));
+        let mut a2 = Game::new(9);
+        a2.spared = 1;
+        assert_ne!(state_hash(&a2), state_hash(&b), "spared must be part of state_hash");
+    }
+
+    /// Per-monster `regard`/`calm` are hashed too (batch 5): mutate either
+    /// field on one live monster and the hash must move, proving
+    /// `save::state_hash`'s per-monster byte list actually includes them
+    /// (not just the top-level `spared` counter).
+    #[test]
+    fn monster_regard_and_calm_are_hashed() {
+        let mut a = Game::new(9);
+        let b = Game::new(9);
+        assert_eq!(state_hash(&a), state_hash(&b));
+        assert!(!a.monsters.is_empty(), "depth 1 of seed 9 should spawn at least one monster");
+
+        a.monsters[0].regard = 1;
+        assert_ne!(state_hash(&a), state_hash(&b), "regard must be part of state_hash");
+
+        a.monsters[0].regard = 0;
+        assert_eq!(state_hash(&a), state_hash(&b), "hash should return once regard reverts");
+        a.monsters[0].calm = true;
+        assert_ne!(state_hash(&a), state_hash(&b), "calm must be part of state_hash");
+    }
+
+    /// ACT determinism + replay round-trip (batch 5, DECISION.md item 3):
+    /// a scripted log mixing move/wait/ACT bytes (0-4, 7-10) replays to an
+    /// identical `state_hash` every time — the same determinism proof
+    /// `save_replay_roundtrip` makes for the pre-mercy vocabulary, now
+    /// covering the new bytes.
+    #[test]
+    fn act_bytes_replay_deterministic() {
+        let seed0 = 88u64;
+        let mut script = channel(seed0, &["test", "act_script"]);
+        let mut log: Vec<u8> = Vec::new();
+        for _ in 0..500 {
+            // 0..=4 move/wait, 7..=10 ACT-N/S/W/E — skip 5/6, which are
+            // reconstruction-layer bytes handled outside apply_input.
+            let roll = script.range(0, 9) as u8;
+            let b = if roll < 5 { roll } else { roll + 2 };
+            log.push(b);
+        }
+        let a = replay(seed0, &log);
+        let b = replay(seed0, &log);
+        assert_eq!(state_hash(&a), state_hash(&b));
     }
 
     /// Play a scripted run live, save, replay the save: identical hashes.
@@ -404,15 +602,16 @@ mod tests {
         assert!(state_hash(&c) != state_hash(&a) || (c.px, c.py) == (a.px, a.py));
     }
 
-    /// Save v2 back-compat (DECISION.md sign-off item 2): a v1-versioned
-    /// byte blob (which by construction never contains byte 6 — INPUT_RETRY
-    /// didn't exist yet) parses under today's v2-aware `parse_save` and
-    /// replays byte-identically to the same log fed straight to `replay`.
+    /// Save back-compat (DECISION.md sign-off item 2; extended to v3 by
+    /// batch 5): a v1-versioned byte blob (which by construction never
+    /// contains byte 6 or bytes 7-10 — neither INPUT_RETRY nor ACT existed
+    /// yet) parses under today's v3-aware `parse_save` and replays byte-
+    /// identically to the same log fed straight to `replay`.
     /// `tests/fixtures/ref.sav` (used by `make xhash`) is itself exactly
     /// such a v1 blob, containing a byte 5 — this test is the unit-level
     /// proof that the case `make xhash` exercises end-to-end still works.
     #[test]
-    fn v1_save_replays_under_v2_parsing() {
+    fn v1_save_replays_under_v3_parsing() {
         let seed0 = 123u64;
         let log = vec![0u8, 1, 2, 3, 4, INPUT_RESTART, 0, 1, 2, 3, 4];
         let mut v1_bytes = Vec::new();
@@ -428,6 +627,49 @@ mod tests {
         let from_v1 = replay(s, &parsed_log);
         let direct = replay(seed0, &log);
         assert_eq!(state_hash(&from_v1), state_hash(&direct));
+    }
+
+    /// Save v2 back-compat, same proof as the v1 test above but for a
+    /// v2-versioned blob that also carries a byte 6 (INPUT_RETRY, which v2
+    /// introduced but a v1 blob could never contain) — a v2 log still
+    /// never contains bytes 7-10 (ACT didn't exist until save v3, batch 5),
+    /// so it too must replay byte-identically under today's parser.
+    #[test]
+    fn v2_save_replays_under_v3_parsing() {
+        let seed0 = 321u64;
+        let log = vec![0u8, 1, INPUT_RETRY, 2, 3, 4];
+        let mut v2_bytes = Vec::new();
+        v2_bytes.extend_from_slice(b"RL14");
+        v2_bytes.push(2); // v2
+        v2_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v2_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v2_bytes).expect("v2 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v2 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v2), state_hash(&direct));
+    }
+
+    /// `save_bytes` writes the current version (3, batch 5) and a byte-4
+    /// version outside 1..=3 is rejected by `parse_save` — the "old binary
+    /// must reject a v3 save cleanly" half of the save-v3 rationale
+    /// (game.rs's `apply_input` handling ACT bytes 7-10 is the other half).
+    #[test]
+    fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
+        let bytes = save_bytes(7, &[0, 1, 2]);
+        assert_eq!(bytes[4], 3, "save_bytes must write the current version");
+        assert!(parse_save(&bytes).is_some());
+
+        let mut future = bytes.clone();
+        future[4] = 4;
+        assert!(parse_save(&future).is_none(), "an unknown version must be rejected");
+
+        let mut zero = bytes;
+        zero[4] = 0;
+        assert!(parse_save(&zero).is_none(), "version 0 must be rejected");
     }
 
     /// Retry byte (6, save v2): a log with moves, a retry, then more moves

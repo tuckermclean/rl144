@@ -144,6 +144,73 @@ pub(crate) fn lore_line(seed: u64, depth: u32, tier: usize) -> String {
     t.lore[tier].replace("{A}", t.slots[slots[tier]])
 }
 
+/* Mercy as talk (batch 5, DECISION.md item 3 — the Henson ruling: "if you
+   could talk to a rat, you could give a rat mercy"). Each ACT (input bytes
+   7-10, game.rs `Game::try_act_player`) draws one line here, keyed by
+   `[MKind as usize][stage]` — stage 0 = the monster's first ACT, 1 = a
+   later ACT before it calms, 2 = the ACT that crosses
+   `Monster::act_threshold` (also reused, unchanged, for any further ACT on
+   an already-calm monster). Two variants per cell, picked via
+   `flavor_rng` — same per-run, replay-safe channel and the same
+   `TONE_LINES`-style variant-array shape as this file's other flavor
+   tables, just with an extra (kind) dimension. `{M}` fills from the
+   theme's own mob name for that kind (`Theme::mobs[kind as usize]`) — the
+   only slot, so a monster is always named in its own theme's voice.
+   Register, low tier to high: rats are simple, small, quick to flinch;
+   goblins are wary, visibly weighing you; ogres are slow and heavy, even
+   when they yield. Grounding rule (same as THEMES/TONE_LINES): a line may
+   only voice want/fear about things the engine proves — the dark, your
+   torch, its patch of the dungeon — never an invented event, never a
+   promise the engine can't keep. Length-tested (`talk_lines_fit_log_row`
+   in main.rs) across every theme's mob-name filling. */
+pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
+    // rat
+    [
+        [
+            "The {M} flinches from your torch and does not bite.",
+            "The {M} freezes, small and shaking, and does not run.",
+        ],
+        [
+            "The {M} still won't near the torch, but stays put.",
+            "The {M} watches you, still too scared to bite again.",
+        ],
+        [
+            "The {M} goes still. It won't cross you again.",
+            "The {M} settles, calmer than the dark behind it.",
+        ],
+    ],
+    // goblin
+    [
+        [
+            "The {M} lowers its blade, watching your torch, not you.",
+            "The {M} pauses mid-step, weighing the light in your hand.",
+        ],
+        [
+            "The {M} is still weighing whether the dark is worse than you.",
+            "The {M} keeps its distance, still deciding about you.",
+        ],
+        [
+            "The {M} steps back. It has chosen you over the dark.",
+            "The {M} lowers its guard for good. You are not its enemy now.",
+        ],
+    ],
+    // ogre
+    [
+        [
+            "The {M} stops mid-swing, breathing slow in the torchlight.",
+            "The {M} lowers one fist, unhurried, and studies your torch.",
+        ],
+        [
+            "The {M} still hasn't swung again. It is thinking, slowly.",
+            "The {M} shifts its weight, in no hurry to fight you now.",
+        ],
+        [
+            "The {M} lowers its fists and turns from the dark behind it.",
+            "The {M} settles, heavy and calm, and stands down for good.",
+        ],
+    ],
+];
+
 // ---------- Palette ----------
 /* Every color literal used by game.rs/render.rs/the backends lives here as
    a named const, so there is one source of truth for "what color is a
