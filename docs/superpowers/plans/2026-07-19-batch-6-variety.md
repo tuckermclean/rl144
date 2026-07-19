@@ -32,6 +32,19 @@ adopted LATER with the NPC cast — not this batch.*
   Solver: root-world reachability model UNCHANGED (portals never replace stairs, never gate the
   win path; transit needs wait, so BFS routing is untouched). Sims: bots never transit —
   document as policy; a portal-diving policy is future work.
+- **Authored-floor destinations (human addition 2026-07-19).** A portal's destination is an
+  enum: `Dest::World(u64)` (derived seed, as above) or `Dest::Floor(u8)` (index into a new
+  `AUTHORED_FLOORS` const table in content.rs — hand-built single-level maps in an extended
+  vault-style ASCII legend: `#` wall, `.` floor, `<` return portal, plus the standard item/
+  monster/lore chars; full-map size up to 80x25, smaller maps centered and wall-padded).
+  Which kind: worldgen-channel roll per portal (~1/3 authored when any floors exist). Authored
+  floors are singular places (same floor reachable from different worlds is the SAME floor —
+  world map keyed by a WorldId enum {Seed(u64), Floor(u8)}; its visited state persists like
+  any level). No depths, no stairs, no amulet; the `<` returns to the source portal. Their
+  describe-line uses an authored name from the table ("beyond it: <name>"), grounded. Ship 2
+  modest starter floors this batch (one quiet lore shrine, one small hazard/loot room) —
+  the heavy authoring belongs to the future NPC-cast batch. Floor content draws NOTHING from
+  RNG (pure const); monsters/items on floors are hashed state once instantiated.
 - **One seal: the keyed stair** (MOVED to T2 scope alongside vaults). On depths 3-5 (worldgen channel roll, ~1/2 of those depths),
   the down-stairs is sealed: walking onto `>` without the key logs a themed refusal line and
   costs nothing. A key item (`IKind::Key`, glyph `k`) spawns via the spawns channel in a
@@ -70,14 +83,15 @@ adopted LATER with the NPC cast — not this batch.*
 
 ## Tasks
 
-**T1 — portals + multi-world state** (game.rs/content.rs/save.rs/headless.rs/render.rs).
+**T1 — portals + multi-world state + authored floors** (game.rs/content.rs/save.rs/headless.rs/render.rs).
 Tests: derived destination determinism; transit-on-wait only (walk-over logs, never transits);
 round trip source->portal-world->back restores the source level exactly; light/kills/amulet
 global across worlds; state_hash spans visited worlds; replay determinism across a multi-world
 input log; root win/amulet unaffected; solver untouched (assert same budgets as pre-portal on
 a seed sample... budgets shift only from placement draws changing layouts — solver RE-BASELINE
 expected from the MAJOR itself, do it here with full comment). Dump glyph `*`; describe-line
-grounded + <=78 chars.
+grounded + <=78 chars. Authored-floor tests: legend well-formedness (bordered, return `<`
+present, legal chars); floor round-trip persistence; same-floor-from-two-worlds shares state.
 **T2 — pits + blocks + 2 new vaults + keyed stair seal** (game.rs/content.rs/headless.rs).
 Keyed seal exactly as the Design bullet (solver models the key detour — budget += route via
 key on sealed depths; second solver re-baseline folds into T4's final numbers). Tests:
