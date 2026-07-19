@@ -470,7 +470,7 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
     // PAL_CALM_TINT wholesale in place of the kind's own stats color — see
     // that const's doc comment for why a fixed tint rather than a blend.
     // Impossible in a fresh game (Monster::calm starts false, only set by
-    // Game::try_act_player), so this branch never fires for a turn-0 render
+    // Game::try_talk_player), so this branch never fires for a turn-0 render
     // and frame goldens are untouched.
     for m in &g.monsters {
         if g.vis[idx(m.x, m.y)] {
@@ -793,7 +793,7 @@ mod tests {
         assert_ne!(calm_fg, normal_fg, "calm tint must differ from the normal kind color");
     }
 
-    /// Title-screen legend lines (incl. the ACT chord addition, batch 5 task
+    /// Title-screen legend lines (incl. the talk chord addition, batch 5 task
     /// 3) must fit the 80-col grid with margin to spare for `put_centered`'s
     /// centering — same 78-col discipline the log-row flavor lines use
     /// (`main.rs::theme_lines_fit_log_row`), even though these are drawn via

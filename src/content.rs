@@ -145,11 +145,11 @@ pub(crate) fn lore_line(seed: u64, depth: u32, tier: usize) -> String {
 }
 
 /* Mercy as talk (batch 5, DECISION.md item 3 — the Henson ruling: "if you
-   could talk to a rat, you could give a rat mercy"). Each ACT (input bytes
-   7-10, game.rs `Game::try_act_player`) draws one line here, keyed by
-   `[MKind as usize][stage]` — stage 0 = the monster's first ACT, 1 = a
-   later ACT before it calms, 2 = the ACT that crosses
-   `Monster::act_threshold` (also reused, unchanged, for any further ACT on
+   could talk to a rat, you could give a rat mercy"). Each talk (input bytes
+   7-10, game.rs `Game::try_talk_player`) draws one line here, keyed by
+   `[MKind as usize][stage]` — stage 0 = the monster's first talk, 1 = a
+   later talk before it calms, 2 = the talk that crosses
+   `Monster::talk_threshold` (also reused, unchanged, for any further talk on
    an already-calm monster). Two variants per cell, picked via
    `flavor_rng` — same per-run, replay-safe channel and the same
    `TONE_LINES`-style variant-array shape as this file's other flavor

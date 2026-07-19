@@ -92,16 +92,16 @@ pub(crate) struct Monster {
     pub(crate) y: i32,
     pub(crate) kind: MKind,
     pub(crate) hp: i32,
-    /// ACTs received so far (batch 5, DECISION.md item 3 — the Henson
+    /// Talks received so far (batch 5, DECISION.md item 3 — the Henson
     /// ruling: mercy is a verb and the verb is TALK). Counts toward
-    /// `Monster::act_threshold(kind)`; naturally capped there —
-    /// `Game::try_act_player`'s already-calm branch returns before ever
+    /// `Monster::talk_threshold(kind)`; naturally capped there —
+    /// `Game::try_talk_player`'s already-calm branch returns before ever
     /// touching this field again. Hashed in `save::state_hash` (mercy is
     /// run-defining state, unlike the presentation-only exclusion set
     /// documented at `state_hash`).
     pub(crate) regard: u8,
-    /// Becalmed (batch 5): set true on the ACT that crosses
-    /// `Monster::act_threshold`. A calm monster never attacks and never
+    /// Becalmed (batch 5): set true on the talk that crosses
+    /// `Monster::talk_threshold`. A calm monster never attacks and never
     /// chases — `Game::monsters_act` skips it outright, every turn,
     /// forever after (the simplest deterministic becalmed behavior: it
     /// stands). Bumping it swaps positions instead of attacking (see
@@ -119,13 +119,13 @@ impl Monster {
         }
     }
 
-    /// Number of ACTs (batch 5) a monster must receive before it becomes
+    /// Number of talks (batch 5) a monster must receive before it becomes
     /// calm. Rat 2 (small, quick to back down), goblin 3 (wary, takes
     /// convincing), ogre 4 (slow and heavy, takes the longest to stand
     /// down) — starting values per the batch-5 plan, tuned against the
     /// pacifist gate (T2/`tests/pacifist-band.json`), never retuned by
     /// feel alone.
-    pub(crate) fn act_threshold(kind: MKind) -> u8 {
+    pub(crate) fn talk_threshold(kind: MKind) -> u8 {
         match kind {
             MKind::Rat => 2,
             MKind::Goblin => 3,
@@ -186,8 +186,8 @@ pub(crate) struct Game {
     pub(crate) atk: i32,
     pub(crate) depth: u32,
     pub(crate) kills: u32,
-    /// Monsters becalmed via ACT (batch 5, DECISION.md item 3), incremented
-    /// once per monster the instant it crosses `Monster::act_threshold` —
+    /// Monsters becalmed via talk (batch 5, DECISION.md item 3), incremented
+    /// once per monster the instant it crosses `Monster::talk_threshold` —
     /// mercy's counterpart to `kills`. Hashed by `save::state_hash` like
     /// every other run-defining `u32` counter.
     pub(crate) spared: u32,
@@ -219,11 +219,11 @@ pub(crate) struct Game {
     /// Direction the player last SUCCESSFULLY faced: updated in
     /// `try_move_player` on every branch that actually takes an action (a
     /// landed move onto floor, a landed attack swing, or a becalmed-
-    /// monster swap) and in `try_act_player` on a landed ACT (whether the
+    /// monster swap) and in `try_talk_player` on a landed talk (whether the
     /// target monster is calm already or not — both are directed
     /// interactions with a monster) — all from the same `(dx, dy)` those
     /// branches already receive as parameters, so deriving it costs no new
-    /// RNG draw and no extra worldgen/spawns state. A wall bump, or an ACT
+    /// RNG draw and no extra worldgen/spawns state. A wall bump, or a talk
     /// at a wall/empty tile, does NOT update it (those branches return
     /// first). Defaults to
     /// `Facing::S` (`Game::new`). `render::scene()` reads this for the
@@ -816,16 +816,16 @@ impl Game {
         self.compute_fov();
     }
 
-    /// ACT: the mercy verb (batch 5, DECISION.md item 3 — the Henson
+    /// Talk: the mercy verb (batch 5, DECISION.md item 3 — the Henson
     /// ruling: mercy is a verb and the verb is TALK). Input bytes 7-10
     /// (`apply_input`) map to N/S/W/E, mirroring the move bytes' 0-3
-    /// direction order exactly. ACT at a wall or empty tile is a no-op, no
-    /// turn — same as a wall bump. ACT at a live monster costs a normal
-    /// turn (`spend_turn(0)`: no violence tax, talk is not violence) and
-    /// logs one `content::TALK_LINES` line keyed by the monster's kind and
-    /// how many ACTs it has now received (`Monster::regard`, capped at
-    /// `Monster::act_threshold`): the monster's first ACT (stage 0), a
-    /// later ACT still below threshold (stage 1), or the ACT that crosses
+    /// direction order exactly. A talk at a wall or empty tile is a no-op,
+    /// no turn — same as a wall bump. A talk at a live monster costs a
+    /// normal turn (`spend_turn(0)`: no violence tax, talk is not violence)
+    /// and logs one `content::TALK_LINES` line keyed by the monster's kind
+    /// and how many talks it has now received (`Monster::regard`, capped at
+    /// `Monster::talk_threshold`): the monster's first talk (stage 0), a
+    /// later talk still below threshold (stage 1), or the talk that crosses
     /// the threshold (stage 2 — the monster becomes `calm` and
     /// `self.spared` counts it, exactly as `kills` counts a kill). The
     /// monster just talked to does not get to attack THIS turn (it is
@@ -834,11 +834,11 @@ impl Game {
     /// one `monsters_act` call this method makes and is gone the instant
     /// that call returns, so it can never leak into a later turn or into
     /// `state_hash` (unlike `regard`/`calm`, which ARE hashed — see
-    /// `save::state_hash`). ACTing an already-calm monster logs one more
+    /// `save::state_hash`). Talking to an already-calm monster logs one more
     /// stage-2 line (same flavor_rng-picked variety) but costs no turn;
     /// `regard` is naturally capped since this branch returns before ever
     /// touching it again.
-    pub(crate) fn try_act_player(&mut self, dx: i32, dy: i32) {
+    pub(crate) fn try_talk_player(&mut self, dx: i32, dy: i32) {
         self.fx_hit = None;
         if self.dead || self.won {
             return;
@@ -848,7 +848,7 @@ impl Game {
             return;
         }
         let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) else {
-            return; // ACT at a wall/empty tile: no-op, no turn
+            return; // talk at a wall/empty tile: no-op, no turn
         };
         self.facing = Facing::from_delta(dx, dy);
         let kind = self.monsters[mi].kind;
@@ -859,7 +859,7 @@ impl Game {
             self.log(line);
             return; // no turn cost change; regard stays capped
         }
-        let threshold = Monster::act_threshold(kind);
+        let threshold = Monster::talk_threshold(kind);
         let before = self.monsters[mi].regard;
         self.monsters[mi].regard = before.saturating_add(1);
         let regard = self.monsters[mi].regard;
@@ -905,7 +905,7 @@ impl Game {
     /// pickup/stairs-transition handling, then resume monster turns and
     /// refresh FOV. `stayed` is forwarded to `monsters_act` untouched (see
     /// its doc comment); both call sites here pass `None` since neither a
-    /// move nor a swap is an ACT.
+    /// move nor a swap is a talk.
     fn land_on_tile(&mut self, nx: i32, ny: i32, stayed: Option<usize>) {
         if !self.spend_turn(0) {
             return; // died in the dark: lose beats anything this tile offered
@@ -966,11 +966,11 @@ impl Game {
     }
 
     /// `stayed`: the index (into `self.monsters` at the moment of the
-    /// call) of a monster that received an ACT THIS turn and so does not
+    /// call) of a monster that received a talk THIS turn and so does not
     /// get to attack this pass — it is listening, though it may still
-    /// move (see `Game::try_act_player`'s doc comment on why this is a
+    /// move (see `Game::try_talk_player`'s doc comment on why this is a
     /// plain parameter and not a stored field). `None` from every call
-    /// site except `try_act_player`'s. Separate from, and secondary to,
+    /// site except `try_talk_player`'s. Separate from, and secondary to,
     /// `calm`: a becalmed monster is skipped outright below regardless of
     /// `stayed` — `stayed` only matters for a monster mid-being-persuaded
     /// (regard > 0, not yet calm).
@@ -1043,7 +1043,7 @@ impl Game {
 impl Game {
     /// Input-byte vocabulary, 0-10 (save v3, batch 5): 0-4 move/wait (see
     /// below), 5-6 are frontend/reconstruction-layer only (restart/retry —
-    /// handled in `save::replay`, never reach here), 7-10 = ACT-N/S/W/E,
+    /// handled in `save::replay`, never reach here), 7-10 = talk-N/S/W/E,
     /// direction order mirroring the move bytes exactly. Any other byte is
     /// silently ignored (`_ => {}`) — this is the one place old logs (no
     /// bytes 7-10) and this build's own bytes 5-6 both fall through
@@ -1055,10 +1055,10 @@ impl Game {
             2 => self.try_move_player(-1, 0),
             3 => self.try_move_player(1, 0),
             4 => self.wait_turn(),
-            7 => self.try_act_player(0, -1),
-            8 => self.try_act_player(0, 1),
-            9 => self.try_act_player(-1, 0),
-            10 => self.try_act_player(1, 0),
+            7 => self.try_talk_player(0, -1),
+            8 => self.try_talk_player(0, 1),
+            9 => self.try_talk_player(-1, 0),
+            10 => self.try_talk_player(1, 0),
             _ => {}
         }
     }

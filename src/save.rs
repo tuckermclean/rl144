@@ -14,18 +14,18 @@ use crate::rng::{fnv_bytes, h64};
    reconstructed by replaying. Byte format, no serde:
      "RL14" | version u8 (=1, 2, or 3) | seed u64 LE | input bytes...
    Inputs: 0=N 1=S 2=W 3=E 4=wait 5=restart(reroll to a new seed)
-   6=retry(same seed, save v2 — see INPUT_RETRY) 7=ACT-N 8=ACT-S 9=ACT-W
-   10=ACT-E (save v3, batch 5, DECISION.md item 3 — the Henson ruling;
+   6=retry(same seed, save v2 — see INPUT_RETRY) 7=talk-N 8=talk-S 9=talk-W
+   10=talk-E (save v3, batch 5, DECISION.md item 3 — the Henson ruling;
    direction order mirrors move bytes 0-3 exactly, see
    `game::Game::apply_input`). Tens of bytes per save. `save_bytes` always
    writes v3; `parse_save` accepts v1, v2, or v3 — a v1 or v2 log never
-   contains bytes 7-10 (ACT didn't exist yet), so it replays byte-identical
+   contains bytes 7-10 (talk didn't exist yet), so it replays byte-identical
    under v3 parsing either way (see the
    `v1_save_replays_under_v3_parsing`/`v2_save_replays_under_v3_parsing`
    tests in main.rs, and `make xhash`, whose fixture is a v1 blob). This is
    a version bump rather than a silent superset precisely so an OLD binary
    (whose own `parse_save` only ever accepted 1 or 2) REJECTS a v3 save
-   cleanly instead of silently ignoring ACT bytes and diverging from what
+   cleanly instead of silently ignoring talk bytes and diverging from what
    was actually played. */
 const SAVE_MAGIC: &[u8; 4] = b"RL14";
 const SAVE_VERSION: u8 = 3;

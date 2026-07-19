@@ -415,8 +415,8 @@ mod tests {
     }
 
     /// Stayed swing (batch 5, DECISION.md item 3): a monster that received
-    /// an ACT this turn does not attack this turn (it is listening) — a
-    /// second, un-ACTed monster adjacent and seeing the player attacks
+    /// a talk this turn does not attack this turn (it is listening) — a
+    /// second, un-talked-to monster adjacent and seeing the player attacks
     /// normally the SAME turn, proving the mercy is per-monster, not a
     /// blanket "combat is off" toggle (crowds stay dangerous).
     #[test]
@@ -465,18 +465,18 @@ mod tests {
             calm: false,
         });
         let hp0 = g.hp;
-        g.try_act_player(adx, ady); // ACT the rat: regard 0->1, threshold 2, not yet calm
+        g.try_talk_player(adx, ady); // talk to the rat: regard 0->1, threshold 2, not yet calm
         let rat = g.monsters.iter().find(|m| m.kind == MKind::Rat).unwrap();
-        assert_eq!(rat.regard, 1, "the ACTed rat's regard should have incremented");
-        assert!(!rat.calm, "one ACT (of 2) should not yet calm a rat");
+        assert_eq!(rat.regard, 1, "the talked-to rat's regard should have incremented");
+        assert!(!rat.calm, "one talk (of 2) should not yet calm a rat");
         assert!(
             g.hp < hp0,
-            "the un-ACTed adjacent goblin should still attack this same turn"
+            "the un-talked-to adjacent goblin should still attack this same turn"
         );
     }
 
     /// Becalm threshold + swap-on-bump (batch 5, DECISION.md item 3): a
-    /// rat (threshold 2) is not calm after one ACT, becomes calm (and
+    /// rat (threshold 2) is not calm after one talk, becomes calm (and
     /// `spared` increments) on the second, and bumping a calmed monster
     /// swaps positions — no damage, no violence tax — instead of attacking.
     #[test]
@@ -500,12 +500,12 @@ mod tests {
         });
         let spared0 = g.spared;
 
-        g.try_act_player(dx, dy); // regard 0->1: below threshold 2
+        g.try_talk_player(dx, dy); // regard 0->1: below threshold 2
         assert!(!g.monsters[0].calm);
         assert_eq!(g.spared, spared0);
 
-        g.try_act_player(dx, dy); // regard 1->2: threshold reached
-        assert!(g.monsters[0].calm, "the rat should be calm after 2 ACTs");
+        g.try_talk_player(dx, dy); // regard 1->2: threshold reached
+        assert!(g.monsters[0].calm, "the rat should be calm after 2 talks");
         assert_eq!(g.spared, spared0 + 1, "spared must increment exactly once, on the crossing");
 
         let hp_before = g.monsters[0].hp;
@@ -555,18 +555,18 @@ mod tests {
         assert_ne!(state_hash(&a), state_hash(&b), "calm must be part of state_hash");
     }
 
-    /// ACT determinism + replay round-trip (batch 5, DECISION.md item 3):
-    /// a scripted log mixing move/wait/ACT bytes (0-4, 7-10) replays to an
+    /// Talk determinism + replay round-trip (batch 5, DECISION.md item 3):
+    /// a scripted log mixing move/wait/talk bytes (0-4, 7-10) replays to an
     /// identical `state_hash` every time — the same determinism proof
     /// `save_replay_roundtrip` makes for the pre-mercy vocabulary, now
     /// covering the new bytes.
     #[test]
-    fn act_bytes_replay_deterministic() {
+    fn talk_bytes_replay_deterministic() {
         let seed0 = 88u64;
-        let mut script = channel(seed0, &["test", "act_script"]);
+        let mut script = channel(seed0, &["test", "talk_script"]);
         let mut log: Vec<u8> = Vec::new();
         for _ in 0..500 {
-            // 0..=4 move/wait, 7..=10 ACT-N/S/W/E — skip 5/6, which are
+            // 0..=4 move/wait, 7..=10 talk-N/S/W/E — skip 5/6, which are
             // reconstruction-layer bytes handled outside apply_input.
             let roll = script.range(0, 9) as u8;
             let b = if roll < 5 { roll } else { roll + 2 };
@@ -614,7 +614,7 @@ mod tests {
 
     /// Save back-compat (DECISION.md sign-off item 2; extended to v3 by
     /// batch 5): a v1-versioned byte blob (which by construction never
-    /// contains byte 6 or bytes 7-10 — neither INPUT_RETRY nor ACT existed
+    /// contains byte 6 or bytes 7-10 — neither INPUT_RETRY nor talk existed
     /// yet) parses under today's v3-aware `parse_save` and replays byte-
     /// identically to the same log fed straight to `replay`.
     /// `tests/fixtures/ref.sav` (used by `make xhash`) is itself exactly
@@ -642,7 +642,7 @@ mod tests {
     /// Save v2 back-compat, same proof as the v1 test above but for a
     /// v2-versioned blob that also carries a byte 6 (INPUT_RETRY, which v2
     /// introduced but a v1 blob could never contain) — a v2 log still
-    /// never contains bytes 7-10 (ACT didn't exist until save v3, batch 5),
+    /// never contains bytes 7-10 (talk didn't exist until save v3, batch 5),
     /// so it too must replay byte-identically under today's parser.
     #[test]
     fn v2_save_replays_under_v3_parsing() {
@@ -666,7 +666,7 @@ mod tests {
     /// `save_bytes` writes the current version (3, batch 5) and a byte-4
     /// version outside 1..=3 is rejected by `parse_save` — the "old binary
     /// must reject a v3 save cleanly" half of the save-v3 rationale
-    /// (game.rs's `apply_input` handling ACT bytes 7-10 is the other half).
+    /// (game.rs's `apply_input` handling talk bytes 7-10 is the other half).
     #[test]
     fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
         let bytes = save_bytes(7, &[0, 1, 2]);
@@ -794,7 +794,7 @@ mod tests {
         }
     }
 
-    /// Same determinism guarantee, pacifist policy (batch 5 T2): the ACT
+    /// Same determinism guarantee, pacifist policy (batch 5 T2): the talk
     /// detour is still a pure function of Game state, no RNG of its own.
     #[test]
     fn pacifist_policy_deterministic() {

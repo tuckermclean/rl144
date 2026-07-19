@@ -221,15 +221,15 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
     // while armed writes. Any real game input (move/wait/restart) disarms
     // it, so a stray F5 days later doesn't silently clobber a save.
     let mut confirm_armed = false;
-    // ACT chord (batch 5 task 3, the Henson ruling's frontend half): `t`
+    // talk chord (batch 5 task 3, the Henson ruling's frontend half): `t`
     // arms this flag; the NEXT direction key (arrows/wasd/hjkl) completes
-    // the chord and pushes ONE ACT byte (7-10), consuming the arm. Any
+    // the chord and pushes ONE talk byte (7-10), consuming the arm. Any
     // other key pressed while armed — including a second bare `t`, which
     // just re-arms rather than progressing anything — disarms with no byte
     // logged, per the task spec's "simplest rule: any non-direction input
     // disarms." Frontend-local, like `confirm_armed`: never saved, never
     // hashed, never touches replay.
-    let mut act_armed = false;
+    let mut talk_armed = false;
     // The CURRENT attempt's input bytes only (cleared on every R/N), as
     // opposed to `input_log` which is the whole session across attempts —
     // this is what a captured ghost should replay, not the full history
@@ -269,14 +269,14 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                 }
             }
             Screen::Play => {
-                // `t` arms the ACT chord (edge-triggered: holding it down
+                // `t` arms the talk chord (edge-triggered: holding it down
                 // doesn't repeatedly (re-)arm every frame's worth of key
                 // state, though re-arming while already armed is harmless —
-                // see `act_armed`'s doc comment).
+                // see `talk_armed`'s doc comment).
                 if window.is_key_pressed(Key::T, KeyRepeat::No) {
-                    act_armed = true;
+                    talk_armed = true;
                 }
-                let mut act_consumed = false;
+                let mut talk_consumed = false;
                 for (key, (dx, dy)) in moves {
                     let dir = match (dx, dy) {
                         (0, -1) => 0,
@@ -284,22 +284,22 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                         (-1, 0) => 2,
                         _ => 3,
                     };
-                    if act_armed {
+                    if talk_armed {
                         // Chord completion: a FRESH direction-key press
                         // (KeyRepeat::No — deliberate, not a held-key
-                        // repeat) while armed produces one ACT byte
+                        // repeat) while armed produces one talk byte
                         // (7=N,8=S,9=W,10=E, mirroring the move bytes'
                         // direction order) instead of a move byte, then
                         // disarms. Only the first matching direction this
                         // frame counts.
-                        if !act_consumed && window.is_key_pressed(key, KeyRepeat::No) {
+                        if !talk_consumed && window.is_key_pressed(key, KeyRepeat::No) {
                             let b = dir + 7;
                             input_log.push(b);
                             attempt_log.push(b);
                             game.apply_input(b);
                             confirm_armed = false;
-                            act_armed = false;
-                            act_consumed = true;
+                            talk_armed = false;
+                            talk_consumed = true;
                         }
                     } else if window.is_key_pressed(key, KeyRepeat::Yes) {
                         input_log.push(dir);
@@ -313,10 +313,10 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                 // silently, no byte logged. `t` itself is excluded so
                 // arming and re-arming in the same frame never
                 // self-cancels.
-                if act_armed && !act_consumed {
+                if talk_armed && !talk_consumed {
                     let pressed = window.get_keys_pressed(KeyRepeat::No);
                     if pressed.iter().any(|&k| k != Key::T) {
-                        act_armed = false;
+                        talk_armed = false;
                     }
                 }
                 if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
@@ -330,7 +330,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     // otherwise leave the talk chord armed across many
                     // turns, silently converting a later direction press
                     // into a talk instead of a move. Disarm explicitly.
-                    act_armed = false;
+                    talk_armed = false;
                 }
                 // F1: identify the world. Log-only — consumes no turn, no
                 // input byte, and touches no RNG channel, so replay is
@@ -386,7 +386,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     // survive a death mid-chord and leak into the next
                     // attempt) — see the Period-block fix above for the
                     // primary case this closes.
-                    act_armed = false;
+                    talk_armed = false;
                     screen = Screen::Play;
                 }
                 if window.is_key_pressed(Key::N, KeyRepeat::No) {
@@ -400,7 +400,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     whash = world_hash(s);
                     window.set_title(&title(s));
                     confirm_armed = false;
-                    act_armed = false;
+                    talk_armed = false;
                     screen = Screen::Play;
                 }
                 if window.is_key_pressed(Key::Q, KeyRepeat::No) {

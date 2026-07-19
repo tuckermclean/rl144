@@ -159,7 +159,7 @@ pub(crate) fn solve_main(n: u64, report: bool) {
 /// this function). turns is inputs emitted via apply_input; light_left is
 /// the light remaining at the end of the run. `kills`/`spared` (batch 5 T2)
 /// are `g.kills`/`g.spared` at the terminal state — for the greedy policy
-/// `spared` is always 0 (it never emits an ACT byte); for the pacifist
+/// `spared` is always 0 (it never emits a talk byte); for the pacifist
 /// policy `kills` should always be 0 (`pacifist_never_attacks` asserts it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SimResult {
@@ -191,8 +191,8 @@ const SIM_DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 /// whatever is routed through. `Pacifist` shares every byte of the
 /// loot/route logic in `sim_seed` and differs in exactly one place: when
 /// the step it would take lands on a non-calm monster's tile, it emits the
-/// direction-matched ACT byte (7-10) instead of the move byte (0-3), so it
-/// talks the blocker down (`Monster::act_threshold`) rather than fighting
+/// direction-matched talk byte (7-10) instead of the move byte (0-3), so it
+/// talks the blocker down (`Monster::talk_threshold`) rather than fighting
 /// it. A becalmed monster on that tile is not a blocker — the move byte is
 /// used and the engine's swap-on-bump takes over. No RNG of its own either
 /// way; policy is a pure function of the byte about to be emitted.
@@ -349,10 +349,10 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
         match step {
             Some(b) => {
                 // Pacifist (batch 5 T2): if the tile this step lands on
-                // holds a non-calm monster, talk instead of swing — ACT
+                // holds a non-calm monster, talk instead of swing — talk
                 // bytes mirror the move bytes' direction order exactly
                 // (7-10 = N/S/W/E, see apply_input), so `7 + b` is always
-                // the correctly-directed ACT. A calm monster on that tile
+                // the correctly-directed talk. A calm monster on that tile
                 // is not a blocker (the engine swaps on the move byte), so
                 // it falls through to the normal move below unchanged.
                 let (dx, dy) = SIM_DIRS[b as usize];
@@ -369,7 +369,7 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
 
 /// `--sim N [--policy greedy|pacifist]`: play N full runs (seeds 0..N) with
 /// the deterministic bot for the given `Policy` and print aggregate JSON
-/// stats. Proves the actual game loop (combat, light burn, mercy/ACT, stair
+/// stats. Proves the actual game loop (combat, light burn, mercy/talk, stair
 /// persistence, pickups) is playable end to end, and turns "does the light
 /// margin play fair?" / "is mercy viable?" into measured data.
 ///
