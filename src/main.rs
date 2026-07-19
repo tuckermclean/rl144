@@ -25,7 +25,7 @@ mod backend_minifb;
 mod backend_term;
 
 use game::Game;
-use headless::{dump, sim_main, solve_main};
+use headless::{Policy, dump, sim_main, solve_main};
 use rng::h64;
 use save::{parse_save, replay, state_hash};
 
@@ -94,9 +94,19 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--sim") {
+        // Default policy is greedy (unchanged CLI surface); `--policy
+        // pacifist` selects the mercy bot (batch 5 T2). Any other value
+        // (including a typo) falls back to greedy rather than silently
+        // matching nothing, same tolerance as the rest of this arg parser.
+        let policy = if str_val("--policy").as_deref() == Some("pacifist") {
+            Policy::Pacifist
+        } else {
+            Policy::Greedy
+        };
         sim_main(
             flag_val("--sim").unwrap_or(1000),
             args.iter().any(|a| a == "--report"),
+            policy,
         );
         return;
     }
@@ -778,10 +788,35 @@ mod tests {
     #[test]
     fn sim_deterministic() {
         for seed in [7u64, 42u64] {
-            let a = sim_seed(seed);
-            let b = sim_seed(seed);
+            let a = sim_seed(seed, Policy::Greedy);
+            let b = sim_seed(seed, Policy::Greedy);
             assert_eq!(a, b, "seed {} was not deterministic", seed);
         }
+    }
+
+    /// Same determinism guarantee, pacifist policy (batch 5 T2): the ACT
+    /// detour is still a pure function of Game state, no RNG of its own.
+    #[test]
+    fn pacifist_policy_deterministic() {
+        for seed in [7u64, 42u64] {
+            let a = sim_seed(seed, Policy::Pacifist);
+            let b = sim_seed(seed, Policy::Pacifist);
+            assert_eq!(a, b, "seed {} was not deterministic under Policy::Pacifist", seed);
+        }
+    }
+
+    /// The pacifist bot's one behavioral rule: never bump-attack. Over a
+    /// seed range it must land zero kills (spared may be > 0 — that's the
+    /// whole point of the policy).
+    #[test]
+    fn pacifist_never_attacks() {
+        let mut total_spared = 0u64;
+        for seed in 0..200u64 {
+            let r = sim_seed(seed, Policy::Pacifist);
+            assert_eq!(r.kills, 0, "pacifist bot landed a kill on seed {}", seed);
+            total_spared += r.spared as u64;
+        }
+        assert!(total_spared > 0, "expected at least one becalmed monster over seeds 0..200");
     }
 
     /// Over a small seed range the bot should never get stuck (stuck would
@@ -802,7 +837,7 @@ mod tests {
         let mut deaths_dark = 0u64;
         let mut stuck = 0u64;
         for seed in 0..50u64 {
-            let r = sim_seed(seed);
+            let r = sim_seed(seed, Policy::Greedy);
             if r.won {
                 wins += 1;
             } else if r.dead_dark {

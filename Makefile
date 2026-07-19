@@ -5,6 +5,11 @@
 # UPX-packed size budget. POSIX sh recipes (no bashisms); see
 # AGENTS.md/CLAUDE.md for the manual workflow this encodes.
 #
+# The sim-bot balance gate (`sim` target) runs BOTH bot policies — greedy
+# (tests/sim-band.json) and pacifist (tests/pacifist-band.json, batch 5 T2,
+# DECISION.md item 3) — so `make check` gates mercy's viability alongside
+# violence's, not instead of it.
+#
 # `make targets` is a separate reporting tool: it prints a stripped/packed
 # size scoreboard for both backends. It is not part of `check` — `xhash`
 # already builds both flavors as the correctness gate.
@@ -122,6 +127,7 @@ solve: build
 
 sim: build
 	./$(BIN) --sim $(SIM_SEEDS)
+	./$(BIN) --sim $(SIM_SEEDS) --policy pacifist
 
 # Pack a copy of the release binary (never target/) and enforce the floppy
 # budget. If $(UPX) isn't runnable, warn and fall back to reporting the

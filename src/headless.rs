@@ -157,7 +157,10 @@ pub(crate) fn solve_main(n: u64, report: bool) {
 /// Outcome of one `sim_seed` run: exactly one of won/dead_dark/dead_combat/
 /// stuck is true (unless the run is still in progress, which never escapes
 /// this function). turns is inputs emitted via apply_input; light_left is
-/// the light remaining at the end of the run.
+/// the light remaining at the end of the run. `kills`/`spared` (batch 5 T2)
+/// are `g.kills`/`g.spared` at the terminal state — for the greedy policy
+/// `spared` is always 0 (it never emits an ACT byte); for the pacifist
+/// policy `kills` should always be 0 (`pacifist_never_attacks` asserts it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SimResult {
     pub(crate) won: bool,
@@ -166,6 +169,8 @@ pub(crate) struct SimResult {
     pub(crate) stuck: bool,
     pub(crate) turns: u32,
     pub(crate) light_left: i32,
+    pub(crate) kills: u32,
+    pub(crate) spared: u32,
 }
 
 /// First tile of kind `t` found scanning the map row-major (deterministic).
@@ -180,6 +185,31 @@ const SIM_TURN_CAP: u32 = 6000;
 /// Fixed neighbor order for tie-breaking the greedy step: N, S, W, E — this
 /// is also the apply_input byte order (0..=3), so the index IS the move.
 const SIM_DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+
+/// Sim bot policy (batch 5 T2, DECISION.md item 3 — pacifist band gate).
+/// `Greedy` is the original bot (unchanged since batch 3): it bump-attacks
+/// whatever is routed through. `Pacifist` shares every byte of the
+/// loot/route logic in `sim_seed` and differs in exactly one place: when
+/// the step it would take lands on a non-calm monster's tile, it emits the
+/// direction-matched ACT byte (7-10) instead of the move byte (0-3), so it
+/// talks the blocker down (`Monster::act_threshold`) rather than fighting
+/// it. A becalmed monster on that tile is not a blocker — the move byte is
+/// used and the engine's swap-on-bump takes over. No RNG of its own either
+/// way; policy is a pure function of the byte about to be emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Policy {
+    Greedy,
+    Pacifist,
+}
+
+impl Policy {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Policy::Greedy => "greedy",
+            Policy::Pacifist => "pacifist",
+        }
+    }
+}
 
 /// Deterministic greedy bot: play one full seed to a win, death, or the
 /// stuck cap, driving the game exclusively through `apply_input`. No RNG of
@@ -196,7 +226,12 @@ const SIM_DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 /// clear does the objective become the down-stairs (or the amulet itself
 /// on depth 5). With the amulet, it's a pure beeline to the up-stairs — no
 /// detours, since carrying it burns light at 2x.
-pub(crate) fn sim_seed(seed: u64) -> SimResult {
+///
+/// `policy` (batch 5 T2) only touches the very last step: see `Policy`'s
+/// doc comment. Every BFS/objective/tie-break decision above is identical
+/// for both policies — this is deliberate, so a pacifist-band regression
+/// can never be a route/loot bug in disguise, only a mercy-vs-combat one.
+pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
     let mut g = Game::new(seed);
     let mut turns: u32 = 0;
     loop {
@@ -209,6 +244,8 @@ pub(crate) fn sim_seed(seed: u64) -> SimResult {
                 stuck: false,
                 turns,
                 light_left: g.light,
+                kills: g.kills,
+                spared: g.spared,
             };
         }
         if g.won {
@@ -219,18 +256,22 @@ pub(crate) fn sim_seed(seed: u64) -> SimResult {
                 stuck: false,
                 turns,
                 light_left: g.light,
+                kills: g.kills,
+                spared: g.spared,
             };
         }
-        let stuck = |turns, light_left| SimResult {
+        let stuck = |turns, light_left, kills, spared| SimResult {
             won: false,
             dead_dark: false,
             dead_combat: false,
             stuck: true,
             turns,
             light_left,
+            kills,
+            spared,
         };
         if turns >= SIM_TURN_CAP {
-            return stuck(turns, g.light);
+            return stuck(turns, g.light, g.kills, g.spared);
         }
         let objective = if g.has_amulet {
             find_tile(&g.map, Tile::UpStairs)
@@ -252,12 +293,12 @@ pub(crate) fn sim_seed(seed: u64) -> SimResult {
             })
         };
         let Some(objective) = objective else {
-            return stuck(turns, g.light);
+            return stuck(turns, g.light, g.kills, g.spared);
         };
         let dist = bfs_dist(&g.map, objective);
         let player_d = dist[idx(g.px, g.py)];
         if player_d < 0 {
-            return stuck(turns, g.light);
+            return stuck(turns, g.light, g.kills, g.spared);
         }
         // Walking onto Stairs always descends, and onto UpStairs always
         // ascends once depth > 1 — both unconditional, regardless of
@@ -307,42 +348,63 @@ pub(crate) fn sim_seed(seed: u64) -> SimResult {
         };
         match step {
             Some(b) => {
-                g.apply_input(b);
+                // Pacifist (batch 5 T2): if the tile this step lands on
+                // holds a non-calm monster, talk instead of swing — ACT
+                // bytes mirror the move bytes' direction order exactly
+                // (7-10 = N/S/W/E, see apply_input), so `7 + b` is always
+                // the correctly-directed ACT. A calm monster on that tile
+                // is not a blocker (the engine swaps on the move byte), so
+                // it falls through to the normal move below unchanged.
+                let (dx, dy) = SIM_DIRS[b as usize];
+                let (nx, ny) = (g.px + dx, g.py + dy);
+                let blocked = policy == Policy::Pacifist
+                    && g.monsters.iter().any(|m| m.x == nx && m.y == ny && !m.calm);
+                g.apply_input(if blocked { 7 + b } else { b });
                 turns += 1;
             }
-            None => return stuck(turns, g.light),
+            None => return stuck(turns, g.light, g.kills, g.spared),
         }
     }
 }
 
-/// `--sim N`: play N full runs (seeds 0..N) with the deterministic greedy
-/// bot and print aggregate JSON stats. Proves the actual game loop (combat,
-/// light burn, stair persistence, pickups) is playable end to end, and
-/// turns "does the light margin play fair?" into measured data.
+/// `--sim N [--policy greedy|pacifist]`: play N full runs (seeds 0..N) with
+/// the deterministic bot for the given `Policy` and print aggregate JSON
+/// stats. Proves the actual game loop (combat, light burn, mercy/ACT, stair
+/// persistence, pickups) is playable end to end, and turns "does the light
+/// margin play fair?" / "is mercy viable?" into measured data.
 ///
-/// Since the batch-3 balance pass this is also a GATE (like --solve): the
-/// stats must sit inside tests/sim-band.json — win_pct in [10,25],
-/// deaths_dark nonzero but a minority — and stuck must be 0, or we exit
-/// nonzero. `--report` prints stats and exits 0 (the re-baselining flow).
-/// The band is calibrated for the default 5000-seed run (`make sim`);
-/// smaller runs may trip the deaths_dark floor spuriously.
+/// Since the batch-3 balance pass this is also a GATE (like --solve), one
+/// per policy:
+/// - `Greedy` (unchanged since batch 3): stats must sit inside
+///   tests/sim-band.json — win_pct in [10,25], deaths_dark nonzero but a
+///   minority (structural check below, not a JSON band — see the old doc
+///   note this comment absorbed: an integer percent band can't encode
+///   "nonzero but tiny", ~0.2% of deaths at 5000 seeds).
+/// - `Pacifist` (batch 5 T2, DECISION.md item 3): stats must sit inside
+///   tests/pacifist-band.json — win_pct in [5,40] (mercy may be harder than
+///   violence, must not dominate it; see that file's comment for the full
+///   measured death-mix, which is recorded as data, not gated). No
+///   dark/combat minority requirement for pacifist — that invariant was
+///   never claimed for this policy and is measured honestly instead.
 ///
-/// Interface deviation from the batch-3 plan: the plan drafted a
-/// `dark_share_pct` percentage band, but measured dark deaths are ~0.2% of
-/// deaths (8 of 4274 at 5000 seeds, post-violence-tax — see VIOLENCE_TAX in
-/// game.rs) — an integer percent band can't encode "nonzero but tiny" (it
-/// floors to 0). So the band uses a raw `deaths_dark` count range instead,
-/// and the "minority" invariant (dark < combat) is structural, checked in
-/// code below like `stuck == 0`, not a tunable JSON band.
-pub(crate) fn sim_main(n: u64, report: bool) {
+/// `stuck` must be 0 for either policy or we exit nonzero (a policy or
+/// reachability bug, not a balance question). `--report` prints stats and
+/// exits 0 (the re-baselining flow). Bands are calibrated for the default
+/// 5000-seed run (`make sim`, which runs both policies); smaller runs may
+/// trip a floor spuriously.
+pub(crate) fn sim_main(n: u64, report: bool, policy: Policy) {
     let mut wins = 0u64;
     let mut deaths_combat = 0u64;
     let mut deaths_dark = 0u64;
     let mut stuck = 0u64;
     let mut win_turns: Vec<u32> = Vec::new();
     let mut win_light: Vec<i32> = Vec::new();
+    let mut kills_total = 0u64;
+    let mut spared_total = 0u64;
     for seed in 0..n {
-        let r = sim_seed(seed);
+        let r = sim_seed(seed, policy);
+        kills_total += r.kills as u64;
+        spared_total += r.spared as u64;
         if r.won {
             wins += 1;
             win_turns.push(r.turns);
@@ -366,7 +428,8 @@ pub(crate) fn sim_main(n: u64, report: bool) {
     let win_rate = if n > 0 { wins as f64 / n as f64 } else { 0.0 };
     let p10_light = if win_light.is_empty() { 0 } else { win_light[win_light.len() / 10] };
     println!(
-        "{{\"runs\":{},\"wins\":{},\"win_rate\":{:.3},\"deaths_combat\":{},\"deaths_dark\":{},\"stuck\":{},\"median_turns_win\":{},\"median_light_left_win\":{},\"p10_light_left_win\":{},\"min_light_left_win\":{}}}",
+        "{{\"policy\":\"{}\",\"runs\":{},\"wins\":{},\"win_rate\":{:.3},\"deaths_combat\":{},\"deaths_dark\":{},\"stuck\":{},\"median_turns_win\":{},\"median_light_left_win\":{},\"p10_light_left_win\":{},\"min_light_left_win\":{},\"kills_total\":{},\"spared_total\":{}}}",
+        policy.name(),
         n,
         wins,
         win_rate,
@@ -376,41 +439,58 @@ pub(crate) fn sim_main(n: u64, report: bool) {
         median_u32(&win_turns),
         median_i32(&win_light),
         p10_light,
-        win_light.first().copied().unwrap_or(0)
+        win_light.first().copied().unwrap_or(0),
+        kills_total,
+        spared_total,
     );
     if report {
         return;
     }
     if stuck > 0 {
-        eprintln!("sim: {} runs stuck — bot policy or reachability bug", stuck);
+        eprintln!("sim ({}): {} runs stuck — bot policy or reachability bug", policy.name(), stuck);
         std::process::exit(1);
     }
     let win_pct = (wins * 100 / n.max(1)) as i32;
-    match std::fs::read_to_string("tests/sim-band.json") {
+    let band_path = match policy {
+        Policy::Greedy => "tests/sim-band.json",
+        Policy::Pacifist => "tests/pacifist-band.json",
+    };
+    match std::fs::read_to_string(band_path) {
         Ok(band) => {
-            let checks = [("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)];
-            for (k, v) in checks {
+            let checks: &[(&str, i32)] = match policy {
+                Policy::Greedy => &[("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)],
+                Policy::Pacifist => &[("win_pct", win_pct)],
+            };
+            for &(k, v) in checks {
                 if let Some((lo, hi)) = band_range(&band, k) {
                     if v < lo || v > hi {
-                        eprintln!("sim drift: {}={} outside [{},{}]", k, v, lo, hi);
+                        eprintln!("sim drift ({}): {}={} outside [{},{}]", policy.name(), k, v, lo, hi);
                         std::process::exit(1);
                     }
                 }
             }
-            // "minority": darkness may claim runs, but combat must claim more.
-            // Not a JSON band (see sim_main doc comment): at ~0.1% dark share
-            // a percent band floors to 0, so this is a structural code check.
-            if deaths_dark >= deaths_combat {
+            // "minority": darkness may claim runs, but combat must claim
+            // more. Not a JSON band (see sim_main doc comment): at ~0.1%
+            // dark share a percent band floors to 0, so this is a
+            // structural code check. Greedy-only — see sim_main doc
+            // comment for why pacifist doesn't carry this invariant.
+            if policy == Policy::Greedy && deaths_dark >= deaths_combat {
                 eprintln!(
                     "sim drift: deaths_dark {} >= deaths_combat {} — the old wall in a new mask",
                     deaths_dark, deaths_combat
                 );
                 std::process::exit(1);
             }
-            println!("sim: {} runs, win_pct {} and dark deaths {} inside band", n, win_pct, deaths_dark);
+            println!(
+                "sim ({}): {} runs, win_pct {} and dark deaths {} inside band",
+                policy.name(),
+                n,
+                win_pct,
+                deaths_dark
+            );
         }
         Err(_) => {
-            eprintln!("warning: tests/sim-band.json not found; sim band check skipped");
+            eprintln!("warning: {} not found; sim band check skipped", band_path);
         }
     }
 }
