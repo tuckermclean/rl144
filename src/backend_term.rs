@@ -19,11 +19,15 @@
 //     and what makes `--render-frame` (see `render_frame_main`) safe to
 //     pipe to a file with no termios/alt-screen side effects at all.
 
+use crate::content::ghost_label_idx;
 use crate::game::{COLS, Game, ROWS};
 use crate::headless::world_hash;
 use crate::render::{CELLS, Cell, Screen, render_cells};
 use crate::rng::h64;
-use crate::save::{INPUT_RESTART, save_bytes, save_filename};
+use crate::save::{
+    GHOST_DIED_COMBAT, GHOST_DIED_DARK, INPUT_RESTART, INPUT_RETRY, ghost_bytes, ghost_filename,
+    save_bytes, save_filename,
+};
 use std::sync::OnceLock;
 
 // ---------- termios FFI (Linux x86_64 layout) ----------
@@ -151,11 +155,15 @@ fn set_timing(mut base: Termios, vmin: u8, vtime: u8) {
 // ---------- input mapping ----------
 
 /// One interpreted input event. `Move` carries the apply_input byte
-/// (0=N,1=S,2=W,3=E) directly so callers don't re-derive it.
+/// (0=N,1=S,2=W,3=E) directly so callers don't re-derive it. `Restart` is
+/// the End screen's R (retry, same seed, byte 6 — save v2); `NewWorld` is
+/// its N (reroll, byte 5 — same meaning R used to have, see save v2's End-
+/// screen key change).
 enum Input {
     Move(u8),
     Wait,
     Restart,
+    NewWorld,
     Save,
     Info,
     Quit,
@@ -206,9 +214,10 @@ fn read_escape_seq() -> Input {
 /// Blocking-read one input byte and interpret it. `raw` is the raw-mode
 /// base termios (VMIN=1/VTIME=0); on an ESC byte this switches to a
 /// VMIN=0/VTIME=1 lookahead for the rest of the sequence and switches back
-/// before returning. wasd/hjkl/arrows move, '.' waits, 'r' requests a
-/// restart (gated on dead/won by the caller, matching the minifb backend),
-/// 'q'/lone-ESC/Ctrl-C quit. Unknown bytes are ignored.
+/// before returning. wasd/hjkl/arrows move, '.' waits, 'r' requests a retry
+/// (same seed) and 'n' a new world (reroll) — both are only acted on by the
+/// End screen, matching the minifb backend's R/N keys — 'q'/lone-ESC/Ctrl-C
+/// quit. Unknown bytes are ignored.
 fn read_input(raw: Termios) -> Input {
     let Some(b) = raw_read_byte() else { return Input::Quit }; // EOF (stdin closed)
     match b {
@@ -226,6 +235,7 @@ fn read_input(raw: Termios) -> Input {
         b'd' | b'l' => Input::Move(3),
         b'.' => Input::Wait,
         b'r' => Input::Restart,
+        b'n' => Input::NewWorld,
         _ => Input::Ignore,
     }
 }
@@ -358,6 +368,20 @@ pub(crate) fn render_frame_main(seed: u64, ascii: bool) {
     raw_write(&bytes);
 }
 
+/// Auto-ghost capture — identical contract to `backend_minifb::write_ghost`
+/// (batch 4 task 2, save v2 substrate, Phase 1: no ghost rendering/playback
+/// yet). Called only for a DEAD run, right before R/N/Q moves on from the
+/// End screen; never for a win. Duplicated per backend rather than shared
+/// because each backend already owns its own save/autosave I/O the same
+/// way (see `run`'s F5 handling and quit-time autosave below).
+fn write_ghost(game: &Game, whash: u64, attempt_log: &[u8]) {
+    let outcome = if game.killer.is_some() { GHOST_DIED_COMBAT } else { GHOST_DIED_DARK };
+    let final_depth = game.depth as u8;
+    let label_idx = ghost_label_idx(outcome, final_depth);
+    let bytes = ghost_bytes(game.seed, whash, outcome, final_depth, game.turns, label_idx, attempt_log);
+    let _ = std::fs::write(ghost_filename(whash), bytes);
+}
+
 // ---------- interactive loop ----------
 
 /// Run the terminal window loop: blocking read -> input event -> apply to
@@ -386,6 +410,9 @@ pub(crate) fn run(
     let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
     let mut confirm_armed = false;
     let mut screen = if loaded { Screen::Play } else { Screen::Title };
+    // The CURRENT attempt's input bytes only, cleared on every R/N — see
+    // backend_minifb::run's identical field for the full rationale.
+    let mut attempt_log: Vec<u8> = Vec::new();
 
     render_cells(&game, screen, &mut cells);
     raw_write(&frame_bytes(&cells, None, ascii));
@@ -409,16 +436,18 @@ pub(crate) fn run(
                     Input::Quit => break,
                     Input::Move(b) => {
                         input_log.push(b);
+                        attempt_log.push(b);
                         game.apply_input(b);
                         confirm_armed = false;
                     }
                     Input::Wait => {
                         input_log.push(4);
+                        attempt_log.push(4);
                         game.apply_input(4);
                         confirm_armed = false;
                     }
-                    // Restart is meaningless mid-run; only End acts on it.
-                    Input::Restart => {}
+                    // Restart/NewWorld are meaningless mid-run; only End acts on them.
+                    Input::Restart | Input::NewWorld => {}
                     // F5 double-press overwrite confirm, identical to backend_minifb.
                     Input::Save => {
                         let fname = save_filename(whash);
@@ -445,13 +474,28 @@ pub(crate) fn run(
                     screen = Screen::End;
                 }
             }
+            // R: retry, same seed (byte 6, save v2), carrying `echo`
+            // forward from the death position/depth (see `Game::echo`'s
+            // doc comment). N: new world, the reroll byte 5 always was.
+            // Both, plus Q, auto-capture a ghost first if the run that just
+            // ended was DEAD (never for a win — see `write_ghost`).
             Screen::End => match read_input(raw) {
-                Input::Quit => break,
+                Input::Quit => {
+                    if game.dead {
+                        write_ghost(&game, whash, &attempt_log);
+                    }
+                    break;
+                }
                 Input::Restart => {
-                    input_log.push(INPUT_RESTART);
-                    let s = h64(game.seed, &["restart"]);
+                    if game.dead {
+                        write_ghost(&game, whash, &attempt_log);
+                    }
+                    let echo = if game.dead { Some((game.px, game.py, game.depth)) } else { None };
+                    input_log.push(INPUT_RETRY);
+                    attempt_log.clear();
+                    let s = game.seed;
                     game = Game::new(s);
-                    whash = world_hash(s);
+                    game.echo = echo;
                     // No window title in a terminal — log the world
                     // identity instead, same info the minifb backend puts
                     // in the title.
@@ -459,7 +503,20 @@ pub(crate) fn run(
                     confirm_armed = false;
                     screen = Screen::Play;
                 }
-                _ => {} // End only acts on restart/quit; everything else is ignored.
+                Input::NewWorld => {
+                    if game.dead {
+                        write_ghost(&game, whash, &attempt_log);
+                    }
+                    input_log.push(INPUT_RESTART);
+                    attempt_log.clear();
+                    let s = h64(game.seed, &["restart"]);
+                    game = Game::new(s);
+                    whash = world_hash(s);
+                    game.log(format!("Seed {}  world {:016x}", s, whash));
+                    confirm_armed = false;
+                    screen = Screen::Play;
+                }
+                _ => {} // End only acts on retry/new-world/quit; everything else is ignored.
             },
         }
         render_cells(&game, screen, &mut cells);

@@ -30,7 +30,7 @@ use rng::h64;
 use save::{parse_save, replay, state_hash};
 
 #[cfg(test)]
-use content::{KINDS, THEMES, TONE_LINES, VAULTS};
+use content::{GHOST_LABELS, KINDS, THEMES, TONE_LINES, VAULTS, ghost_label_idx};
 #[cfg(test)]
 use game::{MKind, Monster, TIER_WARNINGS, Tile, idx, in_map};
 #[cfg(test)]
@@ -40,7 +40,7 @@ use render::scale;
 #[cfg(test)]
 use rng::channel;
 #[cfg(test)]
-use save::{INPUT_RESTART, save_bytes, save_filename};
+use save::{INPUT_RESTART, INPUT_RETRY, ghost_bytes, parse_ghost, save_bytes, save_filename};
 
 /// Resolve a `--seed` argument: numeric strings parse directly, anything
 /// else is hashed into a u64 so `--seed swordfish` is stable and distinct
@@ -402,6 +402,116 @@ mod tests {
         log.push(1);
         let c = replay(5, &log);
         assert!(state_hash(&c) != state_hash(&a) || (c.px, c.py) == (a.px, a.py));
+    }
+
+    /// Save v2 back-compat (DECISION.md sign-off item 2): a v1-versioned
+    /// byte blob (which by construction never contains byte 6 — INPUT_RETRY
+    /// didn't exist yet) parses under today's v2-aware `parse_save` and
+    /// replays byte-identically to the same log fed straight to `replay`.
+    /// `tests/fixtures/ref.sav` (used by `make xhash`) is itself exactly
+    /// such a v1 blob, containing a byte 5 — this test is the unit-level
+    /// proof that the case `make xhash` exercises end-to-end still works.
+    #[test]
+    fn v1_save_replays_under_v2_parsing() {
+        let seed0 = 123u64;
+        let log = vec![0u8, 1, 2, 3, 4, INPUT_RESTART, 0, 1, 2, 3, 4];
+        let mut v1_bytes = Vec::new();
+        v1_bytes.extend_from_slice(b"RL14");
+        v1_bytes.push(1); // v1
+        v1_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v1_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v1_bytes).expect("v1 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v1 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v1), state_hash(&direct));
+    }
+
+    /// Retry byte (6, save v2): a log with moves, a retry, then more moves
+    /// replays deterministically (two replays hash identically), and after
+    /// byte 6 the seed is UNCHANGED — unlike byte 5 (restart), which still
+    /// rerolls to a new seed exactly as it always did.
+    #[test]
+    fn retry_byte_replay_deterministic_and_seed_semantics() {
+        let seed0 = 55u64;
+        let log = vec![0u8, 1, 2, INPUT_RETRY, 3, 0, 1];
+        let a = replay(seed0, &log);
+        let b = replay(seed0, &log);
+        assert_eq!(state_hash(&a), state_hash(&b));
+        assert_eq!(a.seed, seed0, "byte 6 (retry) must keep the same seed");
+
+        let reroll_log = vec![0u8, 1, 2, INPUT_RESTART, 3, 0, 1];
+        let c = replay(seed0, &reroll_log);
+        assert_ne!(c.seed, seed0, "byte 5 (restart) must reroll to a new seed");
+    }
+
+    /// Ghost round-trip: `ghost_bytes` -> `parse_ghost` is the inverse.
+    #[test]
+    fn ghost_bytes_round_trip() {
+        let seed = 77u64;
+        let whash = 0xABCD_EF01_2345_6789u64;
+        let outcome = 0u8; // died_combat
+        let final_depth = 3u8;
+        let turns = 512u32;
+        let label_idx = ghost_label_idx(outcome, final_depth);
+        let inputs = vec![0u8, 1, 2, 3, 4, 0, 1];
+
+        let bytes = ghost_bytes(seed, whash, outcome, final_depth, turns, label_idx, &inputs);
+        let g = parse_ghost(&bytes).expect("a ghost_bytes blob must parse");
+        assert_eq!(g.seed, seed);
+        assert_eq!(g.world_hash, whash);
+        assert_eq!(g.outcome, outcome);
+        assert_eq!(g.final_depth, final_depth);
+        assert_eq!(g.turns, turns);
+        assert_eq!(g.label_idx, label_idx);
+        assert_eq!(g.inputs, inputs);
+    }
+
+    /// Echo (batch 4 task 2, save v2 substrate): after replaying a log
+    /// whose retry byte (6) followed a death, `echo` equals the death
+    /// position/depth, and — proving `echo` is presentation-only and NOT
+    /// hashed — a fresh `Game::new(seed)` with `echo` set by hand to the
+    /// same value hashes identically to the retried game.
+    #[test]
+    fn echo_records_death_position_after_retry_byte() {
+        let seed0 = 33u64;
+        let mut live = Game::new(seed0);
+        let mut log: Vec<u8> = Vec::new();
+        // Wait repeatedly until the run ends (dark or combat — either way
+        // it's a dead ending since the player never moves off the
+        // entrance); START_LIGHT (2000) bounds this loop.
+        while !live.dead && !live.won {
+            log.push(4);
+            live.apply_input(4);
+        }
+        assert!(live.dead, "a waiting-only run must die, not win");
+        let (dx, dy, dd) = (live.px, live.py, live.depth);
+        log.push(INPUT_RETRY);
+
+        let replayed = replay(seed0, &log);
+        assert_eq!(replayed.echo, Some((dx, dy, dd)));
+        assert_eq!(replayed.seed, seed0, "retry must not reroll the seed");
+
+        let mut fresh = Game::new(seed0);
+        fresh.echo = Some((dx, dy, dd));
+        assert_eq!(
+            state_hash(&replayed),
+            state_hash(&fresh),
+            "echo must be unhashed: only its own value should differ"
+        );
+    }
+
+    /// GHOST_LABELS (content.rs): every preset phrase is ASCII and <=16
+    /// bytes, per the RLG1 format's label_idx contract in save.rs.
+    #[test]
+    fn ghost_labels_fit_16_bytes() {
+        for label in &GHOST_LABELS {
+            assert!(label.is_ascii(), "non-ASCII ghost label: {}", label);
+            assert!(label.len() <= 16, "ghost label too long ({}): {}", label.len(), label);
+        }
     }
 
     /// Visited depths persist: descend and climb back into the same level.

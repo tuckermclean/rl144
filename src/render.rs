@@ -354,7 +354,7 @@ fn render_end(g: &Game, cells: &mut [Cell]) {
     row += 1;
     put_centered(cells, row, &format!("Seed {}", g.seed), PAL_STATUS);
     row += 2;
-    put_centered(cells, row, "[R] restart   [Q] quit", PAL_ALERT);
+    put_centered(cells, row, "[R] retry this world  [N] new world  [Q] quit", PAL_ALERT);
 }
 
 #[cfg(test)]

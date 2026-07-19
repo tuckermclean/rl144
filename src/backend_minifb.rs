@@ -4,11 +4,15 @@
 // port swaps; the fixed 80x30 Cell grid produced by render::render_cells is
 // the seam it plugs into (see render.rs's header comment).
 
+use crate::content::ghost_label_idx;
 use crate::game::{COLS, Game, ROWS};
 use crate::headless::world_hash;
 use crate::render::{CELLS, Cell, Screen, render_cells};
 use crate::rng::h64;
-use crate::save::{INPUT_RESTART, save_bytes, save_filename};
+use crate::save::{
+    GHOST_DIED_COMBAT, GHOST_DIED_DARK, INPUT_RESTART, INPUT_RETRY, ghost_bytes, ghost_filename,
+    save_bytes, save_filename,
+};
 use font8x8::legacy::{BASIC_LEGACY, BLOCK_LEGACY, BOX_LEGACY};
 use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
 
@@ -75,6 +79,26 @@ fn rasterize(cells: &[Cell], buf: &mut [u32]) {
     }
 }
 
+/// Auto-ghost capture (batch 4 task 2, save v2 substrate — Phase 1, no
+/// rendering/playback yet). Called only for a DEAD run, right before R/N/Q
+/// moves on from the End screen (never for a won run — Phase 1 never writes
+/// GHOST_WON/GHOST_ABANDONED). Writes the just-ended attempt's (already
+/// terminal, so already effectively trimmed) input log as an RLG1 file
+/// named from the world hash, overwriting any earlier ghost for this world
+/// (latest death wins — see `save::ghost_filename`). `outcome` reads
+/// `game.killer`: `Some` means a combat kill, `None` means the run ended
+/// dead with no killer, i.e. darkness (see `Game::killer`'s doc comment).
+/// Best-effort: a write failure is silently ignored, same as this project's
+/// "ghost is runtime user data, not a shipped asset" doctrine treats any
+/// other player file.
+fn write_ghost(game: &Game, whash: u64, attempt_log: &[u8]) {
+    let outcome = if game.killer.is_some() { GHOST_DIED_COMBAT } else { GHOST_DIED_DARK };
+    let final_depth = game.depth as u8;
+    let label_idx = ghost_label_idx(outcome, final_depth);
+    let bytes = ghost_bytes(game.seed, whash, outcome, final_depth, game.turns, label_idx, attempt_log);
+    let _ = std::fs::write(ghost_filename(whash), bytes);
+}
+
 /// Run the minifb window loop: input -> Game::apply-equivalent calls,
 /// render_cells -> rasterize -> present. Owns everything platform-specific
 /// (window, key polling, save-file I/O, title). `seed0`/`input_log`/`game`
@@ -132,6 +156,12 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
     // while armed writes. Any real game input (move/wait/restart) disarms
     // it, so a stray F5 days later doesn't silently clobber a save.
     let mut confirm_armed = false;
+    // The CURRENT attempt's input bytes only (cleared on every R/N), as
+    // opposed to `input_log` which is the whole session across attempts —
+    // this is what a captured ghost should replay, not the full history
+    // (see `write_ghost`). A `--load`ed session starts this empty too: the
+    // ghost only ever covers what happened in THIS run of the program.
+    let mut attempt_log: Vec<u8> = Vec::new();
     // Title at launch unless resuming a --load; End once the run is over
     // (checked at the bottom of the Play arm, same frame the game reports
     // dead/won). See render::Screen's doc comment for the full state
@@ -158,12 +188,14 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                             _ => 3,
                         };
                         input_log.push(b);
+                        attempt_log.push(b);
                         game.apply_input(b);
                         confirm_armed = false;
                     }
                 }
                 if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
                     input_log.push(4);
+                    attempt_log.push(4);
                     game.apply_input(4);
                     confirm_armed = false;
                 }
@@ -191,8 +223,32 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                 }
             }
             Screen::End => {
+                // R: retry, same seed (byte 6, save v2). Carries `echo`
+                // forward from the death position/depth so a future
+                // renderer (Phase 4) can mark it — see `Game::echo`'s doc
+                // comment. N: new world, same reroll byte 5 always was.
+                // Both, plus Q, auto-capture a ghost first if the run that
+                // just ended was DEAD (never for a win — see `write_ghost`).
                 if window.is_key_pressed(Key::R, KeyRepeat::No) {
+                    if game.dead {
+                        write_ghost(&game, whash, &attempt_log);
+                    }
+                    let echo = if game.dead { Some((game.px, game.py, game.depth)) } else { None };
+                    input_log.push(INPUT_RETRY);
+                    attempt_log.clear();
+                    let s = game.seed;
+                    game = Game::new(s);
+                    game.echo = echo;
+                    window.set_title(&title(s));
+                    confirm_armed = false;
+                    screen = Screen::Play;
+                }
+                if window.is_key_pressed(Key::N, KeyRepeat::No) {
+                    if game.dead {
+                        write_ghost(&game, whash, &attempt_log);
+                    }
                     input_log.push(INPUT_RESTART);
+                    attempt_log.clear();
                     let s = h64(game.seed, &["restart"]);
                     game = Game::new(s);
                     whash = world_hash(s);
@@ -201,6 +257,9 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     screen = Screen::Play;
                 }
                 if window.is_key_pressed(Key::Q, KeyRepeat::No) {
+                    if game.dead {
+                        write_ghost(&game, whash, &attempt_log);
+                    }
                     break;
                 }
             }

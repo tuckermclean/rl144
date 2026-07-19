@@ -167,6 +167,19 @@ pub(crate) struct Game {
     /// hashed by state_hash: it doesn't affect anything replay needs to
     /// reproduce, only what's shown after the run is already over.
     pub(crate) killer: Option<&'static str>,
+    /// Where the PREVIOUS attempt ended, if this attempt began via a
+    /// same-seed RETRY (input byte 6, save v2 — see `save::replay` and
+    /// `save::INPUT_RETRY`): `(px, py, depth)` of the death tile, so a
+    /// future renderer (Phase 4, not this task) can mark it. `None` unless
+    /// this attempt started from byte 6 immediately after a DEAD ending —
+    /// a retry from a win or from mid-run leaves it `None` (see
+    /// `save::replay`'s byte-6 arm). Presentation-only, exactly like
+    /// `killer`: deliberately NOT hashed by `state_hash` (replay doesn't
+    /// need it to reproduce anything), NOT printed by `--dump`, and NOT
+    /// itself saved — `save_bytes` only ever serializes seed + input log,
+    /// and every replay recomputes `echo` fresh from the state the
+    /// PRECEDING Game was in the instant before byte 6 fired.
+    pub(crate) echo: Option<(i32, i32, u32)>,
     pub(crate) has_amulet: bool,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
@@ -206,6 +219,7 @@ impl Game {
             light: START_LIGHT,
             turns: 0,
             killer: None,
+            echo: None,
             has_amulet: false,
             monsters: Vec::new(),
             items: Vec::new(),

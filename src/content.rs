@@ -198,3 +198,44 @@ pub(crate) const VAULTS: [&str; 3] = [
      #!.....O#\n\
      #########",
 ];
+
+// ---------- Ghost labels ----------
+/* Preset phrases stamped into a ghost file's header (RLG1 format, save.rs).
+   Souls-style: no free text, ever — picking from this const table is the
+   whole "message" a ghost can leave. Selection is DETERMINISTIC, not a new
+   RNG channel: `ghost_label_idx` buckets by outcome (died_combat/died_dark/
+   won/abandoned, matching save.rs's GHOST_* outcome consts in that order,
+   3 labels per outcome) then picks within the bucket by final_depth (mod
+   3), so the same run always produces the same label with zero extra
+   draws. Grounding rule, same as THEMES/TONE_LINES: restates what the run
+   did, never invents an entity or event. All entries are ASCII and <=16
+   bytes (proved by `ghost_labels_fit_16_bytes` in main.rs). */
+pub(crate) const GHOST_LABELS: [&str; 12] = [
+    // died_combat (outcome 0)
+    "fought too much",
+    "outmatched",
+    "swarmed",
+    // died_dark (outcome 1)
+    "the dark won",
+    "torch ran out",
+    "lost the light",
+    // won (outcome 2)
+    "made it out",
+    "amulet in hand",
+    "climbed free",
+    // abandoned (outcome 3)
+    "gave up early",
+    "walked away",
+    "left it behind",
+];
+
+/// Deterministic ghost-label selection: no RNG channel, just outcome and
+/// final depth. `outcome` picks a band of `GHOST_LABELS` sized by the 4
+/// known outcomes (see save.rs's GHOST_* consts); `final_depth` picks
+/// within the band. Sized off `GHOST_LABELS.len()` rather than a hardcoded
+/// 3 so the table and the selector can't silently drift apart.
+pub(crate) fn ghost_label_idx(outcome: u8, final_depth: u8) -> u8 {
+    let per_outcome = (GHOST_LABELS.len() / 4) as u8;
+    let band = outcome.min(3) * per_outcome;
+    band + final_depth % per_outcome
+}
