@@ -58,6 +58,11 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// player, light, flags, RNG channel states, live level, and every stashed
 /// level. If two replays of one save ever hash differently, channel
 /// discipline broke somewhere.
+///
+/// `g.killer` is deliberately NOT hashed: it's presentation-only (the End
+/// screen's cause-of-death line), doesn't affect anything replay needs to
+/// reproduce, and is fully determined by state that IS hashed anyway (the
+/// attack sequence that led to `dead`).
 pub(crate) fn state_hash(g: &Game) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for v in [
@@ -70,6 +75,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         g.atk as u64,
         g.light as u64,
         g.kills as u64,
+        g.turns as u64,
         g.has_amulet as u64,
         g.dead as u64,
         g.won as u64,

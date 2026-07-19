@@ -6,16 +6,41 @@
 
 use crate::game::{COLS, Game, ROWS};
 use crate::headless::world_hash;
-use crate::render::{CELLS, Cell, render_cells};
+use crate::render::{CELLS, Cell, Screen, render_cells};
 use crate::rng::h64;
 use crate::save::{INPUT_RESTART, save_bytes, save_filename};
-use font8x8::legacy::BASIC_LEGACY;
+use font8x8::legacy::{BASIC_LEGACY, BLOCK_LEGACY, BOX_LEGACY};
 use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
 
 const CW: usize = 8;
 const CH: usize = 12;
 pub(crate) const WIDTH: usize = COLS * CW; // 640
 pub(crate) const HEIGHT: usize = ROWS * CH; // 360
+
+/// Resolve a cell glyph's 8x8 bitmap. ASCII (<128) comes from font8x8's
+/// legacy BASIC table (unchanged from before this task). Box-drawing
+/// (U+2500..=U+257F, wall autotiling + Title/End panel borders) and block
+/// (U+2580..=U+259F, the status bars' filled/empty glyphs) glyphs come from
+/// their own legacy tables. All three are DIRECT array indices, not a
+/// search: font8x8 0.3's box.rs/block.rs build BOX_UNICODE/BLOCK_UNICODE as
+/// exactly `FontUnicode(base + i, LEGACY[i])` for consecutive codepoints
+/// starting at 0x2500/0x2580 respectively (confirmed by reading the
+/// vendored source under font8x8-0.3.1/src/{box,block}.rs), so
+/// `codepoint - base` is the legacy-table index — O(1), no linear scan
+/// despite covering ~160 codepoints across the two tables. Any other
+/// ch >= 128 is unmapped -> None -> blank cell (unchanged from before this
+/// task). This only needs the `legacy` module, which font8x8 compiles
+/// unconditionally (see Cargo.toml: the "unicode" feature — the FontUnicode
+/// search API we don't use — was dropped as dead weight against the size
+/// budget).
+fn glyph_bits(ch: u16) -> Option<[u8; 8]> {
+    match ch {
+        0..=127 => Some(BASIC_LEGACY[ch as usize]),
+        0x2500..=0x257F => Some(BOX_LEGACY[(ch - 0x2500) as usize]),
+        0x2580..=0x259F => Some(BLOCK_LEGACY[(ch - 0x2580) as usize]),
+        _ => None,
+    }
+}
 
 /// Rasterize one cell's glyph into the pixel buffer: fill its 8x12 rect with
 /// `bg`, then stamp the glyph's set pixels in `fg`. `bg` is 0x000000
@@ -27,10 +52,9 @@ fn draw_glyph(buf: &mut [u32], ox: usize, oy: usize, ch: u16, fg: u32, bg: u32) 
             buf[(oy + y) * WIDTH + ox + x] = bg;
         }
     }
-    if ch >= 128 {
-        return; // unicode box/block glyphs land in a later task
-    }
-    let glyph = BASIC_LEGACY[ch as usize & 0x7F];
+    let Some(glyph) = glyph_bits(ch) else {
+        return;
+    };
     let gy0 = oy + (CH - 8) / 2; // keep font8x8's 8px glyph centered in the 12px cell
     for (gy, bits) in glyph.iter().enumerate() {
         for gx in 0..8 {
@@ -56,8 +80,10 @@ fn rasterize(cells: &[Cell], buf: &mut [u32]) {
 /// (window, key polling, save-file I/O, title). `seed0`/`input_log`/`game`
 /// come from either a fresh seed or a `--load`ed save; `daily`/`day` are
 /// only used for the title and the once-per-run daily log line (already
-/// logged by the caller before `run` is entered).
-pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: bool, day: u64) {
+/// logged by the caller before `run` is entered). `loaded` is whether
+/// `game` came from `--load`: a loaded run skips the Title screen (the
+/// player already knows this world) and opens straight on Play.
+pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: bool, day: u64, loaded: bool) {
     // The 80x30 cell grid (640x360 logical pixels) is engine API — COLS and
     // MAP_H are baked into worldgen, so the grid can never follow the
     // window. The window is presentation: minifb scales the fixed buffer,
@@ -106,52 +132,79 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
     // while armed writes. Any real game input (move/wait/restart) disarms
     // it, so a stray F5 days later doesn't silently clobber a save.
     let mut confirm_armed = false;
+    // Title at launch unless resuming a --load; End once the run is over
+    // (checked at the bottom of the Play arm, same frame the game reports
+    // dead/won). See render::Screen's doc comment for the full state
+    // machine.
+    let mut screen = if loaded { Screen::Play } else { Screen::Title };
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        for (key, (dx, dy)) in moves {
-            if window.is_key_pressed(key, KeyRepeat::Yes) {
-                input_log.push(match (dx, dy) {
-                    (0, -1) => 0,
-                    (0, 1) => 1,
-                    (-1, 0) => 2,
-                    _ => 3,
-                });
-                game.try_move_player(dx, dy);
-                confirm_armed = false;
+        match screen {
+            Screen::Title => {
+                // Any key dismisses the title — consumed here WITHOUT
+                // logging an input byte or touching `game`, so a title
+                // screen never perturbs replay.
+                if !window.get_keys_pressed(KeyRepeat::No).is_empty() {
+                    screen = Screen::Play;
+                }
             }
-        }
-        if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
-            input_log.push(4);
-            game.wait_turn();
-            confirm_armed = false;
-        }
-        if (game.dead || game.won) && window.is_key_pressed(Key::R, KeyRepeat::No) {
-            input_log.push(INPUT_RESTART);
-            let s = h64(game.seed, &["restart"]);
-            game = Game::new(s);
-            whash = world_hash(s);
-            window.set_title(&title(s));
-            confirm_armed = false;
-        }
-        // F1: identify the world. Log-only — consumes no turn, no input byte,
-        // and touches no RNG channel, so replay is unaffected.
-        if window.is_key_pressed(Key::F1, KeyRepeat::No) {
-            game.log(format!("Seed {}  world {:016x}", game.seed, whash));
-        }
-        if window.is_key_pressed(Key::F5, KeyRepeat::No) {
-            let fname = save_filename(whash);
-            if std::path::Path::new(&fname).exists() && !confirm_armed {
-                confirm_armed = true;
-                game.log(format!("{} exists. F5 again to overwrite.", fname));
-            } else {
-                confirm_armed = false;
-                match std::fs::write(&fname, save_bytes(seed0, &input_log)) {
-                    Ok(()) => game.log(format!("Saved to {}.", fname)),
-                    Err(_) => game.log(String::from("Save failed!")),
+            Screen::Play => {
+                for (key, (dx, dy)) in moves {
+                    if window.is_key_pressed(key, KeyRepeat::Yes) {
+                        input_log.push(match (dx, dy) {
+                            (0, -1) => 0,
+                            (0, 1) => 1,
+                            (-1, 0) => 2,
+                            _ => 3,
+                        });
+                        game.try_move_player(dx, dy);
+                        confirm_armed = false;
+                    }
+                }
+                if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
+                    input_log.push(4);
+                    game.wait_turn();
+                    confirm_armed = false;
+                }
+                // F1: identify the world. Log-only — consumes no turn, no
+                // input byte, and touches no RNG channel, so replay is
+                // unaffected.
+                if window.is_key_pressed(Key::F1, KeyRepeat::No) {
+                    game.log(format!("Seed {}  world {:016x}", game.seed, whash));
+                }
+                if window.is_key_pressed(Key::F5, KeyRepeat::No) {
+                    let fname = save_filename(whash);
+                    if std::path::Path::new(&fname).exists() && !confirm_armed {
+                        confirm_armed = true;
+                        game.log(format!("{} exists. F5 again to overwrite.", fname));
+                    } else {
+                        confirm_armed = false;
+                        match std::fs::write(&fname, save_bytes(seed0, &input_log)) {
+                            Ok(()) => game.log(format!("Saved to {}.", fname)),
+                            Err(_) => game.log(String::from("Save failed!")),
+                        }
+                    }
+                }
+                if game.dead || game.won {
+                    screen = Screen::End;
+                }
+            }
+            Screen::End => {
+                if window.is_key_pressed(Key::R, KeyRepeat::No) {
+                    input_log.push(INPUT_RESTART);
+                    let s = h64(game.seed, &["restart"]);
+                    game = Game::new(s);
+                    whash = world_hash(s);
+                    window.set_title(&title(s));
+                    confirm_armed = false;
+                    screen = Screen::Play;
+                }
+                if window.is_key_pressed(Key::Q, KeyRepeat::No) {
+                    break;
                 }
             }
         }
-        render_cells(&game, &mut cells);
+        render_cells(&game, screen, &mut cells);
         rasterize(&cells, &mut buf);
         window.update_with_buffer(&buf, WIDTH, HEIGHT).expect("update");
     }

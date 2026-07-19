@@ -21,7 +21,7 @@
 
 use crate::game::{COLS, Game, ROWS};
 use crate::headless::world_hash;
-use crate::render::{CELLS, Cell, render_cells};
+use crate::render::{CELLS, Cell, Screen, render_cells};
 use crate::rng::h64;
 use crate::save::{INPUT_RESTART, save_bytes, save_filename};
 use std::sync::OnceLock;
@@ -264,6 +264,21 @@ pub(crate) fn c256(rgb: u32) -> u8 {
     (16 + 36 * q(r) + 6 * q(g) + q(b)) as u8
 }
 
+/// ascii=true's high-glyph fallback: the two block glyphs the status bars
+/// use map to legible 7-bit stand-ins (0x2588 filled -> '#', 0x2591 empty
+/// -> '-'), any box-drawing glyph (walls, panel borders) -> '#', anything
+/// else unmapped -> '?' rather than silently reading as '#'. Pure, so it's
+/// both what `frame_bytes` uses and what `ascii_glyph_fallback_mapping`
+/// exercises directly.
+fn ascii_fallback(ch: u16) -> u16 {
+    match ch {
+        0x2588 => b'#' as u16,
+        0x2591 => b'-' as u16,
+        0x2500..=0x257F => b'#' as u16,
+        _ => b'?' as u16,
+    }
+}
+
 /// Encode a Cell grid as an ANSI byte stream. `prev = None` is a full
 /// redraw (`\x1b[2J\x1b[H` then every cell); `prev = Some(..)` emits
 /// escapes only for cells that changed (dirty-cell discipline) — this is
@@ -312,7 +327,7 @@ pub(crate) fn frame_bytes(cells: &[Cell], prev: Option<&[Cell]>, ascii: bool) ->
             }
             let mut ch = cell.ch;
             if ascii && ch >= 128 {
-                ch = b'#' as u16;
+                ch = ascii_fallback(ch);
             }
             if ch < 128 {
                 out.push(ch as u8);
@@ -332,11 +347,13 @@ pub(crate) fn frame_bytes(cells: &[Cell], prev: Option<&[Cell]>, ascii: bool) ->
 /// write its full-redraw byte stream to stdout, then return. No termios
 /// calls, no alt screen — this is the frame-golden verification surface, so
 /// it must work identically whether stdout is a real terminal or a
-/// redirected file.
+/// redirected file. Always renders Screen::Play (the map view) regardless
+/// of what a live session would show at turn 0 (Title) — that's the
+/// surface tests/golden/frame_seed_*.bin freezes.
 pub(crate) fn render_frame_main(seed: u64, ascii: bool) {
     let game = Game::new(seed);
     let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
-    render_cells(&game, &mut cells);
+    render_cells(&game, Screen::Play, &mut cells);
     let bytes = frame_bytes(&cells, None, ascii);
     raw_write(&bytes);
 }
@@ -347,71 +364,105 @@ pub(crate) fn render_frame_main(seed: u64, ascii: bool) {
 /// Game exactly as backend_minifb does (input_log push, apply_input,
 /// confirm_armed discipline) -> render_cells -> frame_bytes(dirty diff) ->
 /// write. First frame is a full redraw. `seed0`/`input_log`/`game` come
-/// from either a fresh seed or a `--load`ed save, same as backend_minifb.
+/// from either a fresh seed or a `--load`ed save, same as backend_minifb;
+/// `loaded` (also same as backend_minifb) skips the Title screen when true.
 /// `ascii` is the `--ascii` flag; term-only, so it's an extra trailing
 /// param rather than threading through backend_minifb's signature (the two
 /// backend dispatch call sites in main.rs are already independently
 /// cfg-gated, so this doesn't touch backend_minifb at all).
-pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, _daily: bool, _day: u64, ascii: bool) {
+pub(crate) fn run(
+    seed0: u64,
+    mut input_log: Vec<u8>,
+    mut game: Game,
+    _daily: bool,
+    _day: u64,
+    ascii: bool,
+    loaded: bool,
+) {
     let mut whash = world_hash(game.seed);
     let raw = enter_raw_mode();
     install_panic_hook();
 
     let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
     let mut confirm_armed = false;
+    let mut screen = if loaded { Screen::Play } else { Screen::Title };
 
-    render_cells(&game, &mut cells);
+    render_cells(&game, screen, &mut cells);
     raw_write(&frame_bytes(&cells, None, ascii));
     let mut prev = cells.clone();
 
     loop {
-        match read_input(raw) {
-            Input::Quit => break,
-            Input::Move(b) => {
-                input_log.push(b);
-                game.apply_input(b);
-                confirm_armed = false;
-            }
-            Input::Wait => {
-                input_log.push(4);
-                game.apply_input(4);
-                confirm_armed = false;
-            }
-            // Restart only fires once the run is over, matching the minifb
-            // backend's `(game.dead || game.won) && ...` gate.
-            Input::Restart if game.dead || game.won => {
-                input_log.push(INPUT_RESTART);
-                let s = h64(game.seed, &["restart"]);
-                game = Game::new(s);
-                whash = world_hash(s);
-                // No window title in a terminal — log the world identity
-                // instead, same info the minifb backend puts in the title.
-                game.log(format!("Seed {}  world {:016x}", s, whash));
-                confirm_armed = false;
-            }
-            Input::Restart => {}
-            // F5 double-press overwrite confirm, identical to backend_minifb.
-            Input::Save => {
-                let fname = save_filename(whash);
-                if std::path::Path::new(&fname).exists() && !confirm_armed {
-                    confirm_armed = true;
-                    game.log(format!("{} exists. F5 again to overwrite.", fname));
-                } else {
-                    confirm_armed = false;
-                    match std::fs::write(&fname, save_bytes(seed0, &input_log)) {
-                        Ok(()) => game.log(format!("Saved to {}.", fname)),
-                        Err(_) => game.log(String::from("Save failed!")),
-                    }
+        match screen {
+            Screen::Title => {
+                // Any key dismisses the title. Consumed as a single raw
+                // byte (not the full read_input interpretation) WITHOUT
+                // logging an input byte or touching `game`, so a title
+                // screen never perturbs replay. EOF (stdin closed) quits,
+                // same as Input::Quit would elsewhere in this loop.
+                match raw_read_byte() {
+                    Some(_) => screen = Screen::Play,
+                    None => break,
                 }
             }
-            // F1: identify the world. Log-only — consumes no turn, no input
-            // byte, and touches no RNG channel, so replay is unaffected.
-            Input::Info => {
-                game.log(format!("Seed {}  world {:016x}", game.seed, whash));
+            Screen::Play => {
+                match read_input(raw) {
+                    Input::Quit => break,
+                    Input::Move(b) => {
+                        input_log.push(b);
+                        game.apply_input(b);
+                        confirm_armed = false;
+                    }
+                    Input::Wait => {
+                        input_log.push(4);
+                        game.apply_input(4);
+                        confirm_armed = false;
+                    }
+                    // Restart is meaningless mid-run; only End acts on it.
+                    Input::Restart => {}
+                    // F5 double-press overwrite confirm, identical to backend_minifb.
+                    Input::Save => {
+                        let fname = save_filename(whash);
+                        if std::path::Path::new(&fname).exists() && !confirm_armed {
+                            confirm_armed = true;
+                            game.log(format!("{} exists. F5 again to overwrite.", fname));
+                        } else {
+                            confirm_armed = false;
+                            match std::fs::write(&fname, save_bytes(seed0, &input_log)) {
+                                Ok(()) => game.log(format!("Saved to {}.", fname)),
+                                Err(_) => game.log(String::from("Save failed!")),
+                            }
+                        }
+                    }
+                    // F1: identify the world. Log-only — consumes no turn,
+                    // no input byte, and touches no RNG channel, so replay
+                    // is unaffected.
+                    Input::Info => {
+                        game.log(format!("Seed {}  world {:016x}", game.seed, whash));
+                    }
+                    Input::Ignore => {}
+                }
+                if game.dead || game.won {
+                    screen = Screen::End;
+                }
             }
-            Input::Ignore => {}
+            Screen::End => match read_input(raw) {
+                Input::Quit => break,
+                Input::Restart => {
+                    input_log.push(INPUT_RESTART);
+                    let s = h64(game.seed, &["restart"]);
+                    game = Game::new(s);
+                    whash = world_hash(s);
+                    // No window title in a terminal — log the world
+                    // identity instead, same info the minifb backend puts
+                    // in the title.
+                    game.log(format!("Seed {}  world {:016x}", s, whash));
+                    confirm_armed = false;
+                    screen = Screen::Play;
+                }
+                _ => {} // End only acts on restart/quit; everything else is ignored.
+            },
         }
-        render_cells(&game, &mut cells);
+        render_cells(&game, screen, &mut cells);
         raw_write(&frame_bytes(&cells, Some(&prev), ascii));
         prev.copy_from_slice(&cells);
     }
@@ -496,14 +547,26 @@ mod tests {
         assert!(!contains(&same, b"\x1b[2J"));
     }
 
-    /// ascii=true maps any glyph >=128 to '#', so the whole byte stream
-    /// stays 7-bit even when the grid contains a box-drawing codepoint.
+    /// ascii=true maps any glyph >=128 to a 7-bit stand-in, so the whole
+    /// byte stream stays 7-bit even when the grid contains a box-drawing
+    /// codepoint.
     #[test]
     fn ascii_mode_no_high_bytes() {
         let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
         cells[10] = Cell { ch: 0x2500, fg: 0xFFFFFF, bg: 0 };
         let out = frame_bytes(&cells, None, true);
         assert!(out.iter().all(|&b| b < 0x80));
+    }
+
+    /// The specific ascii>=128 mapping: block glyphs -> '#'/'-', any
+    /// box-drawing codepoint -> '#', anything else unmapped -> '?'.
+    #[test]
+    fn ascii_glyph_fallback_mapping() {
+        assert_eq!(ascii_fallback(0x2588), b'#' as u16); // bar: filled block
+        assert_eq!(ascii_fallback(0x2591), b'-' as u16); // bar: empty block
+        assert_eq!(ascii_fallback(0x2500), b'#' as u16); // box-drawing: wall/border
+        assert_eq!(ascii_fallback(0x253C), b'#' as u16); // box-drawing: cross (top of range)
+        assert_eq!(ascii_fallback(0x1234), b'?' as u16); // unmapped high codepoint
     }
 
     /// frame_bytes is pure: same cells, same output, every time.

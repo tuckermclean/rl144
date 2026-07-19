@@ -5,7 +5,14 @@ edition = "2021"
 
 [dependencies]
 minifb = { version = "0.25", default-features = false, features = ["x11"], optional = true }
-font8x8 = { version = "0.3", default-features = false, features = ["unicode"], optional = true }
+# default-features = false, and no "unicode" feature: we only use the
+# `legacy` module (plain [u8;8] tables — BASIC/BOX/BLOCK_LEGACY), which
+# font8x8 compiles unconditionally (see lib.rs: `pub mod legacy;` has no
+# `unicode` cfg gate). The "unicode" feature's FontUnicode/UnicodeFonts
+# search API is unused by backend_minifb.rs (task 5 switched to direct
+# LEGACY-table indexing), so dropping it drops the basic/block/box/greek/
+# hiragana/latin/misc/sga modules' const tables as dead weight.
+font8x8 = { version = "0.3", default-features = false, optional = true }
 
 [features]
 default = ["backend-minifb"]

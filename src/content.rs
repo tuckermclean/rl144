@@ -125,6 +125,50 @@ pub(crate) fn theme_pick(seed: u64, depth: u32) -> (usize, [usize; 3]) {
     (ti, slots)
 }
 
+/// The theme for a given seed+depth — pure f(seed, depth), no RNG draws
+/// beyond theme_pick's own channel. Free function (rather than a Game
+/// method) so both `Game::theme` (live play) and the Title/End screens
+/// (render.rs, which may want a depth other than the current run depth —
+/// e.g. depth 1 for the title, MAX_DEPTH for the amulet's name) share one
+/// implementation.
+pub(crate) fn theme_for(seed: u64, depth: u32) -> &'static Theme {
+    &THEMES[theme_pick(seed, depth).0]
+}
+
+/// The filled lore line for a given seed+depth+tier — pure f(seed, depth,
+/// tier), no RNG draws. Shared by `Game::lore_line` (live pickup flavor)
+/// and the Title screen (depth-1 tier-0 preview).
+pub(crate) fn lore_line(seed: u64, depth: u32, tier: usize) -> String {
+    let (ti, slots) = theme_pick(seed, depth);
+    let t = &THEMES[ti];
+    t.lore[tier].replace("{A}", t.slots[slots[tier]])
+}
+
+// ---------- Palette ----------
+/* Every color literal used by game.rs/render.rs/the backends lives here as
+   a named const, so there is one source of truth for "what color is a
+   goblin" or "what color is the HP bar." Values are unchanged from their
+   prior inline-literal call sites; only the bar/empty-segment colors are
+   new (introduced by the status-bar sub-task). Theme wall/floor colors
+   stay on `Theme` — they're per-theme, not global. */
+pub(crate) const PAL_PLAYER: u32 = 0xFFFFFF;
+pub(crate) const PAL_STAIRS: u32 = 0xFFFF60;
+pub(crate) const PAL_POTION: u32 = 0xFF50A0;
+pub(crate) const PAL_SWORD: u32 = 0x70B0FF;
+pub(crate) const PAL_AMULET: u32 = 0xFFD700;
+pub(crate) const PAL_LORE: u32 = 0xC0A0FF;
+pub(crate) const PAL_RAT: u32 = 0xB0703A;
+pub(crate) const PAL_GOBLIN: u32 = 0x40C040;
+pub(crate) const PAL_OGRE: u32 = 0xD05050;
+pub(crate) const PAL_STATUS: u32 = 0xE0E0E0;
+pub(crate) const PAL_ALERT: u32 = 0xFF5050;
+pub(crate) const PAL_LOG_FADE: [u32; 4] = [0x707070, 0x909090, 0xB0B0B0, 0xE0E0E0];
+// New (status-bar sub-task): bar fill colors and the shared unfilled-
+// segment color (light shade block, 0x2591, dimmed neutral gray).
+pub(crate) const PAL_BAR_HP: u32 = 0x50C050;
+pub(crate) const PAL_BAR_TORCH: u32 = 0xE0A030;
+pub(crate) const PAL_BAR_EMPTY: u32 = 0x404040;
+
 // ---------- Vaults ----------
 /* Hand-authored rooms, stamped whole into a level by the "vault" channel.
    Legend: '#' wall, '.' floor, '!' potion, ')' sword, 'r'/'g'/'O' monster

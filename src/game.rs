@@ -4,7 +4,9 @@
 // and the solver's bfs_dist. apply_input is the client input-vocabulary
 // boundary between this engine and any frontend (window loop, replay, sim).
 
-use crate::content::{KINDS, THEMES, TONE_LINES, Theme, VAULTS, theme_pick};
+use crate::content::{
+    KINDS, PAL_GOBLIN, PAL_OGRE, PAL_RAT, TONE_LINES, Theme, VAULTS, lore_line, theme_for,
+};
 use crate::rng::{Rng, channel};
 
 pub(crate) const COLS: usize = 80;
@@ -17,8 +19,11 @@ const MONSTER_SIGHT: i32 = 8;
    set is 1503 (--solve 10000, worstSeed 6592; budget = descend ×1 + climb
    out ×2 per step, see solve_seed). Start light 2000 leaves ~33% margin for
    combat, detours and loot runs. Changing this re-tunes every run: rerun
-   --solve and re-commit tests/solver-band.json alongside it. */
-const START_LIGHT: i32 = 2000;
+   --solve and re-commit tests/solver-band.json alongside it.
+   pub(crate): render.rs reads this to compute the Torch bar's fill
+   proportion (light / START_LIGHT) in the status bar — read-only, the
+   value is never written from outside this module. */
+pub(crate) const START_LIGHT: i32 = 2000;
 
 /// Player FOV radius shrinks as the torch burns down. Percent of START_LIGHT.
 pub(crate) fn fov_radius(light: i32) -> i32 {
@@ -32,6 +37,23 @@ pub(crate) fn fov_radius(light: i32) -> i32 {
         _ => 2,
     }
 }
+
+/// Tier-crossing torch warnings, one per FOV-radius step fov_radius can
+/// land on below the starting 8 (6, 5, 4, 3, 2 — see fov_radius's match
+/// arms). `{}` is filled with a theme adjective via `self.adj()` (a
+/// flavor_rng draw: deterministic in-run, replay-safe by construction,
+/// and on its own channel so it never perturbs worldgen/spawns/combat).
+/// Every template must fit the 78-char log row for EVERY theme's EVERY
+/// adjective — proved by `theme_lines_fit_log_row` in main.rs's test
+/// module. Grounding rule: restates the engine fact (the torch is
+/// dimming) with theme color, invents nothing.
+pub(crate) const TIER_WARNINGS: [&str; 5] = [
+    "The {} shadows edge closer as your torch burns low.",
+    "The flame gutters; the {} dark takes what light remains.",
+    "Darkness presses in, {} and patient, around your failing light.",
+    "Your torch is nearly spent. The {} dark waits. Hurry.",
+    "The last embers gutter. The {} dark is almost total.",
+];
 
 // ---------- Map ----------
 #[derive(Clone, Copy, PartialEq)]
@@ -61,9 +83,9 @@ impl Monster {
     pub(crate) fn stats(kind: MKind) -> (i32, i32, u8, u32, &'static str) {
         // (hp, atk, glyph, color, name)
         match kind {
-            MKind::Rat => (3, 1, b'r', 0xB0703A, "rat"),
-            MKind::Goblin => (6, 2, b'g', 0x40C040, "goblin"),
-            MKind::Ogre => (13, 4, b'O', 0xD05050, "ogre"),
+            MKind::Rat => (3, 1, b'r', PAL_RAT, "rat"),
+            MKind::Goblin => (6, 2, b'g', PAL_GOBLIN, "goblin"),
+            MKind::Ogre => (13, 4, b'O', PAL_OGRE, "ogre"),
         }
     }
 }
@@ -121,6 +143,17 @@ pub(crate) struct Game {
     pub(crate) depth: u32,
     pub(crate) kills: u32,
     pub(crate) light: i32,
+    /// Player turns taken: incremented once per `spend_turn` call (move
+    /// onto floor, an attack swing, or a wait — see spend_turn). Hashed
+    /// into state_hash like every other run-defining field.
+    pub(crate) turns: u32,
+    /// Themed name of the monster that landed the killing blow, set in
+    /// `monsters_act` right before `dead = true`. `None` for a darkness
+    /// death (light hits 0 in `spend_turn`) or while alive. Presentation-
+    /// only (the End screen's cause-of-death line) — deliberately NOT
+    /// hashed by state_hash: it doesn't affect anything replay needs to
+    /// reproduce, only what's shown after the run is already over.
+    pub(crate) killer: Option<&'static str>,
     pub(crate) has_amulet: bool,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
@@ -158,6 +191,8 @@ impl Game {
             depth: 1,
             kills: 0,
             light: START_LIGHT,
+            turns: 0,
+            killer: None,
             has_amulet: false,
             monsters: Vec::new(),
             items: Vec::new(),
@@ -179,14 +214,12 @@ impl Game {
     }
 
     pub(crate) fn theme(&self) -> &'static Theme {
-        &THEMES[theme_pick(self.seed, self.depth).0]
+        theme_for(self.seed, self.depth)
     }
 
     /// The filled lore line for a tier of the current depth's theme.
     fn lore_line(&self, tier: usize) -> String {
-        let (ti, slots) = theme_pick(self.seed, self.depth);
-        let t = &THEMES[ti];
-        t.lore[tier].replace("{A}", t.slots[slots[tier]])
+        lore_line(self.seed, self.depth, tier)
     }
 
     fn mob_name(&self, k: MKind) -> &'static str {
@@ -471,6 +504,7 @@ impl Game {
     /// amulet (it is heavy). Light 0 is death in the dark — checked before
     /// any win condition, golem-style. Returns false if the player died.
     fn spend_turn(&mut self) -> bool {
+        self.turns += 1;
         let before = fov_radius(self.light);
         self.light -= if self.has_amulet { 2 } else { 1 };
         if self.light <= 0 {
@@ -482,14 +516,20 @@ impl Game {
         }
         let after = fov_radius(self.light);
         if after < before {
-            let warn = match after {
-                6 => "Your torch burns low. The shadows edge closer.",
-                5 => "The flame gutters; you can see less and less.",
-                4 => "Darkness presses in around your failing light.",
-                3 => "Your torch is nearly spent. Hurry.",
-                _ => "The last embers. The dark is almost total.",
+            // Index by the radius just crossed into: fov_radius only ever
+            // steps through 6, 5, 4, 3, 2 below the starting 8 (see
+            // fov_radius's match arms), so this covers every reachable
+            // `after` value; `_` is unreachable but kept for exhaustiveness
+            // rather than a panic if that ever changes.
+            let ti = match after {
+                6 => 0,
+                5 => 1,
+                4 => 2,
+                3 => 3,
+                _ => 4,
             };
-            self.log(String::from(warn));
+            let a = self.adj();
+            self.log(TIER_WARNINGS[ti].replace("{}", a));
         }
         true
     }
@@ -741,6 +781,7 @@ impl Game {
             if self.hp <= 0 {
                 self.hp = 0;
                 self.dead = true;
+                self.killer = Some(name);
                 self.log(format!("The {} kills you... [R] to restart", name));
                 return;
             }

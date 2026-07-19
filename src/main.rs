@@ -32,7 +32,7 @@ use save::{parse_save, replay, state_hash};
 #[cfg(test)]
 use content::{KINDS, THEMES, TONE_LINES, VAULTS};
 #[cfg(test)]
-use game::{Tile, idx, in_map};
+use game::{TIER_WARNINGS, Tile, idx, in_map};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -129,18 +129,21 @@ fn main() {
         return;
     }
 
-    let (seed0, input_log, mut game) = match str_val("--load") {
+    // `loaded` distinguishes a `--load`ed save from a fresh seed: it's how
+    // the backends decide whether to open on the Title screen or skip
+    // straight to Play (see backend_minifb::run / backend_term::run).
+    let (seed0, input_log, mut game, loaded) = match str_val("--load") {
         Some(path) => match std::fs::read(&path).ok().and_then(|b| parse_save(&b)) {
             Some((s0, inputs)) => {
                 let g = replay(s0, &inputs);
-                (s0, inputs, g)
+                (s0, inputs, g, true)
             }
             None => {
                 eprintln!("bad save file: {}", path);
                 std::process::exit(1);
             }
         },
-        None => (seed, Vec::new(), Game::new(seed)),
+        None => (seed, Vec::new(), Game::new(seed), false),
     };
     if daily && input_log.is_empty() {
         game.log(format!("Daily dungeon #{}. Everyone gets this one today.", day));
@@ -152,9 +155,9 @@ fn main() {
     // writes on quit — and consumes the game purely through the core cell
     // grid (render::render_cells) and the input-byte vocabulary.
     #[cfg(feature = "backend-minifb")]
-    backend_minifb::run(seed0, input_log, game, daily, day);
+    backend_minifb::run(seed0, input_log, game, daily, day, loaded);
     #[cfg(feature = "backend-term")]
-    backend_term::run(seed0, input_log, game, daily, day, ascii);
+    backend_term::run(seed0, input_log, game, daily, day, ascii, loaded);
 }
 
 #[cfg(test)]
@@ -251,7 +254,10 @@ mod tests {
     }
 
     /// Every lore line must fit the 78-char log row for every slot filling,
-    /// and so must the fixed-shape flavor messages.
+    /// and so must the fixed-shape flavor messages — including the
+    /// tier-crossing torch warnings (batch 3), which weave in a theme
+    /// adjective via `self.adj()` and so must fit for EVERY theme's EVERY
+    /// adjective, not just one.
     #[test]
     fn theme_lines_fit_log_row() {
         for lines in &TONE_LINES {
@@ -267,6 +273,12 @@ mod tests {
             for lore in &t.lore {
                 for slot in &t.slots {
                     let line = lore.replace("{A}", slot);
+                    assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
+                }
+            }
+            for warn in &TIER_WARNINGS {
+                for adj in &t.adjs {
+                    let line = warn.replace("{}", adj);
                     assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
                 }
             }
