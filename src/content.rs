@@ -145,25 +145,30 @@ pub(crate) fn lore_line(seed: u64, depth: u32, tier: usize) -> String {
 }
 
 /* Mercy as talk (batch 5, DECISION.md item 3 — the Henson ruling: "if you
-   could talk to a rat, you could give a rat mercy"). Each talk (input bytes
-   7-10, game.rs `Game::try_talk_player`) draws one line here, keyed by
-   `[MKind as usize][stage]` — stage 0 = the monster's first talk, 1 = a
-   later talk before it calms, 2 = the talk that crosses
-   `Monster::talk_threshold` (also reused, unchanged, for any further talk on
-   an already-calm monster). Two variants per cell, picked via
-   `flavor_rng` — same per-run, replay-safe channel and the same
-   `TONE_LINES`-style variant-array shape as this file's other flavor
-   tables, just with an extra (kind) dimension. `{M}` fills from the
+   could talk to a rat, you could give a rat mercy"; addendum, human
+   direction: talk is now `game::receptivity`-rolled, not a guaranteed
+   stay). Each talk (input bytes 7-10, game.rs `Game::try_talk_player`)
+   draws one line here, keyed by `[MKind as usize][stage]` — stage 0 = the
+   monster's first LANDED talk, 1 = a later landed talk before it calms,
+   2 = the landed talk that crosses `Monster::talk_threshold` (also reused,
+   unchanged, for any further talk on an already-calm monster), 3 = a
+   FAILED roll (the monster is unmoved — grounded per the same rule below,
+   voicing continued wariness, never a new invented event). Two variants
+   per cell, picked via `flavor_rng` — same per-run, replay-safe channel
+   and the same `TONE_LINES`-style variant-array shape as this file's other
+   flavor tables, just with an extra (kind) dimension. `{M}` fills from the
    theme's own mob name for that kind (`Theme::mobs[kind as usize]`) — the
    only slot, so a monster is always named in its own theme's voice.
    Register, low tier to high: rats are simple, small, quick to flinch;
    goblins are wary, visibly weighing you; ogres are slow and heavy, even
-   when they yield. Grounding rule (same as THEMES/TONE_LINES): a line may
-   only voice want/fear about things the engine proves — the dark, your
-   torch, its patch of the dungeon — never an invented event, never a
-   promise the engine can't keep. Length-tested (`talk_lines_fit_log_row`
-   in main.rs) across every theme's mob-name filling. */
-pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
+   when they yield (or don't). Grounding rule (same as THEMES/TONE_LINES):
+   a line may only voice want/fear about things the engine proves — the
+   dark, your torch, its patch of the dungeon — never an invented event,
+   never a promise the engine can't keep; a failed-stage line may say the
+   monster is unmoved/still wary and nothing more. Length-tested
+   (`talk_lines_fit_log_row` in main.rs) across every theme's mob-name
+   filling. */
+pub(crate) const TALK_LINES: [[[&str; 2]; 4]; 3] = [
     // rat
     [
         [
@@ -177,6 +182,10 @@ pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
         [
             "The {M} goes still. It won't cross you again.",
             "The {M} settles, calmer than the dark behind it.",
+        ],
+        [
+            "The {M} bolts sideways, unconvinced, and won't come near.",
+            "The {M} keeps its distance, still too wary of your torch.",
         ],
     ],
     // goblin
@@ -193,6 +202,10 @@ pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
             "The {M} steps back. It has chosen you over the dark.",
             "The {M} lowers its guard for good. You are not its enemy now.",
         ],
+        [
+            "The {M} narrows its eyes and does not lower its guard.",
+            "The {M} keeps weighing you, and the answer is still no.",
+        ],
     ],
     // ogre
     [
@@ -207,6 +220,10 @@ pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
         [
             "The {M} lowers its fists and turns from the dark behind it.",
             "The {M} settles, heavy and calm, and stands down for good.",
+        ],
+        [
+            "The {M} doesn't blink. Whatever you said, it isn't enough.",
+            "The {M} stays wary, heavy and unconvinced, watching you.",
         ],
     ],
 ];

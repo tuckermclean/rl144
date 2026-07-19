@@ -134,6 +134,48 @@ impl Monster {
     }
 }
 
+/// Parley receptivity (batch 5 addendum, human direction: "needs to be
+/// algorithm'd" — replaces the old flat counter with a guaranteed stayed
+/// swing per talk, which the pacifist-dominance finding in
+/// `tests/pacifist-band.json` traced its root cause to). A 0-99 roll
+/// against this percentage (`Game::try_talk_player`, via `parley_rng`)
+/// decides whether a single talk LANDS (advances `regard`, stays the
+/// monster this turn) or FAILS (no regard, no stay — the monster acts
+/// normally). Pure integer math over state already tracked; every term's
+/// provenance:
+///   `BASE[kind]`: rat 55, goblin 35, ogre 20 — starting values from the
+///   addendum, small/skittish reads as quicker to listen, large/stubborn as
+///   slower. Tunable within the addendum's [5,40] pacifist win_pct brief.
+///   `18 * m.regard`: persistence pays — each PRIOR landed talk (regard is
+///   only incremented on a landed roll, see `try_talk_player`) makes the
+///   next one likelier, so a monster mid-being-persuaded trends toward
+///   calm rather than resetting every attempt.
+///   `40 * (maxhp - m.hp) / maxhp`: wounds open ears — `maxhp` is the
+///   monster's OWN kind ceiling (`Monster::stats(m.kind).0`), not the
+///   player's; integer division truncates toward 0 (a fresh monster
+///   contributes exactly 0 here, a monster one hit from death contributes
+///   close to the full 40).
+///   `6 * (g.atk - 3)`: visible strength impresses — player atk starts at
+///   3 (`Game::new`), so this term is 0 at the run's start and grows by 12
+///   per sword (`Item::pickup`'s `IKind::Sword` arm, +2 atk each).
+///   `-10 if fov_radius(g.light) <= 4`: a guttering torch reads as
+///   weakness, not menace — `fov_radius` steps 8/6/5/4/3/2 as light burns
+///   down, so this fires on the bottom three tiers.
+///   `clamp(5, 95)`: never impossible, never certain, regardless of how
+///   the terms above sum.
+pub(crate) fn receptivity(m: &Monster, g: &Game) -> i32 {
+    let base = match m.kind {
+        MKind::Rat => 55,
+        MKind::Goblin => 35,
+        MKind::Ogre => 20,
+    };
+    let maxhp = Monster::stats(m.kind).0;
+    let torch_penalty = if fov_radius(g.light) <= 4 { 10 } else { 0 };
+    let r = base + 18 * m.regard as i32 + 40 * (maxhp - m.hp) / maxhp + 6 * (g.atk - 3)
+        - torch_penalty;
+    r.clamp(5, 95)
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum IKind {
     Potion,
@@ -260,6 +302,13 @@ pub(crate) struct Game {
     pub(crate) combat_rng: Rng,
     pub(crate) ai_rng: Rng,
     pub(crate) flavor_rng: Rng,
+    /// Parley rolls (batch 5 addendum, human direction: "needs to be
+    /// algorithm'd"): its own per-run channel (`channel(seed, &["parley"])`),
+    /// same isolation discipline as `combat_rng`/`ai_rng`/`flavor_rng` — a
+    /// parley draw must never perturb worldgen/spawns, nor any other
+    /// channel (see `parley_isolated_from_combat` in main.rs). Hashed in
+    /// `save::state_hash` alongside the other three run-stream RNG states.
+    pub(crate) parley_rng: Rng,
     pub(crate) dead: bool,
     pub(crate) won: bool,
 }
@@ -303,6 +352,7 @@ impl Game {
             combat_rng: channel(seed, &["combat"]),
             ai_rng: channel(seed, &["ai"]),
             flavor_rng: channel(seed, &["flavor"]),
+            parley_rng: channel(seed, &["parley"]),
             dead: false,
             won: false,
         };
@@ -817,27 +867,38 @@ impl Game {
     }
 
     /// Talk: the mercy verb (batch 5, DECISION.md item 3 — the Henson
-    /// ruling: mercy is a verb and the verb is TALK). Input bytes 7-10
-    /// (`apply_input`) map to N/S/W/E, mirroring the move bytes' 0-3
-    /// direction order exactly. A talk at a wall or empty tile is a no-op,
-    /// no turn — same as a wall bump. A talk at a live monster costs a
-    /// normal turn (`spend_turn(0)`: no violence tax, talk is not violence)
-    /// and logs one `content::TALK_LINES` line keyed by the monster's kind
-    /// and how many talks it has now received (`Monster::regard`, capped at
-    /// `Monster::talk_threshold`): the monster's first talk (stage 0), a
-    /// later talk still below threshold (stage 1), or the talk that crosses
-    /// the threshold (stage 2 — the monster becomes `calm` and
-    /// `self.spared` counts it, exactly as `kills` counts a kill). The
-    /// monster just talked to does not get to attack THIS turn (it is
-    /// listening) — passed to `monsters_act` as a plain function
-    /// parameter (`stayed`), not a stored field: it exists only for the
-    /// one `monsters_act` call this method makes and is gone the instant
-    /// that call returns, so it can never leak into a later turn or into
-    /// `state_hash` (unlike `regard`/`calm`, which ARE hashed — see
-    /// `save::state_hash`). Talking to an already-calm monster logs one more
-    /// stage-2 line (same flavor_rng-picked variety) but costs no turn;
-    /// `regard` is naturally capped since this branch returns before ever
-    /// touching it again.
+    /// ruling: mercy is a verb and the verb is TALK; addendum, human
+    /// direction: the flat guaranteed-stay counter is replaced by a
+    /// `receptivity`-rolled parley). Input bytes 7-10 (`apply_input`) map to
+    /// N/S/W/E, mirroring the move bytes' 0-3 direction order exactly. A
+    /// talk at a wall or empty tile is a no-op, no turn — same as a wall
+    /// bump. A talk at a live, non-calm monster ALWAYS costs a normal turn
+    /// (`spend_turn(0)`: no violence tax, talk is not violence — landed or
+    /// failed, the turn is spent either way) and rolls
+    /// `parley_rng.range(0, 100) < receptivity(&monster, self)` (its own
+    /// named channel — see `Game::parley_rng`'s doc comment — never
+    /// `combat_rng`):
+    ///   - LANDED: `regard` advances by one, keyed `content::TALK_LINES`
+    ///     stage 0/1/2 (first talk / a later one still below
+    ///     `Monster::talk_threshold` / the one that crosses it — crossing
+    ///     sets `calm` and counts `self.spared`, exactly as `kills` counts
+    ///     a kill), and the monster does not get to attack THIS turn (it is
+    ///     listening) — passed to `monsters_act` as a plain function
+    ///     parameter (`stayed`), not a stored field: it exists only for the
+    ///     one `monsters_act` call this method makes and is gone the
+    ///     instant that call returns, so it can never leak into a later
+    ///     turn or into `state_hash` (unlike `regard`/`calm`, which ARE
+    ///     hashed — see `save::state_hash`).
+    ///   - FAILED: `regard` is UNCHANGED (a failed talk carries risk, per
+    ///     the addendum — persistence only pays when it lands), the
+    ///     monster is NOT stayed (`monsters_act` receives `None` for it and
+    ///     it acts normally, meaning it may attack this same turn if
+    ///     adjacent and seeing the player), and a distinct stage-3 "unmoved"
+    ///     `TALK_LINES` line logs instead.
+    /// Talking to an already-calm monster logs one more stage-2 line (same
+    /// flavor_rng-picked variety, no roll — a calmed monster's answer is
+    /// settled) but costs no turn; `regard` is naturally capped since this
+    /// branch returns before ever touching it again.
     pub(crate) fn try_talk_player(&mut self, dx: i32, dy: i32) {
         self.fx_hit = None;
         if self.dead || self.won {
@@ -859,29 +920,41 @@ impl Game {
             self.log(line);
             return; // no turn cost change; regard stays capped
         }
-        let threshold = Monster::talk_threshold(kind);
-        let before = self.monsters[mi].regard;
-        self.monsters[mi].regard = before.saturating_add(1);
-        let regard = self.monsters[mi].regard;
-        let became_calm = regard >= threshold;
-        let stage = if became_calm {
-            2
-        } else if before == 0 {
-            0
+        let chance = receptivity(&self.monsters[mi], self);
+        let landed = self.parley_rng.range(0, 100) < chance;
+        let stayed = if landed {
+            let threshold = Monster::talk_threshold(kind);
+            let before = self.monsters[mi].regard;
+            self.monsters[mi].regard = before.saturating_add(1);
+            let regard = self.monsters[mi].regard;
+            let became_calm = regard >= threshold;
+            let stage = if became_calm {
+                2
+            } else if before == 0 {
+                0
+            } else {
+                1
+            };
+            if became_calm {
+                self.monsters[mi].calm = true;
+                self.spared += 1;
+            }
+            let v = self.flavor_rng.range(0, 2) as usize;
+            let line = TALK_LINES[kind as usize][stage][v].replace("{M}", name);
+            self.log(line);
+            Some(mi)
         } else {
-            1
+            // Failed roll (addendum): no regard, no stay — the monster
+            // acts normally this turn, whether that's an attack or a move.
+            let v = self.flavor_rng.range(0, 2) as usize;
+            let line = TALK_LINES[kind as usize][3][v].replace("{M}", name);
+            self.log(line);
+            None
         };
-        if became_calm {
-            self.monsters[mi].calm = true;
-            self.spared += 1;
-        }
-        let v = self.flavor_rng.range(0, 2) as usize;
-        let line = TALK_LINES[kind as usize][stage][v].replace("{M}", name);
-        self.log(line);
         if !self.spend_turn(0) {
             return; // died in the dark on a talk turn: lose beats anything else
         }
-        self.monsters_act(Some(mi));
+        self.monsters_act(stayed);
         self.compute_fov();
     }
 

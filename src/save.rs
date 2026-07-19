@@ -123,6 +123,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         g.combat_rng.0,
         g.ai_rng.0,
         g.flavor_rng.0,
+        g.parley_rng.0,
     ] {
         h = fnv_bytes(h, &v.to_le_bytes());
     }

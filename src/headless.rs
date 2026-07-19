@@ -196,6 +196,16 @@ const SIM_DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 /// it. A becalmed monster on that tile is not a blocker — the move byte is
 /// used and the engine's swap-on-bump takes over. No RNG of its own either
 /// way; policy is a pure function of the byte about to be emitted.
+///
+/// Failed-talk retreat/persist rule (batch 5 addendum, per its own brief:
+/// "pacifist policy may need a retreat-or-persist rule when talks fail —
+/// keep it deterministic, document the policy change"): PERSIST — the
+/// simplest deterministic option. This required NO code change here: a
+/// failed talk (`game::receptivity` roll) does not stay OR move its
+/// target (`Game::try_talk_player`'s failed branch), so the same monster
+/// is still blocking the same tile next turn, and this policy's per-step
+/// re-evaluation emits another talk byte at it automatically — the bot
+/// just keeps talking until it lands (or until combat/dark ends the run).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Policy {
     Greedy,

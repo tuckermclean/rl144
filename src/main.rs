@@ -32,7 +32,7 @@ use save::{parse_save, replay, state_hash};
 #[cfg(test)]
 use content::{GHOST_LABELS, KINDS, TALK_LINES, THEMES, TONE_LINES, VAULTS, ghost_label_idx};
 #[cfg(test)]
-use game::{MKind, Monster, TIER_WARNINGS, Tile, idx, in_map};
+use game::{MKind, Monster, TIER_WARNINGS, Tile, idx, in_map, receptivity};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -414,11 +414,39 @@ mod tests {
         assert!(!g.won, "lose is checked before win");
     }
 
-    /// Stayed swing (batch 5, DECISION.md item 3): a monster that received
-    /// a talk this turn does not attack this turn (it is listening) — a
-    /// second, un-talked-to monster adjacent and seeing the player attacks
-    /// normally the SAME turn, proving the mercy is per-monster, not a
-    /// blanket "combat is off" toggle (crowds stay dangerous).
+    /// Talk until the (single, by construction) monster of `kind` registers
+    /// a landed roll (`regard` advances) — parley is a `receptivity` ROLL
+    /// now (batch 5 addendum), so a single `try_talk_player` call is no
+    /// longer guaranteed to land; tests that need a landed talk retry
+    /// against the fixed seed's deterministic `parley_rng` stream rather
+    /// than assuming a single call always succeeds. A failed attempt still
+    /// costs a turn and runs `monsters_act` normally (see
+    /// `Game::try_talk_player`), so callers that also care about combat
+    /// fallout from those interim turns get it for free. Panics if 200
+    /// attempts never land (would indicate a receptivity or RNG-isolation
+    /// regression, not ordinary variance).
+    fn talk_until_landed(g: &mut Game, dx: i32, dy: i32, kind: MKind) -> u32 {
+        for attempt in 1..=200u32 {
+            let before = g.monsters.iter().find(|m| m.kind == kind).unwrap().regard;
+            g.try_talk_player(dx, dy);
+            let after = g.monsters.iter().find(|m| m.kind == kind).unwrap().regard;
+            if after > before {
+                return attempt;
+            }
+            assert!(!g.dead, "player died before a talk ever landed (attempt {})", attempt);
+        }
+        panic!("talk did not land within 200 attempts — receptivity or RNG isolation regression?");
+    }
+
+    /// Stayed swing (batch 5, DECISION.md item 3; addendum: only a LANDED
+    /// talk stays its target): the turn a talk lands, the talked-to monster
+    /// does not attack that turn (it is listening) — a second, un-talked-to
+    /// monster adjacent and seeing the player attacks normally regardless,
+    /// proving the mercy is per-monster, not a blanket "combat is off"
+    /// toggle (crowds stay dangerous). The rat's hp is set near its kind
+    /// max (1 of 3) purely to keep `receptivity` high so the retry loop
+    /// below lands quickly and deterministically; the test's claim is about
+    /// stayed-vs-not, not about the wound term.
     #[test]
     fn stayed_swing_no_damage_this_turn() {
         let mut g = Game::new(21);
@@ -452,7 +480,7 @@ mod tests {
             x: px + adx,
             y: py + ady,
             kind: MKind::Rat,
-            hp: 3,
+            hp: 1,
             regard: 0,
             calm: false,
         });
@@ -465,20 +493,22 @@ mod tests {
             calm: false,
         });
         let hp0 = g.hp;
-        g.try_talk_player(adx, ady); // talk to the rat: regard 0->1, threshold 2, not yet calm
+        talk_until_landed(&mut g, adx, ady, MKind::Rat); // regard 0->1, threshold 2, not yet calm
         let rat = g.monsters.iter().find(|m| m.kind == MKind::Rat).unwrap();
-        assert_eq!(rat.regard, 1, "the talked-to rat's regard should have incremented");
-        assert!(!rat.calm, "one talk (of 2) should not yet calm a rat");
+        assert_eq!(rat.regard, 1, "the talked-to rat's regard should have incremented exactly once");
+        assert!(!rat.calm, "one landed talk (of 2) should not yet calm a rat");
         assert!(
             g.hp < hp0,
-            "the un-talked-to adjacent goblin should still attack this same turn"
+            "the un-talked-to adjacent goblin should attack across the attempt(s) above"
         );
     }
 
-    /// Becalm threshold + swap-on-bump (batch 5, DECISION.md item 3): a
-    /// rat (threshold 2) is not calm after one talk, becomes calm (and
-    /// `spared` increments) on the second, and bumping a calmed monster
-    /// swaps positions — no damage, no violence tax — instead of attacking.
+    /// Becalm threshold + swap-on-bump (batch 5, DECISION.md item 3;
+    /// addendum: threshold-crossing now requires two LANDED talks, not two
+    /// calls): a rat (threshold 2) is not calm after one landed talk,
+    /// becomes calm (and `spared` increments) on the second, and bumping a
+    /// calmed monster swaps positions — no damage, no violence tax —
+    /// instead of attacking.
     #[test]
     fn becalm_threshold_and_swap_on_bump() {
         let mut g = Game::new(5);
@@ -494,18 +524,18 @@ mod tests {
             x: px + dx,
             y: py + dy,
             kind: MKind::Rat,
-            hp: 3,
+            hp: 1, // near its kind max wound term — keeps receptivity high
             regard: 0,
             calm: false,
         });
         let spared0 = g.spared;
 
-        g.try_talk_player(dx, dy); // regard 0->1: below threshold 2
+        talk_until_landed(&mut g, dx, dy, MKind::Rat); // regard 0->1: below threshold 2
         assert!(!g.monsters[0].calm);
         assert_eq!(g.spared, spared0);
 
-        g.try_talk_player(dx, dy); // regard 1->2: threshold reached
-        assert!(g.monsters[0].calm, "the rat should be calm after 2 talks");
+        talk_until_landed(&mut g, dx, dy, MKind::Rat); // regard 1->2: threshold reached
+        assert!(g.monsters[0].calm, "the rat should be calm after 2 landed talks");
         assert_eq!(g.spared, spared0 + 1, "spared must increment exactly once, on the crossing");
 
         let hp_before = g.monsters[0].hp;
@@ -519,6 +549,192 @@ mod tests {
             (old_px, old_py),
             "the monster takes the player's old tile"
         );
+    }
+
+    /// Receptivity math vectors (batch 5 addendum): pins `game::receptivity`'s
+    /// integer arithmetic to hand-computed values, independent of any RNG
+    /// roll (the function takes no RNG — it's the PROBABILITY the roll is
+    /// checked against, computed in `Game::try_talk_player`).
+    #[test]
+    fn receptivity_math_vectors() {
+        let mut g = Game::new(1);
+        g.monsters.clear();
+        g.atk = 3; // Game::new's default; +6*(atk-3) term is 0
+        let fresh_ogre = Monster { x: 0, y: 0, kind: MKind::Ogre, hp: 13, regard: 0, calm: false };
+        assert_eq!(receptivity(&fresh_ogre, &g), 20, "a fresh ogre should sit at exactly its BASE");
+
+        // Wounded (1 of 13 hp -> wound term 40*(13-1)/13 = 36) plus a
+        // strong player (atk 9 -> +6*(9-3) = 36) pushes well past 70:
+        // 20 + 0 + 36 + 36 - 0 = 92.
+        g.atk = 9;
+        let wounded_ogre = Monster { x: 0, y: 0, kind: MKind::Ogre, hp: 1, regard: 0, calm: false };
+        let r = receptivity(&wounded_ogre, &g);
+        assert!(r >= 70, "wounded ogre + high atk should land >= 70-ish, got {}", r);
+        assert_eq!(r, 92, "and the exact integer math should hold");
+
+        // Clamp floor: an unnaturally weak "player" (atk 0, below the
+        // baseline 3) plus a guttering torch (fov_radius(1) is deep in the
+        // bottom tier, well <= 4) drives the raw sum negative
+        // (20 + 0 + 0 - 18 - 10 = -8); receptivity must still floor at 5.
+        g.atk = 0;
+        g.light = 1;
+        let floor_ogre = Monster { x: 0, y: 0, kind: MKind::Ogre, hp: 13, regard: 0, calm: false };
+        assert_eq!(receptivity(&floor_ogre, &g), 5, "receptivity must clamp at the floor of 5");
+
+        // Clamp ceiling: a high-regard, badly wounded rat with a very
+        // strong player would compute far past 100; receptivity must cap
+        // at 95.
+        g.atk = 20;
+        g.light = game::START_LIGHT;
+        let capped_rat = Monster { x: 0, y: 0, kind: MKind::Rat, hp: 1, regard: 10, calm: false };
+        assert_eq!(receptivity(&capped_rat, &g), 95, "receptivity must clamp at the ceiling of 95");
+    }
+
+    /// Landed-vs-failed determinism (batch 5 addendum): two independent
+    /// live games from the same seed, talked at the same fresh ogre the
+    /// same number of times, produce an identical `state_hash` — whether
+    /// each individual roll happened to land or fail. `parley_rng` has no
+    /// external entropy, so the exact sequence of landed/failed outcomes
+    /// must repeat exactly. Also confirms the scenario actually exercises
+    /// both outcomes (an ogre's low BASE receptivity makes at least one
+    /// failure near-certain within the attempt cap; regard climbing toward
+    /// `Monster::talk_threshold` makes at least one landing certain too).
+    #[test]
+    fn parley_landed_vs_failed_deterministic() {
+        let run = |seed: u64| -> (u64, bool, bool) {
+            let mut g = Game::new(seed);
+            g.monsters.clear();
+            // Headroom: a fresh ogre's failed rolls attack for real damage
+            // (it is never stayed on a failed roll — that's the property
+            // under test), and this ogre's low BASE receptivity means
+            // several fails are likely before the first landing.
+            g.hp = 5000;
+            g.maxhp = 5000;
+            let (px, py) = (g.px, g.py);
+            let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .into_iter()
+                .find(|&(dx, dy)| {
+                    in_map(px + dx, py + dy) && g.map[idx(px + dx, py + dy)] != Tile::Wall
+                })
+                .unwrap();
+            g.monsters.push(Monster {
+                x: px + dx,
+                y: py + dy,
+                kind: MKind::Ogre,
+                hp: 13,
+                regard: 0,
+                calm: false,
+            });
+            let (mut saw_landed, mut saw_failed) = (false, false);
+            for _ in 0..50 {
+                if g.monsters[0].calm || g.dead {
+                    break;
+                }
+                let before = g.monsters[0].regard;
+                g.try_talk_player(dx, dy);
+                if g.monsters[0].regard > before {
+                    saw_landed = true;
+                } else {
+                    saw_failed = true;
+                }
+            }
+            (state_hash(&g), saw_landed, saw_failed)
+        };
+        let (h1, landed1, failed1) = run(13);
+        let (h2, landed2, failed2) = run(13);
+        assert_eq!(h1, h2, "two identical live runs must hash identically");
+        assert!(landed1, "expected at least one landed talk within 50 attempts");
+        assert!(failed1, "expected at least one failed talk within 50 attempts");
+        assert_eq!((landed1, failed1), (landed2, failed2), "both runs must see the same outcomes");
+    }
+
+    /// A failed talk does NOT stay its target (batch 5 addendum): the first
+    /// FAILED roll against a fresh, low-receptivity ogre still costs the
+    /// player hp that same call, proving `stayed` is `None` on the failed
+    /// branch of `Game::try_talk_player` so the un-stayed monster attacks
+    /// normally in `monsters_act`.
+    #[test]
+    fn failed_talk_does_not_stay_monster() {
+        let mut g = Game::new(3);
+        g.monsters.clear();
+        // Headroom so several failed rounds' worth of ogre damage can't
+        // kill the player before a failed roll is observed.
+        g.hp = 5000;
+        g.maxhp = 5000;
+        let (px, py) = (g.px, g.py);
+        let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                in_map(px + dx, py + dy) && g.map[idx(px + dx, py + dy)] != Tile::Wall
+            })
+            .unwrap();
+        g.monsters.push(Monster {
+            x: px + dx,
+            y: py + dy,
+            kind: MKind::Ogre,
+            hp: 13,
+            regard: 0,
+            calm: false,
+        });
+        let mut found = false;
+        for _ in 0..200 {
+            if g.monsters[0].calm {
+                break; // ran out of failed attempts before becalming
+            }
+            let before_regard = g.monsters[0].regard;
+            let hp0 = g.hp;
+            g.try_talk_player(dx, dy);
+            if g.monsters[0].regard == before_regard {
+                assert!(g.hp < hp0, "an un-stayed ogre should attack the turn its talk failed");
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected at least one failed talk within 200 attempts before becalming");
+    }
+
+    /// Parley channel isolation (batch 5 addendum): burning `parley_rng`
+    /// must never perturb `combat_rng` — same discipline
+    /// `worldgen_isolated_from_combat` proves for combat/ai draws vs
+    /// worldgen, checked here against a live combat sequence instead of a
+    /// level dump.
+    #[test]
+    fn parley_isolated_from_combat() {
+        let seed = 0xFEEDu64;
+        let mut a = Game::new(seed);
+        for _ in 0..1000 {
+            a.parley_rng.next();
+        }
+        let mut b = Game::new(seed);
+        // Bump-attack the same scripted number of times on both games and
+        // compare the surviving monster's hp: if parley_rng draws had
+        // leaked into combat_rng, the damage rolls (and so this hp) would
+        // diverge between the two.
+        let fight = |g: &mut Game| -> i32 {
+            let (px, py) = (g.px, g.py);
+            let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .into_iter()
+                .find(|&(dx, dy)| {
+                    in_map(px + dx, py + dy) && g.map[idx(px + dx, py + dy)] != Tile::Wall
+                })
+                .unwrap();
+            g.monsters.clear();
+            g.monsters.push(Monster {
+                x: px + dx,
+                y: py + dy,
+                kind: MKind::Ogre,
+                hp: 999,
+                regard: 0,
+                calm: false,
+            });
+            for _ in 0..10 {
+                g.try_move_player(dx, dy);
+            }
+            g.monsters[0].hp
+        };
+        let hp_a = fight(&mut a);
+        let hp_b = fight(&mut b);
+        assert_eq!(hp_a, hp_b, "parley_rng draws must not perturb combat_rng's sequence");
     }
 
     /// `spared` is hashed (batch 5, DECISION.md item 3): two otherwise-
