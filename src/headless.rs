@@ -391,9 +391,10 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
 ///   note this comment absorbed: an integer percent band can't encode
 ///   "nonzero but tiny", ~0.2% of deaths at 5000 seeds).
 /// - `Pacifist` (batch 5 T2, DECISION.md item 3): stats must sit inside
-///   tests/pacifist-band.json — win_pct in [5,40] (mercy may be harder than
-///   violence, must not dominate it; see that file's comment for the full
-///   measured death-mix, which is recorded as data, not gated). No
+///   tests/pacifist-band.json — win_pct in [5,20] (mercy may be harder than
+///   violence, must not dominate it; the JSON file is the authority for the
+///   exact bound — see its comment for the full measured death-mix and
+///   re-baseline history, which is recorded as data, not gated here). No
 ///   dark/combat minority requirement for pacifist — that invariant was
 ///   never claimed for this policy and is measured honestly instead.
 ///

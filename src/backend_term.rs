@@ -530,10 +530,18 @@ pub(crate) fn run(
                     // Talk chord cancelled (review fix, batch 5 task 3): a
                     // `t` was armed and then abandoned by a non-direction
                     // byte (see `read_talk_chord`). No input byte, no game
-                    // mutation — just player-visible feedback, matching
-                    // minifb's behavior where the disarming key still
-                    // visibly does SOMETHING (its own normal action) rather
-                    // than vanishing with no trace.
+                    // mutation — just this one log line. Accepted asymmetry
+                    // with minifb, not parity: minifb's disarm (see its
+                    // `talk_armed` doc comment) is silent for a key with no
+                    // other binding — no message, no byte, nothing visible
+                    // — and only "does something" when the disarming key
+                    // also has its own handler elsewhere in the frame (e.g.
+                    // F5, which still fires its own action on top of
+                    // disarming). The terminal backend consumes bytes one
+                    // at a time rather than polling a frame, so it can't
+                    // let some other handler fire on the same byte; instead
+                    // it always logs "Talk cancelled." on cancel, even for
+                    // a byte that would otherwise be a no-op.
                     Input::TalkCancelled => {
                         game.log(String::from("Talk cancelled."));
                     }
