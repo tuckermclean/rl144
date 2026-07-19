@@ -9,12 +9,30 @@ adopted LATER with the NPC cast — not this batch.*
 
 ## Design (decided; tune within gates)
 
-- **Doors.** New `Tile::Door` (closed): blocks movement AND line of sight. Walking into it
-  opens it (becomes `Tile::OpenDoor`, passable, LOS-transparent; costs a turn, no tax, like a
-  move). Doors never re-close. Placement: worldgen puts a door where a corridor meets a room
-  wall (probabilistic per junction via the worldgen channel — tune so roughly 1 in 3 junctions
-  get one). Dump glyphs: `+` closed, `'` open. Autotile mask treats doors as non-wall.
-- **One seal: the keyed stair.** On depths 3-5 (worldgen channel roll, ~1/2 of those depths),
+- **Portals (human redirect 2026-07-19: doors are portals to other dungeons, known hash —
+  "can build worlds that way").** New `Tile::Portal` (dump glyph `*`): placed via the worldgen
+  channel, chance ~1/4 per depth, in a room interior that is neither the entrance nor the exit
+  room. Destination seed DERIVED: `h64(world_seed, ["portal", depth_tag, index_tag])` — the
+  whole multiverse is a pure function of the root seed, frozen by goldens like everything else.
+  Walking onto a portal does NOT transit: it logs the door's description — destination theme
+  label + world hash, both derived from the destination seed (grounded: the engine proves it by
+  generation). TRANSIT = pressing wait (byte 4) while standing on the portal (deliberate; no
+  new input byte; neither sim bot ever emits wait, so sims are structurally unaffected). Costs
+  one turn of light like any wait.
+  Multi-world state: `Game.worlds: <map seed -> per-depth saved LevelStates>` (or equivalent),
+  `Game.world_seed` (current), root seed retained; insertion-order-deterministic; ALL of it
+  hashed in state_hash (extend the saved-levels hashing to span worlds). Light, hp/maxhp/atk,
+  kills, spared, has_amulet are GLOBAL across worlds — the torch is the multiverse's one clock.
+  The amulet exists only in the ROOT world's depth 5; the win check fires only on the root
+  world's depth-1 `<`. In a NON-root world, depth-1's `<` is the return portal: stepping on it
+  transits back to the source world's portal tile (walk-on, like stairs — leaving is easy,
+  entering is deliberate). Portal worlds are full 5-depth worlds and contain their own derived
+  portals (infinite graph, light-bounded). Track per-world provenance (source seed + portal
+  position) for the return hop — hashed.
+  Solver: root-world reachability model UNCHANGED (portals never replace stairs, never gate the
+  win path; transit needs wait, so BFS routing is untouched). Sims: bots never transit —
+  document as policy; a portal-diving policy is future work.
+- **One seal: the keyed stair** (MOVED to T2 scope alongside vaults). On depths 3-5 (worldgen channel roll, ~1/2 of those depths),
   the down-stairs is sealed: walking onto `>` without the key logs a themed refusal line and
   costs nothing. A key item (`IKind::Key`, glyph `k`) spawns via the spawns channel in a
   reachable room. Walk-over pickup as usual; stepping on the sealed `>` WITH the key unseals
@@ -52,11 +70,19 @@ adopted LATER with the NPC cast — not this batch.*
 
 ## Tasks
 
-**T1 — doors + keyed seal + solver extension** (game.rs/content.rs/headless.rs). Tests: door
-open/LOS semantics; seal refusal/unseal determinism; solver models key detour; replay with
-doors deterministic. Solver band re-baseline expected here.
-**T2 — pits + blocks + 2 new vaults** (game.rs/content.rs). Tests: push/refuse/fill semantics;
-vault well-formedness extended for new legend; blocks hashed; solve 10000 zero unwinnable.
+**T1 — portals + multi-world state** (game.rs/content.rs/save.rs/headless.rs/render.rs).
+Tests: derived destination determinism; transit-on-wait only (walk-over logs, never transits);
+round trip source->portal-world->back restores the source level exactly; light/kills/amulet
+global across worlds; state_hash spans visited worlds; replay determinism across a multi-world
+input log; root win/amulet unaffected; solver untouched (assert same budgets as pre-portal on
+a seed sample... budgets shift only from placement draws changing layouts — solver RE-BASELINE
+expected from the MAJOR itself, do it here with full comment). Dump glyph `*`; describe-line
+grounded + <=78 chars.
+**T2 — pits + blocks + 2 new vaults + keyed stair seal** (game.rs/content.rs/headless.rs).
+Keyed seal exactly as the Design bullet (solver models the key detour — budget += route via
+key on sealed depths; second solver re-baseline folds into T4's final numbers). Tests:
+push/refuse/fill semantics; vault well-formedness extended; blocks hashed; seal
+refusal/unseal determinism; key-detour math unit test; solve 10000 zero unwinnable.
 **T3 — decor mobs + ogre tell + sim re-baselines** (game.rs/content.rs/headless.rs bands).
 Tests: critter never attacks; tell sequence (raise→heavy/reset); both policies measured at
 5000, both bands re-baselined with full comments.
