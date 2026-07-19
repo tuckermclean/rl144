@@ -90,13 +90,17 @@ fn flash(c: u32) -> u32 {
 /// vertical squash would resample each glyph row through an interpolated
 /// scale; this is the simple version the task scope asked for instead:
 /// draw only the EVEN source rows of the 8-row glyph bitmap (0, 2, 4, 6 —
-/// literally skipping every odd row, 4 of the 8 kept) into the LOWER 6
-/// rows of the cell (`oy + CH - 6 ..= oy + CH - 1`, vs. `draw_glyph`'s
-/// vertically-centered `oy + (CH - 8) / 2`). The combined effect — half
-/// the scanlines, compressed toward the cell's bottom edge — reads as a
-/// one-frame vertical flatten/impact squash with no resampling math at
-/// all. Deterministic and render-only: same `(ch, fg, bg)` in, same pixels
-/// out, every call.
+/// literally skipping every odd row, 4 of the 8 kept), one destination row
+/// per kept source row, starting at `oy + CH - 6` (the top of a nominal
+/// LOWER-6-ROW band, vs. `draw_glyph`'s vertically-centered
+/// `oy + (CH - 8) / 2`). The 4 kept rows therefore occupy the UPPER 4 rows
+/// of that 6-row band (`oy + CH - 6 ..< oy + CH - 2`), leaving the
+/// cell's bottommost 2 rows as plain background — i.e. the glyph is both
+/// half-scanlined AND shifted down, not stretched to fill all 6 rows. The
+/// combined effect — half the scanlines, compressed toward (not filling)
+/// the cell's bottom edge — reads as a one-frame vertical flatten/impact
+/// squash with no resampling math at all. Deterministic and render-only:
+/// same `(ch, fg, bg)` in, same pixels out, every call.
 fn draw_glyph_squashed(buf: &mut [u32], ox: usize, oy: usize, ch: u16, fg: u32, bg: u32) {
     for y in 0..CH {
         for x in 0..CW {
@@ -106,12 +110,12 @@ fn draw_glyph_squashed(buf: &mut [u32], ox: usize, oy: usize, ch: u16, fg: u32, 
     let Some(glyph) = glyph_bits(ch) else {
         return;
     };
-    let base = oy + CH - 6; // bottom-aligned 6-row band
+    let base = oy + CH - 6; // lower-6-row band starts here; see doc comment
     for (gy, bits) in glyph.iter().enumerate() {
         if gy % 2 == 1 {
             continue; // skip every other glyph row
         }
-        let dy = base + gy / 2;
+        let dy = base + gy / 2; // 4 kept rows land at base..base+3
         for gx in 0..8 {
             if bits >> gx & 1 == 1 {
                 buf[dy * WIDTH + ox + gx] = fg;
@@ -228,8 +232,24 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
     // dead/won). See render::Screen's doc comment for the full state
     // machine.
     let mut screen = if loaded { Screen::Play } else { Screen::Title };
+    // Deferred Play->End transition: when the run ends WITH a killing-blow
+    // flash pending (`game.fx_hit.is_some()`), the Play arm below sets this
+    // instead of flipping `screen` immediately, so the bottom-of-loop
+    // render still draws one Play-screen frame (with the flash/squash) for
+    // the dead/won game state before anything shows End. The NEXT loop
+    // iteration flips `screen` to End here, at the top, before the match —
+    // so that iteration's Play arm (key polling, input_log/attempt_log
+    // pushes) never runs for a game that's already over: no extra input
+    // bytes, no double-processing, purely a one-frame render delay. A
+    // death with no flash (darkness) or a win (never sets fx_hit) is
+    // unaffected — screen flips to End the same frame as before.
+    let mut pending_end = false;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        if pending_end {
+            screen = Screen::End;
+            pending_end = false;
+        }
         match screen {
             Screen::Title => {
                 // Any key dismisses the title — consumed here WITHOUT
@@ -280,7 +300,15 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     }
                 }
                 if game.dead || game.won {
-                    screen = Screen::End;
+                    if game.fx_hit.is_some() {
+                        // Killing-blow flash pending: delay the transition
+                        // by one rendered frame (see `pending_end`'s doc
+                        // comment above) instead of cutting straight to
+                        // End, so the flash is actually visible.
+                        pending_end = true;
+                    } else {
+                        screen = Screen::End;
+                    }
                 }
             }
             Screen::End => {
