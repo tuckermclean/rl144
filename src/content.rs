@@ -201,7 +201,7 @@ pub(crate) const TALK_LINES: [[[&str; 2]; 3]; 3] = [
             "The {M} lowers one fist, unhurried, and studies your torch.",
         ],
         [
-            "The {M} has not moved against you. It is thinking, slowly.",
+            "The {M} stays still, thinking, slowly.",
             "The {M} shifts its weight, in no hurry to fight you now.",
         ],
         [
