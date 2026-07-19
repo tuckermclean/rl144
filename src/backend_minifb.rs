@@ -151,19 +151,20 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
             Screen::Play => {
                 for (key, (dx, dy)) in moves {
                     if window.is_key_pressed(key, KeyRepeat::Yes) {
-                        input_log.push(match (dx, dy) {
+                        let b = match (dx, dy) {
                             (0, -1) => 0,
                             (0, 1) => 1,
                             (-1, 0) => 2,
                             _ => 3,
-                        });
-                        game.try_move_player(dx, dy);
+                        };
+                        input_log.push(b);
+                        game.apply_input(b);
                         confirm_armed = false;
                     }
                 }
                 if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
                     input_log.push(4);
-                    game.wait_turn();
+                    game.apply_input(4);
                     confirm_armed = false;
                 }
                 // F1: identify the world. Log-only — consumes no turn, no
