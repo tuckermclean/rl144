@@ -324,6 +324,13 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     attempt_log.push(4);
                     game.apply_input(4);
                     confirm_armed = false;
+                    // Wait is held-repeat (KeyRepeat::Yes), so it never
+                    // shows up in the single-frame get_keys_pressed(No)
+                    // disarm check above — a held `.` after a `t` arm would
+                    // otherwise leave the talk chord armed across many
+                    // turns, silently converting a later direction press
+                    // into a talk instead of a move. Disarm explicitly.
+                    act_armed = false;
                 }
                 // F1: identify the world. Log-only — consumes no turn, no
                 // input byte, and touches no RNG channel, so replay is
@@ -375,6 +382,11 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     game.echo = echo;
                     window.set_title(&title(s));
                     confirm_armed = false;
+                    // Defense-in-depth (a stuck-armed talk chord shouldn't
+                    // survive a death mid-chord and leak into the next
+                    // attempt) — see the Period-block fix above for the
+                    // primary case this closes.
+                    act_armed = false;
                     screen = Screen::Play;
                 }
                 if window.is_key_pressed(Key::N, KeyRepeat::No) {
@@ -388,6 +400,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     whash = world_hash(s);
                     window.set_title(&title(s));
                     confirm_armed = false;
+                    act_armed = false;
                     screen = Screen::Play;
                 }
                 if window.is_key_pressed(Key::Q, KeyRepeat::No) {

@@ -158,9 +158,12 @@ fn set_timing(mut base: Termios, vmin: u8, vtime: u8) {
 /// (0=N,1=S,2=W,3=E) directly so callers don't re-derive it. `Restart` is
 /// the End screen's R (retry, same seed, byte 6 — save v2); `NewWorld` is
 /// its N (reroll, byte 5 — same meaning R used to have, see save v2's End-
-/// screen key change). `Act` carries the apply_input ACT byte (7=N,8=S,9=W,
-/// 10=E — batch 5, the Henson ruling's `t`+direction chord, see
-/// `read_act_chord`) directly, same convention as `Move`.
+/// screen key change). `Act` carries the apply_input talk byte (7=N,8=S,9=
+/// W,10=E — batch 5, the Henson ruling's `t`+direction chord, see
+/// `read_act_chord`) directly, same convention as `Move`. `TalkCancelled` is
+/// distinct from plain `Ignore`: it means a `t` chord was armed and then
+/// abandoned (a non-direction byte followed), so the Play arm logs one
+/// feedback line — `Ignore` never logs anything.
 enum Input {
     Move(u8),
     Act(u8),
@@ -171,6 +174,7 @@ enum Input {
     Info,
     Quit,
     Ignore,
+    TalkCancelled,
 }
 
 /// Read a possible escape-sequence follow-up byte under the VTIME=1/VMIN=0
@@ -220,7 +224,7 @@ fn read_escape_seq() -> Input {
 /// before returning. wasd/hjkl/arrows move, '.' waits, 'r' requests a retry
 /// (same seed) and 'n' a new world (reroll) — both are only acted on by the
 /// End screen, matching the minifb backend's R/N keys — 'q'/lone-ESC/Ctrl-C
-/// quit, 't' begins the ACT chord (batch 5, see `read_act_chord`). Unknown
+/// quit, 't' begins the talk chord (batch 5, see `read_act_chord`). Unknown
 /// bytes are ignored.
 fn read_input(raw: Termios) -> Input {
     let Some(b) = raw_read_byte() else { return Input::Quit }; // EOF (stdin closed)
@@ -245,45 +249,58 @@ fn read_input(raw: Termios) -> Input {
     }
 }
 
-/// ACT chord, second half (batch 5, DECISION.md item 3 — the Henson ruling:
-/// mercy is a verb and the verb is TALK). Called the instant a lone `t` byte
-/// is consumed by `read_input`; reads exactly one more input the same way
+/// Talk chord, second half (batch 5, DECISION.md item 3 — the Henson
+/// ruling: mercy is a verb and the verb is TALK). Called the instant a lone
+/// `t` byte is consumed by `read_input`; reads input the same way
 /// `read_input` would (wasd/hjkl move directly, an ESC sequence via the same
 /// `read_escape_seq` lookahead `read_input`'s own ESC arm uses, so arrow
-/// keys complete the chord too) and resolves it to an ACT byte (7=N,8=S,9=
+/// keys complete the chord too) and resolves it to a talk byte (7=N,8=S,9=
 /// W,10=E, mirroring the move bytes' direction order — see
-/// `Game::apply_input`'s vocabulary doc). ANY other byte — a non-direction
-/// key, a second `t`, EOF, or an escape sequence that isn't an arrow key
-/// (F1/F5/an unrecognized sequence/a lone-ESC timeout) — cancels the chord
-/// SILENTLY: `Input::Ignore`, no ACT byte, no fallback to that byte's usual
-/// meaning. This matches the task spec exactly ("any other byte cancels
-/// silently") and the "lone t with no direction does nothing and logs
-/// nothing" invariant: unlike the minifb backend (which polls all keys held
-/// this frame and can let an unrelated key like F5 still fire on top of
-/// disarming), the terminal backend consumes bytes one at a time, so
-/// "cancel" here means the consumed byte's usual action never happens
-/// either — there is no frame to inspect afterward.
+/// `Game::apply_input`'s vocabulary doc).
+///
+/// A second (or third, ...) `t` RE-ARMS rather than cancelling: the loop
+/// just keeps reading. This is cross-backend parity with `backend_minifb`,
+/// where pressing `T` again while already armed is a harmless re-arm (its
+/// `is_key_pressed(Key::T, ..)` check doesn't care whether `act_armed` was
+/// already true) — without this loop, `t,t,<direction>` logged an Act byte
+/// in minifb but a plain Move byte in term (the second `t` cancelled the
+/// chord there, dropping both bytes, so the direction byte was read fresh
+/// by the NEXT top-level `read_input` call and interpreted as an ordinary
+/// move). Same physical key sequence must log the same bytes in both
+/// backends.
+///
+/// Any OTHER byte — a non-direction key, EOF, or an escape sequence that
+/// isn't an arrow key (F1/F5/an unrecognized sequence/a lone-ESC timeout) —
+/// still cancels the chord: `Input::TalkCancelled` (the Play arm logs one
+/// feedback line for this, then falls through — no talk byte, no fallback
+/// to that byte's usual meaning). The terminal backend consumes bytes one
+/// at a time, unlike minifb's per-frame poll (which can let an unrelated
+/// key like F5 still fire on top of disarming) — here, cancelling means the
+/// consumed byte's usual action never happens either.
 fn read_act_chord(raw: Termios) -> Input {
-    let Some(b) = raw_read_byte() else { return Input::Ignore }; // EOF cancels silently
-    let dir = match b {
-        0x1b => {
-            set_timing(raw, 0, 1);
-            let ev = read_escape_seq();
-            set_timing(raw, 1, 0);
-            match ev {
-                Input::Move(d) => Some(d),
-                _ => None, // F1/F5/unrecognized/timeout: cancel silently
+    loop {
+        let Some(b) = raw_read_byte() else { return Input::TalkCancelled }; // EOF
+        let dir = match b {
+            b't' => continue, // re-arm: keep reading for a direction
+            0x1b => {
+                set_timing(raw, 0, 1);
+                let ev = read_escape_seq();
+                set_timing(raw, 1, 0);
+                match ev {
+                    Input::Move(d) => Some(d),
+                    _ => None, // F1/F5/unrecognized/timeout: cancel
+                }
             }
-        }
-        b'w' | b'k' => Some(0),
-        b's' | b'j' => Some(1),
-        b'a' | b'h' => Some(2),
-        b'd' | b'l' => Some(3),
-        _ => None,
-    };
-    match dir {
-        Some(d) => Input::Act(d + 7),
-        None => Input::Ignore,
+            b'w' | b'k' => Some(0),
+            b's' | b'j' => Some(1),
+            b'a' | b'h' => Some(2),
+            b'd' | b'l' => Some(3),
+            _ => None,
+        };
+        return match dir {
+            Some(d) => Input::Act(d + 7),
+            None => Input::TalkCancelled,
+        };
     }
 }
 
@@ -500,7 +517,7 @@ pub(crate) fn run(
                         game.apply_input(b);
                         confirm_armed = false;
                     }
-                    // ACT chord completion (batch 5 task 3): `b` is already
+                    // Talk chord completion (batch 5 task 3): `b` is already
                     // the resolved 7-10 byte (see `read_act_chord`) — same
                     // input_log/attempt_log/apply_input/confirm_armed
                     // discipline as a Move.
@@ -509,6 +526,16 @@ pub(crate) fn run(
                         attempt_log.push(b);
                         game.apply_input(b);
                         confirm_armed = false;
+                    }
+                    // Talk chord cancelled (review fix, batch 5 task 3): a
+                    // `t` was armed and then abandoned by a non-direction
+                    // byte (see `read_act_chord`). No input byte, no game
+                    // mutation — just player-visible feedback, matching
+                    // minifb's behavior where the disarming key still
+                    // visibly does SOMETHING (its own normal action) rather
+                    // than vanishing with no trace.
+                    Input::TalkCancelled => {
+                        game.log(String::from("Talk cancelled."));
                     }
                     Input::Wait => {
                         input_log.push(4);
