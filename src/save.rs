@@ -6,7 +6,7 @@
 // like a save, a ghost is just bytes describing a run, built by pure
 // functions with zero I/O — the backends/main own writing the file.
 
-use crate::game::{Game, Item, Monster, Tile};
+use crate::game::{Dest, Game, Item, Monster, Tile, WorldId};
 use crate::rng::{fnv_bytes, h64};
 
 // ---------- Save / replay: state is deltas (seed + input log) ----------
@@ -103,6 +103,52 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// `dead`/`px`/`py`/the monster-hp deltas). See each field's own doc
 /// comment in `game.rs` for the field-specific rationale; this is the one
 /// place that enumerates them together as a set.
+/// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
+/// in (batch 6 T1): current world, provenance, and every stored
+/// `WorldState`'s own id.
+fn hash_world_id(h: u64, w: WorldId) -> u64 {
+    match w {
+        WorldId::Seed(s) => fnv_bytes(fnv_bytes(h, &[0]), &s.to_le_bytes()),
+        WorldId::Floor(i) => fnv_bytes(fnv_bytes(h, &[1]), &[i]),
+    }
+}
+
+/// Provenance (`Game::from`/`WorldState::from`) as bytes (batch 6 T1): which
+/// world a portal was entered from, plus the exact tile there, so a
+/// multi-hop portal chain's return path is hashed, not just guessed at from
+/// the worlds it passes through.
+fn hash_provenance(h: u64, from: Option<(WorldId, i32, i32)>) -> u64 {
+    match from {
+        Some((id, x, y)) => {
+            let h = fnv_bytes(h, &[1]);
+            let h = hash_world_id(h, id);
+            let h = fnv_bytes(h, &x.to_le_bytes());
+            fnv_bytes(h, &y.to_le_bytes())
+        }
+        None => fnv_bytes(h, &[0]),
+    }
+}
+
+/// A level's portal (`Game::portal`/`LevelState::portal`) as bytes (batch 6
+/// T1): the tile itself is already covered by the per-tile map hash below
+/// (`Tile::Portal` is a distinct discriminant), but its DESTINATION isn't —
+/// that's cached state, not derivable from the tile alone, so it's hashed
+/// here explicitly (see `Game::portal`'s doc comment on why it's cached).
+fn hash_portal(h: u64, portal: Option<(i32, i32, Dest)>) -> u64 {
+    match portal {
+        Some((x, y, dest)) => {
+            let h = fnv_bytes(h, &[1]);
+            let h = fnv_bytes(h, &x.to_le_bytes());
+            let h = fnv_bytes(h, &y.to_le_bytes());
+            match dest {
+                Dest::World(seed) => fnv_bytes(fnv_bytes(h, &[0]), &seed.to_le_bytes()),
+                Dest::Floor(i) => fnv_bytes(fnv_bytes(h, &[1]), &[i]),
+            }
+        }
+        None => fnv_bytes(h, &[0]),
+    }
+}
+
 pub(crate) fn state_hash(g: &Game) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for v in [
@@ -127,6 +173,9 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
     ] {
         h = fnv_bytes(h, &v.to_le_bytes());
     }
+    // batch 6 T1: which world is current, and where it was entered from.
+    h = hash_world_id(h, g.world);
+    h = hash_provenance(h, g.from);
     let level = |h: u64, map: &[Tile], monsters: &[Monster], items: &[Item]| -> u64 {
         let mut h = h;
         for t in map {
@@ -147,13 +196,42 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         h
     };
     h = level(h, &g.map, &g.monsters, &g.items);
+    h = hash_portal(h, g.portal);
+    // The CURRENT world's own per-depth stash (batch 6 T1: `g.saved` is
+    // scoped to whichever world `g.world` names — see that field's doc
+    // comment).
     for s in &g.saved {
         match s {
             Some(ls) => {
                 h = fnv_bytes(h, &[1]);
                 h = level(h, &ls.map, &ls.monsters, &ls.items);
+                h = hash_portal(h, ls.portal);
             }
             None => h = fnv_bytes(h, &[0]),
+        }
+    }
+    // Every OTHER visited world, insertion order (batch 6 T1). The current
+    // world's own entry in `g.worlds`, if any, is stale (see
+    // `Game::take_world_state`'s doc comment) and deliberately skipped —
+    // its real state is whatever was just hashed above via the live
+    // fields, never this vector.
+    for (id, ws) in &g.worlds {
+        if *id == g.world {
+            continue;
+        }
+        h = fnv_bytes(h, &[2]); // marker byte, distinct from the per-depth 0/1 markers above
+        h = hash_world_id(h, *id);
+        h = fnv_bytes(h, &ws.depth.to_le_bytes());
+        h = hash_provenance(h, ws.from);
+        for s in &ws.saved {
+            match s {
+                Some(ls) => {
+                    h = fnv_bytes(h, &[1]);
+                    h = level(h, &ls.map, &ls.monsters, &ls.items);
+                    h = hash_portal(h, ls.portal);
+                }
+                None => h = fnv_bytes(h, &[0]),
+            }
         }
     }
     h

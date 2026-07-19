@@ -263,6 +263,14 @@ pub(crate) const PAL_BAR_EMPTY: u32 = 0x404040;
 /// full light the rendered fg is this constant exactly, and it dims exactly
 /// like anything else does as the torch burns down.
 pub(crate) const PAL_CALM_TINT: u32 = 0x9AB0C0;
+/// Portal glyph color (batch 6 T1): a saturated magenta, chosen because it
+/// sits outside every theme's earthy/muted wall+floor palette (blue-gray
+/// water, tan/brown salt-house, rust-brown mine, muted purple library) —
+/// against all four it reads as "not of this place," which is the whole
+/// point of a door to somewhere else. Not blended or dimmed differently
+/// from any other tile glyph — `render_play` applies the same light-tier
+/// `scale(_, pct)` treatment every other glyph gets.
+pub(crate) const PAL_PORTAL: u32 = 0xFF40FF;
 
 // ---------- Vaults ----------
 /* Hand-authored rooms, stamped whole into a level by the "vault" channel.
@@ -334,3 +342,59 @@ pub(crate) fn ghost_label_idx(outcome: u8, final_depth: u8) -> u8 {
     let band = outcome.min(3) * per_outcome;
     band + final_depth % per_outcome
 }
+
+// ---------- Authored floors (batch 6 T1) ----------
+/* A portal's destination may be an authored, singular place instead of a
+   derived world: hand-built, one level, no RNG at all — `map` is parsed by
+   `Game::instantiate_floor` exactly once per visit (fresh) or restored from
+   its `LevelState` snapshot (revisit), never regenerated. Same-floor-from-
+   different-worlds is the SAME floor (keyed by `WorldId::Floor(index)`, not
+   by which portal led there), so its visited state (monsters killed, items
+   taken) persists across every door that opens onto it.
+   Legend, an extended vault-style subset: '#' wall, '.' floor, '<' the
+   return portal (walk-on transits back to the source world — reuses
+   `Tile::UpStairs` verbatim, see `Game::land_on_tile`'s UpStairs arm), '!'
+   potion, ')' sword, 'r'/'g'/'O' monster of that stat row. Deliberately NO
+   lore chars ('?') this batch — a floor has no `Theme` of its own to draw a
+   lore template from (see `Game::world_seed`'s doc comment on how floors
+   borrow the root theme for INCIDENTAL flavor only; lore items would need
+   a real per-floor lore table, future work). Rules, mirroring `VAULTS`:
+   rectangular, solid '#' border, exactly one '<', all chars legal
+   (`authored_floors_well_formed` in main.rs), full-map size up to 80x25 —
+   `Game::instantiate_floor` centers a smaller map and wall-pads the rest.
+   `name`/`describe` are grounded (restate only what the fixed map
+   guarantees is true) and fit the 78-char log row
+   (`authored_floors_flavor_fits_log_row`). Two starter floors per the
+   batch-6 brief; the heavy authoring is future NPC-cast-batch work. */
+pub(crate) struct AuthoredFloor {
+    pub(crate) name: &'static str,
+    pub(crate) describe: &'static str,
+    pub(crate) map: &'static str,
+}
+
+pub(crate) const AUTHORED_FLOORS: [AuthoredFloor; 2] = [
+    // a quiet lore shrine: nothing hunts here, two flasks and the portal home
+    AuthoredFloor {
+        name: "a quiet shrine",
+        describe: "Nothing hunts here. Two flasks wait on cold stone, untouched.",
+        map: "###########\n\
+              #.........#\n\
+              #....!....#\n\
+              #....<....#\n\
+              #....!....#\n\
+              #.........#\n\
+              ###########",
+    },
+    // a small hazard/loot room: four guards ring one blade
+    AuthoredFloor {
+        name: "a cramped loot vault",
+        describe: "Four guards ring a single blade. Someone thought it worth that many.",
+        map: "#############\n\
+              #r.........r#\n\
+              #...........#\n\
+              #.....).....#\n\
+              #...........#\n\
+              #g....<....g#\n\
+              #############",
+    },
+];

@@ -4,7 +4,9 @@
 // harness CLAUDE.md requires to work in an environment with no display.
 
 use crate::content::{THEMES, theme_pick};
-use crate::game::{COLS, Game, IKind, MAP_H, MAX_DEPTH, Monster, Tile, bfs_dist, idx, in_map};
+use crate::game::{
+    COLS, Game, IKind, MAP_H, MAX_DEPTH, Monster, Tile, WorldId, bfs_dist, idx, in_map,
+};
 use crate::rng::fnv_bytes;
 
 /// World identity: FNV-1a over the full 5-depth dump. The seed names the
@@ -25,6 +27,7 @@ pub(crate) fn level_dump(g: &Game) -> String {
                 Tile::Floor => '.',
                 Tile::Stairs => '>',
                 Tile::UpStairs => '<',
+                Tile::Portal => '*',
             };
             for it in &g.items {
                 if (it.x, it.y) == (x, y) {
@@ -241,34 +244,50 @@ impl Policy {
 /// doc comment. Every BFS/objective/tie-break decision above is identical
 /// for both policies — this is deliberate, so a pacifist-band regression
 /// can never be a route/loot bug in disguise, only a mercy-vs-combat one.
-pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
+///
+/// Returns the terminal `WorldId` alongside the `SimResult` (batch 6 T1):
+/// the bot drives the game exclusively through `apply_input` with move
+/// bytes 0-3 (and talk bytes 7-10 for `Policy::Pacifist`) — it NEVER emits
+/// wait (byte 4), the only input that can transit a portal (see
+/// `game::Game::wait_turn`'s doc comment) — so this should always come back
+/// `WorldId::Seed(seed)` (still the root world). `sim_main` ignores it;
+/// `bot_never_transits` (main.rs) is the test that actually checks it,
+/// which is the whole reason it's threaded out here instead of asserted
+/// silently inside this function.
+pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
     let mut g = Game::new(seed);
     let mut turns: u32 = 0;
     loop {
         if g.dead {
             let dark = g.light == 0;
-            return SimResult {
-                won: false,
-                dead_dark: dark,
-                dead_combat: !dark,
-                stuck: false,
-                turns,
-                light_left: g.light,
-                kills: g.kills,
-                spared: g.spared,
-            };
+            return (
+                SimResult {
+                    won: false,
+                    dead_dark: dark,
+                    dead_combat: !dark,
+                    stuck: false,
+                    turns,
+                    light_left: g.light,
+                    kills: g.kills,
+                    spared: g.spared,
+                },
+                g.world,
+            );
         }
         if g.won {
-            return SimResult {
-                won: true,
-                dead_dark: false,
-                dead_combat: false,
-                stuck: false,
-                turns,
-                light_left: g.light,
-                kills: g.kills,
-                spared: g.spared,
-            };
+            return (
+                SimResult {
+                    won: true,
+                    dead_dark: false,
+                    dead_combat: false,
+                    stuck: false,
+                    turns,
+                    light_left: g.light,
+                    kills: g.kills,
+                    spared: g.spared,
+                },
+                g.world,
+            );
         }
         let stuck = |turns, light_left, kills, spared| SimResult {
             won: false,
@@ -281,7 +300,7 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
             spared,
         };
         if turns >= SIM_TURN_CAP {
-            return stuck(turns, g.light, g.kills, g.spared);
+            return (stuck(turns, g.light, g.kills, g.spared), g.world);
         }
         let objective = if g.has_amulet {
             find_tile(&g.map, Tile::UpStairs)
@@ -303,12 +322,12 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
             })
         };
         let Some(objective) = objective else {
-            return stuck(turns, g.light, g.kills, g.spared);
+            return (stuck(turns, g.light, g.kills, g.spared), g.world);
         };
         let dist = bfs_dist(&g.map, objective);
         let player_d = dist[idx(g.px, g.py)];
         if player_d < 0 {
-            return stuck(turns, g.light, g.kills, g.spared);
+            return (stuck(turns, g.light, g.kills, g.spared), g.world);
         }
         // Walking onto Stairs always descends, and onto UpStairs always
         // ascends once depth > 1 — both unconditional, regardless of
@@ -372,7 +391,7 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> SimResult {
                 g.apply_input(if blocked { 7 + b } else { b });
                 turns += 1;
             }
-            None => return stuck(turns, g.light, g.kills, g.spared),
+            None => return (stuck(turns, g.light, g.kills, g.spared), g.world),
         }
     }
 }
@@ -413,7 +432,7 @@ pub(crate) fn sim_main(n: u64, report: bool, policy: Policy) {
     let mut kills_total = 0u64;
     let mut spared_total = 0u64;
     for seed in 0..n {
-        let r = sim_seed(seed, policy);
+        let (r, _world) = sim_seed(seed, policy);
         kills_total += r.kills as u64;
         spared_total += r.spared as u64;
         if r.won {
@@ -507,6 +526,15 @@ pub(crate) fn sim_main(n: u64, report: bool, policy: Policy) {
 }
 
 /// Full-run dump: every depth of the seed's dungeon, generated directly.
+/// Root-world-only (batch 6 T1): `Game::new(seed)` always starts in
+/// `WorldId::Seed(seed)` with that same `seed` as `Game::seed`, so this is
+/// by definition the ROOT world for the passed-in seed (see
+/// `game::WorldId`'s doc comment on how "root" is a comparison, not a
+/// stored flag). A portal world is dumpable too — by dumping ITS seed
+/// (`Dest::World`'s derived `u64`) directly, which works for free since
+/// `dump` never inspects `Game::world` — this function's own portal tiles
+/// (`*`, `level_dump`'s `Tile::Portal` arm) just show where such a seed
+/// could be reached from, not that this call reaches it.
 pub(crate) fn dump(seed: u64) -> String {
     let mut g = Game::new(seed);
     let mut out = format!("seed={}\n", seed);

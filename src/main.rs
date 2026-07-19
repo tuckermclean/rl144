@@ -30,9 +30,14 @@ use rng::h64;
 use save::{parse_save, replay, state_hash};
 
 #[cfg(test)]
-use content::{GHOST_LABELS, KINDS, TALK_LINES, THEMES, TONE_LINES, VAULTS, ghost_label_idx};
+use content::{
+    AUTHORED_FLOORS, GHOST_LABELS, KINDS, TALK_LINES, THEMES, TONE_LINES, VAULTS, ghost_label_idx,
+};
 #[cfg(test)]
-use game::{MKind, Monster, TIER_WARNINGS, Tile, idx, in_map, receptivity};
+use game::{
+    COLS, Dest, MAP_H, MKind, Monster, TIER_WARNINGS, Tile, WorldId, bfs_dist, idx, in_map,
+    receptivity,
+};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -1028,11 +1033,33 @@ mod tests {
     fn pacifist_never_attacks() {
         let mut total_spared = 0u64;
         for seed in 0..200u64 {
-            let r = sim_seed(seed, Policy::Pacifist);
+            let (r, _world) = sim_seed(seed, Policy::Pacifist);
             assert_eq!(r.kills, 0, "pacifist bot landed a kill on seed {}", seed);
             total_spared += r.spared as u64;
         }
         assert!(total_spared > 0, "expected at least one becalmed monster over seeds 0..200");
+    }
+
+    /// Batch 6 T1: neither sim policy ever emits the wait byte (4) — the
+    /// only input that can transit a portal (`game::Game::wait_turn`'s doc
+    /// comment) — so a bot run must never leave the root world, regardless
+    /// of how many portals its route happens to walk over (walking ONTO one
+    /// only logs, per `Game::land_on_tile`'s `Tile::Portal` arm). Checked
+    /// over a range wide enough to almost certainly cross at least one
+    /// portal-bearing depth (~1/4 chance each, per `Game::gen_level`'s
+    /// portal-placement comment) for both policies.
+    #[test]
+    fn bot_never_transits() {
+        for seed in 0..100u64 {
+            let (_, world) = sim_seed(seed, Policy::Greedy);
+            assert!(world == WorldId::Seed(seed), "greedy bot left the root world on seed {}", seed);
+            let (_, world) = sim_seed(seed, Policy::Pacifist);
+            assert!(
+                world == WorldId::Seed(seed),
+                "pacifist bot left the root world on seed {}",
+                seed
+            );
+        }
     }
 
     /// Over a small seed range the bot should never get stuck (stuck would
@@ -1053,7 +1080,7 @@ mod tests {
         let mut deaths_dark = 0u64;
         let mut stuck = 0u64;
         for seed in 0..50u64 {
-            let r = sim_seed(seed, Policy::Greedy);
+            let (r, _world) = sim_seed(seed, Policy::Greedy);
             if r.won {
                 wins += 1;
             } else if r.dead_dark {
@@ -1098,5 +1125,351 @@ mod tests {
         assert_eq!(name.len(), 6 + 16 + 4);
         assert!(name.starts_with("rl144-"));
         assert!(name.ends_with(".sav"));
+    }
+
+    // ---------- Batch 6 T1: portals + multi-world state + authored floors ----------
+
+    /// Greedy BFS walk from the player's CURRENT position to `(tx, ty)`,
+    /// appending each move byte to `inputs` and applying it — test support
+    /// for scripting a REAL (not teleported) approach to a tile, needed by
+    /// `multiworld_replay_is_deterministic` since replay only ever sees an
+    /// actual input-byte log. Attacks through a monster blocking the
+    /// shortest path rather than detouring (same as a human bumping
+    /// through) — that still converges, just costs extra bytes/turns.
+    fn walk_to(inputs: &mut Vec<u8>, g: &mut Game, tx: i32, ty: i32) {
+        let dirs: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        for _ in 0..2000 {
+            if (g.px, g.py) == (tx, ty) || g.dead || g.won {
+                return;
+            }
+            let dist = bfs_dist(&g.map, (tx, ty));
+            let player_d = dist[idx(g.px, g.py)];
+            assert!(
+                player_d >= 0,
+                "walk_to: ({},{}) unreachable from ({},{})",
+                tx,
+                ty,
+                g.px,
+                g.py
+            );
+            let b = dirs
+                .iter()
+                .enumerate()
+                .find_map(|(b, &(dx, dy))| {
+                    let (nx, ny) = (g.px + dx, g.py + dy);
+                    if in_map(nx, ny) && dist[idx(nx, ny)] == player_d - 1 {
+                        Some(b as u8)
+                    } else {
+                        None
+                    }
+                })
+                .expect("walk_to: no step decreases distance to target");
+            inputs.push(b);
+            g.apply_input(b);
+        }
+        panic!("walk_to: exceeded step cap approaching ({}, {})", tx, ty);
+    }
+
+    /// Move the player onto `(tx, ty)` via a single step from a walkable
+    /// neighbor — test support for triggering `try_move_player`'s landing
+    /// logic (pickup, stairs/portal handling) on a specific tile without
+    /// scripting a full path there. Teleports the player to the neighbor
+    /// first (fine for unit-testing a specific mechanic in isolation — same
+    /// direct-field-poke convention `lose_beats_win_at_zero_light` and
+    /// friends already use elsewhere in this file).
+    fn step_onto(g: &mut Game, tx: i32, ty: i32) {
+        let deltas: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+        let (adj, delta) = deltas
+            .iter()
+            .map(|&(dx, dy)| ((tx - dx, ty - dy), (dx, dy)))
+            .find(|&((ax, ay), _)| {
+                in_map(ax, ay)
+                    && g.map[idx(ax, ay)] != Tile::Wall
+                    && !g.monsters.iter().any(|m| (m.x, m.y) == (ax, ay))
+            })
+            .expect("step_onto: target has no walkable, unoccupied neighbor");
+        g.px = adj.0;
+        g.py = adj.1;
+        g.try_move_player(delta.0, delta.1);
+    }
+
+    /// Fixture assumption shared by several tests below: seed 1's depth 2
+    /// rolls a portal (found by scanning `--dump --seed 1`'s depth-2 block
+    /// for `*`). Isolated here as its own smoke test so a future worldgen
+    /// re-baseline (T4) gets a clear, specific failure instead of a
+    /// confusing one three tests downstream.
+    #[test]
+    fn fixture_seed1_depth2_has_a_portal() {
+        let mut g = Game::new(1);
+        g.depth = 2;
+        g.gen_level();
+        assert!(g.portal.is_some(), "fixture assumption broke: seed 1 depth 2 no longer rolls a portal");
+    }
+
+    /// A portal's destination is a pure function of (world seed, depth):
+    /// regenerating the identical (seed, depth) twice must land the SAME
+    /// portal position and the SAME destination (both the kind — World vs
+    /// Floor — and the specific seed/index).
+    #[test]
+    fn portal_destination_is_deterministic() {
+        let mut a = Game::new(1);
+        a.depth = 2;
+        a.gen_level();
+        let mut b = Game::new(1);
+        b.depth = 2;
+        b.gen_level();
+        let (pa, pb) = (a.portal, b.portal);
+        match (pa, pb) {
+            (Some((ax, ay, adest)), Some((bx, by, bdest))) => {
+                assert_eq!((ax, ay), (bx, by), "portal position must be deterministic");
+                match (adest, bdest) {
+                    (Dest::World(sa), Dest::World(sb)) => {
+                        assert_eq!(sa, sb, "derived destination seed must be deterministic")
+                    }
+                    (Dest::Floor(ia), Dest::Floor(ib)) => {
+                        assert_eq!(ia, ib, "destination floor index must be deterministic")
+                    }
+                    _ => panic!("destination KIND differed between two identical generations"),
+                }
+            }
+            _ => panic!("portal presence differed between two identical generations"),
+        }
+    }
+
+    /// Walking ONTO a portal only logs its destination and does not
+    /// transit; standing on it and pressing wait (byte 4) does.
+    #[test]
+    fn portal_transit_only_via_wait() {
+        let mut g = Game::new(1);
+        g.depth = 2;
+        g.gen_level();
+        let (px, py, _dest) = g.portal.expect("fixture: seed 1 depth 2 has a portal");
+
+        step_onto(&mut g, px, py);
+        assert!((g.px, g.py) == (px, py), "should have landed on the portal tile");
+        assert!(g.world == WorldId::Seed(1), "walking onto a portal must not transit");
+        // Not necessarily the LAST message: a monster adjacent to the
+        // portal may attack in the same turn's monsters_act, logging
+        // AFTER the describe line — search the whole log instead.
+        assert!(
+            g.msgs.iter().any(|m| m.starts_with("Beyond it:")),
+            "walk-over must log the describe line, got: {:?}",
+            g.msgs
+        );
+
+        g.wait_turn();
+        assert!(g.world != WorldId::Seed(1), "waiting while standing on a portal must transit");
+    }
+
+    /// Leaving through a portal and returning restores the SOURCE level
+    /// exactly — map, monsters, and items unchanged (state_hash equality
+    /// against a never-left control is NOT expected: light differs, since
+    /// time still passed in the destination — see the batch-6 T1 test
+    /// list's own note on this).
+    #[test]
+    fn portal_round_trip_restores_source_exactly() {
+        let mut g = Game::new(1);
+        g.depth = 2;
+        g.gen_level();
+        let (px, py, _dest) = g.portal.expect("fixture: seed 1 depth 2 has a portal");
+
+        let map_before = g.map.clone();
+        let mons_before: Vec<(i32, i32, MKind, i32, u8, bool)> =
+            g.monsters.iter().map(|m| (m.x, m.y, m.kind, m.hp, m.regard, m.calm)).collect();
+        let items_before: Vec<(i32, i32, u8)> =
+            g.items.iter().map(|it| (it.x, it.y, it.kind as u8)).collect();
+
+        g.px = px;
+        g.py = py;
+        g.wait_turn(); // transit
+        assert!(g.world != WorldId::Seed(1), "fixture assumption: transit happened");
+
+        // Step off the destination's entrance and back onto it to trigger
+        // return_to_source (arriving already stands ON the entrance, which
+        // doesn't by itself fire land_on_tile).
+        let (ex, ey) = (g.px, g.py);
+        let off = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                in_map(ex + dx, ey + dy)
+                    && g.map[idx(ex + dx, ey + dy)] != Tile::Wall
+                    && !g.monsters.iter().any(|m| (m.x, m.y) == (ex + dx, ey + dy))
+            })
+            .expect("destination entrance has a free neighbor");
+        g.try_move_player(off.0, off.1);
+        g.try_move_player(-off.0, -off.1);
+        assert!(g.world == WorldId::Seed(1), "should be back in the source world");
+        assert!((g.px, g.py) == (px, py), "must land exactly on the source portal tile");
+
+        assert!(g.map == map_before, "source map must be byte-identical after the round trip");
+        let mons_after: Vec<(i32, i32, MKind, i32, u8, bool)> =
+            g.monsters.iter().map(|m| (m.x, m.y, m.kind, m.hp, m.regard, m.calm)).collect();
+        assert!(mons_after == mons_before, "source monsters must be unchanged");
+        let items_after: Vec<(i32, i32, u8)> =
+            g.items.iter().map(|it| (it.x, it.y, it.kind as u8)).collect();
+        assert_eq!(items_after, items_before, "source items must be unchanged");
+    }
+
+    /// Globals (light burn aside, which is expected — see `spend_turn`)
+    /// and the per-run RNG streams (combat/ai/flavor/parley) are NOT reset
+    /// or perturbed by a transit: they're per-RUN state, not per-world.
+    #[test]
+    fn globals_persist_across_transit() {
+        let mut g = Game::new(1);
+        g.depth = 2;
+        g.gen_level();
+        let (px, py, _dest) = g.portal.expect("fixture: seed 1 depth 2 has a portal");
+
+        g.atk += 2; // simulate a sword pickup's lasting effect
+        let atk_before = g.atk;
+        let kills_before = g.kills;
+        let spared_before = g.spared;
+
+        // Prove combat_rng's stream isn't perturbed: draw one value now,
+        // transit, draw the next — it must match a channel that was simply
+        // left running, not reset.
+        let mut shadow = channel(1, &["combat"]);
+        let first = g.combat_rng.next();
+        assert_eq!(first, shadow.next(), "sanity: combat_rng starts matching a fresh channel");
+
+        g.px = px;
+        g.py = py;
+        g.wait_turn(); // transit
+        assert!(g.world != WorldId::Seed(1), "fixture assumption: transit happened");
+
+        assert_eq!(g.atk, atk_before, "atk (a run-global) must survive a transit");
+        assert_eq!(g.kills, kills_before, "kills (a run-global) must survive a transit");
+        assert_eq!(g.spared, spared_before, "spared (a run-global) must survive a transit");
+        let second = g.combat_rng.next();
+        assert_eq!(second, shadow.next(), "combat_rng must be exactly where it left off");
+    }
+
+    /// Script an input log that crosses TWO worlds (root -> a portal ->
+    /// waits in the destination), then replay it twice from scratch and
+    /// require an identical state hash.
+    #[test]
+    fn multiworld_replay_is_deterministic() {
+        let seed = 3;
+        let mut g = Game::new(seed);
+        let (tx, ty, _dest) = g.portal.expect("fixture: seed 3 depth 1 has a portal");
+        let mut inputs: Vec<u8> = Vec::new();
+        walk_to(&mut inputs, &mut g, tx, ty);
+        assert!((g.px, g.py) == (tx, ty), "fixture assumption: walk_to reached the portal");
+
+        inputs.push(4);
+        g.apply_input(4); // transit
+        assert!(g.world != WorldId::Seed(seed), "fixture assumption: transit happened");
+        inputs.push(4);
+        g.apply_input(4);
+        inputs.push(4);
+        g.apply_input(4);
+
+        let r1 = replay(seed, &inputs);
+        let r2 = replay(seed, &inputs);
+        assert_eq!(state_hash(&r1), state_hash(&r2), "multi-world replay must be deterministic");
+        assert!(r1.world != WorldId::Seed(seed), "replay should also have crossed worlds");
+    }
+
+    /// The root world's depth-1 `<` win check is untouched by the
+    /// non-root-world return-portal branch added alongside it.
+    #[test]
+    fn root_win_unaffected_by_portals() {
+        let mut g = Game::new(7);
+        g.has_amulet = true;
+        g.monsters.clear(); // keep the test about the win check, not combat
+        let (ex, ey) = (g.px, g.py);
+        let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                in_map(ex + dx, ey + dy) && g.map[idx(ex + dx, ey + dy)] == Tile::Floor
+            })
+            .unwrap();
+        g.try_move_player(dx, dy);
+        assert!(!g.dead && !g.won);
+        g.try_move_player(-dx, -dy); // back onto '<' with the amulet in hand
+        assert!(g.won, "root world's depth-1 <, with the amulet, must still win");
+    }
+
+    /// Mirrors `vaults_well_formed`: bordered by `#`, exactly one return
+    /// portal `<`, only legal legend chars, within the 80x25 grid.
+    #[test]
+    fn authored_floors_well_formed() {
+        for (fi, f) in AUTHORED_FLOORS.iter().enumerate() {
+            let rows: Vec<&str> = f.map.lines().collect();
+            let w = rows[0].len();
+            assert!(rows.len() >= 3 && w >= 3, "floor {} too small", fi);
+            assert!(rows.len() <= MAP_H && w <= COLS, "floor {} exceeds 80x25", fi);
+            let mut lt_count = 0;
+            for (j, row) in rows.iter().enumerate() {
+                assert_eq!(row.len(), w, "floor {} row {} ragged", fi, j);
+                for (i, c) in row.bytes().enumerate() {
+                    assert!(b"#.<!)rgO".contains(&c), "floor {} bad char {}", fi, c as char);
+                    if c == b'<' {
+                        lt_count += 1;
+                    }
+                    if j == 0 || j == rows.len() - 1 || i == 0 || i == w - 1 {
+                        assert_eq!(c, b'#', "floor {} border open at {},{}", fi, i, j);
+                    }
+                }
+            }
+            assert_eq!(lt_count, 1, "floor {} must have exactly one return portal", fi);
+        }
+    }
+
+    /// Authored-floor flavor (name + describe line, and the "You arrive
+    /// at..." line it feeds) must fit the 78-char log row — same
+    /// discipline as `theme_lines_fit_log_row`/`talk_lines_fit_log_row`.
+    #[test]
+    fn authored_floors_flavor_fits_log_row() {
+        for f in &AUTHORED_FLOORS {
+            assert!(f.describe.len() <= 78, "describe too long ({}): {}", f.describe.len(), f.describe);
+            let arrival = format!("You arrive at {}.", f.name);
+            assert!(arrival.len() <= 78, "arrival line too long ({}): {}", arrival.len(), arrival);
+        }
+    }
+
+    /// Same-floor-from-different-worlds is the SAME floor: `WorldId::Floor`
+    /// alone keys the persisted state, not which portal/tile led there.
+    /// Constructed directly (per the batch-6 T1 test list's own allowance)
+    /// since natural worldgen doesn't guarantee two distinct real portals
+    /// converge on the same floor within a small seed sample.
+    #[test]
+    fn floor_is_singular_across_visits() {
+        let mut g = Game::new(1);
+        let enter_floor0 = |g: &mut Game| {
+            let (px, py) = (g.px, g.py);
+            g.map[idx(px, py)] = Tile::Portal;
+            g.portal = Some((px, py, Dest::Floor(0)));
+            g.wait_turn();
+        };
+
+        enter_floor0(&mut g);
+        assert!(g.world == WorldId::Floor(0), "fixture: should have transited into Floor(0)");
+        let items_on_arrival = g.items.len();
+        assert!(items_on_arrival > 0, "fixture: floor 0 has pickupable items");
+
+        let (ix, iy) = (g.items[0].x, g.items[0].y);
+        step_onto(&mut g, ix, iy);
+        assert_eq!(g.items.len(), items_on_arrival - 1, "item should have been picked up");
+
+        let ret = (0..COLS as i32 * MAP_H as i32)
+            .map(|i| (i % COLS as i32, i / COLS as i32))
+            .find(|&(x, y)| g.map[idx(x, y)] == Tile::UpStairs)
+            .expect("floor has a return <");
+        step_onto(&mut g, ret.0, ret.1);
+        assert!(g.world == WorldId::Seed(1), "should be back in root after leaving Floor(0)");
+
+        // Re-enter Floor(0) from a DIFFERENT tile in the source world —
+        // what's under test is that WorldId::Floor(0) alone determines
+        // which stashed state comes back, regardless of provenance.
+        g.px = 5;
+        g.py = 5;
+        enter_floor0(&mut g);
+        assert!(g.world == WorldId::Floor(0));
+        assert_eq!(
+            g.items.len(),
+            items_on_arrival - 1,
+            "revisiting the SAME floor must restore its persisted state"
+        );
     }
 }

@@ -9,7 +9,8 @@
 
 use crate::content::{
     PAL_ALERT, PAL_AMULET, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_CALM_TINT, PAL_LOG_FADE,
-    PAL_LORE, PAL_PLAYER, PAL_POTION, PAL_STAIRS, PAL_STATUS, PAL_SWORD, lore_line, theme_for,
+    PAL_LORE, PAL_PLAYER, PAL_PORTAL, PAL_POTION, PAL_STAIRS, PAL_STATUS, PAL_SWORD, lore_line,
+    theme_for,
 };
 use crate::game::{
     COLS, Game, IKind, MAP_H, MAX_DEPTH, MKind, Monster, ROWS, START_LIGHT, Tile, fov_radius,
@@ -434,6 +435,7 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
                 Tile::Floor => (b'.' as u16, theme.floor),
                 Tile::Stairs => (b'>' as u16, PAL_STAIRS),
                 Tile::UpStairs => (b'<' as u16, PAL_STAIRS),
+                Tile::Portal => (b'*' as u16, PAL_PORTAL),
             };
             let c = if g.vis[i] { scale(color, pct) } else { dim(color) };
             put(cells, x as usize, y as usize, ch, c);

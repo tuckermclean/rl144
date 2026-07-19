@@ -5,11 +5,20 @@
 // boundary between this engine and any frontend (window loop, replay, sim).
 
 use crate::content::{
-    KINDS, PAL_GOBLIN, PAL_OGRE, PAL_RAT, TALK_LINES, TONE_LINES, Theme, VAULTS, lore_line,
-    theme_for,
+    AUTHORED_FLOORS, KINDS, PAL_GOBLIN, PAL_OGRE, PAL_RAT, TALK_LINES, TONE_LINES, Theme, VAULTS,
+    lore_line, theme_for,
 };
 use crate::render::Facing;
-use crate::rng::{Rng, channel};
+use crate::rng::{Rng, channel, h64};
+// Layering note (batch 6 T1): `world_hash` is defined in headless.rs (the
+// verification-tooling module, which itself depends on game.rs for `Game`)
+// but is needed here too, for the walk-over portal describe-line's "world
+// hash" component (see `Game::portal_describe`). Rust's module graph has no
+// acyclic requirement within one crate — this is a function reference, not
+// a type-layout cycle — so the two-way `use` compiles cleanly. Kept as one
+// definition (not duplicated) so "what identifies a world" never drifts
+// between the two call sites.
+use crate::headless::world_hash;
 
 pub(crate) const COLS: usize = 80;
 pub(crate) const ROWS: usize = 30;
@@ -77,6 +86,63 @@ pub(crate) enum Tile {
     Floor,
     Stairs,   // '>' down
     UpStairs, // '<' up; on depth 1 it is the way out (win tile, amulet in hand)
+    /// A door to another world (batch 6 T1, dump/render glyph `*`). Passable
+    /// floor for movement/LOS/monster-pathing purposes (`Game::los`'s wall
+    /// check, `wall_mask`'s autotile mask, and `monsters_act`'s neighbor
+    /// step all key off `Tile::Wall` specifically, so `Portal` falls through
+    /// to "not a wall" everywhere for free). Walking ONTO one just logs its
+    /// destination (`Game::land_on_tile`'s `Tile::Portal` arm) — it does
+    /// NOT transit. Transit is `wait_turn` while STANDING on one (see that
+    /// method's doc comment): a deliberate reuse of the existing wait byte
+    /// rather than a new input byte, so the input vocabulary stays
+    /// unchanged and neither sim bot (which never emits wait) can ever
+    /// transit by accident. Destination is cached in `Game::portal`/
+    /// `LevelState::portal` at generation time (`Game::gen_level`'s portal-
+    /// placement pass) rather than re-derived on demand — see that field's
+    /// doc comment for why.
+    Portal,
+}
+
+/// Identifies a world: either a derived dungeon keyed by its own seed, or a
+/// hand-authored singular place keyed by its index into
+/// `content::AUTHORED_FLOORS` (batch 6 T1). `Game::world` is the CURRENT
+/// world; the root world (the one a fresh `Game::new` starts in, and the
+/// only one with a win condition/amulet — see `Game::land_on_tile`'s
+/// `Tile::UpStairs` arm) is always `Seed(g.seed)`, computed by comparison
+/// rather than a separate stored flag, so it can never drift out of sync
+/// with `g.seed`. `PartialEq`/`Eq` back the linear scans over `Game::worlds`
+/// (fine at this scale — see that field's doc comment); `Copy` because every
+/// use is a small value compared/stored by value, never mutated in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorldId {
+    Seed(u64),
+    Floor(u8),
+}
+
+/// A portal's destination, rolled once at generation time and cached (see
+/// `Tile::Portal`'s doc comment). `World`'s `u64` is a derived seed
+/// (`h64(world_seed, ["portal", depth_tag, index_tag])` — frozen API, see
+/// `Game::gen_level`'s portal-placement comment), never `Game::seed`
+/// itself. `Floor`'s `u8` indexes `content::AUTHORED_FLOORS`.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Dest {
+    World(u64),
+    Floor(u8),
+}
+
+/// Snapshot of a world OTHER than the currently active one (batch 6 T1):
+/// its own per-depth `saved` stack (same shape as `Game::saved`, which is
+/// always the CURRENT world's — see that field's doc comment), the depth
+/// the player was at when they left it, and its own provenance (`from`,
+/// mirroring `Game::from` — a world reached via a portal chain remembers
+/// where IT came from too, so climbing back out the far end of a multi-hop
+/// chain unwinds correctly). `Game::worlds` holds one of these per visited
+/// non-current world, insertion-ordered by first-LEFT (not first-seen) —
+/// see `Game::leave_current_world`'s doc comment.
+pub(crate) struct WorldState {
+    pub(crate) saved: Vec<Option<LevelState>>,
+    pub(crate) depth: u32,
+    pub(crate) from: Option<(WorldId, i32, i32)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -215,6 +281,10 @@ pub(crate) struct LevelState {
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
     pub(crate) room_meta: Vec<(u8, u8)>, // (kind, tone) indices
     pub(crate) room_visited: Vec<bool>,
+    /// This depth's portal, if it generated one (batch 6 T1): position plus
+    /// cached destination, snapshotted/restored alongside everything else
+    /// on a stash/restore round trip. See `Game::portal`'s doc comment.
+    pub(crate) portal: Option<(i32, i32, Dest)>,
 }
 
 pub(crate) struct Game {
@@ -296,7 +366,50 @@ pub(crate) struct Game {
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
     pub(crate) room_meta: Vec<(u8, u8)>,
     pub(crate) room_visited: Vec<bool>,
+    /// The CURRENT world's per-depth stash (batch 6 T1: was unconditionally
+    /// "the run's" stash before portals existed — now scoped to whichever
+    /// world `Game::world` names). Length `MAX_DEPTH` for a `Seed` world,
+    /// length 1 for a `Floor` world (always index 0, since `Game::depth` is
+    /// pinned to 1 there). Swapped out wholesale on every world transition
+    /// (`Game::leave_current_world`/`enter_world_forward`/
+    /// `enter_world_return`) the same way `map`/`monsters`/`items` are.
     pub(crate) saved: Vec<Option<LevelState>>,
+    /// Every visited world OTHER than the current one (batch 6 T1),
+    /// insertion-ordered by first-LEFT (see `Game::leave_current_world`).
+    /// The current world's own state lives in the live fields above
+    /// (`map`/`saved`/`depth`/`from`), never duplicated here — hashing and
+    /// transition code both key off `Game::world` to know which side of
+    /// that split a given world is on right now (see `save::state_hash`'s
+    /// batch-6 addition and `Game::leave_current_world`/`enter_world_*`).
+    /// Linear scan (`Vec`, not a map) is fine at this scale — a run visits
+    /// at most a handful of worlds before the light runs out.
+    pub(crate) worlds: Vec<(WorldId, WorldState)>,
+    /// Where the CURRENT world was entered FROM (batch 6 T1): the source
+    /// world plus the exact portal tile there, so walking onto THIS world's
+    /// depth-1 (or a Floor's sole) `<` can transit back to precisely that
+    /// tile (`Game::return_to_source`) rather than searching for one.
+    /// `None` for the root world (never entered via a portal) and, always,
+    /// immediately after `Game::new` — see `WorldId`'s doc comment for why
+    /// "root" is a comparison (`world == WorldId::Seed(seed)`) rather than a
+    /// field this could get out of sync with.
+    pub(crate) from: Option<(WorldId, i32, i32)>,
+    /// The CURRENT level's portal, if `Game::gen_level`'s portal-placement
+    /// pass rolled one (batch 6 T1) — position plus cached destination.
+    /// Cached rather than re-derived on demand: re-deriving would mean
+    /// re-running worldgen for this (world seed, depth) up to the placement
+    /// point on every lookup, for no benefit over storing the ~9 bytes this
+    /// costs; `LevelState::portal` snapshots/restores it exactly like every
+    /// other per-level field, and it's hashed in `save::state_hash` (stored
+    /// state that changes what a walk-onto/wait does is run-defining, same
+    /// rationale as `sealed_stairs`-style fields elsewhere in this
+    /// codebase's history). `None` on a `Floor` world (authored floors
+    /// place no further portals this batch — a deliberate scope cut, not a
+    /// technical limit; see `content::AUTHORED_FLOORS`'s doc comment).
+    pub(crate) portal: Option<(i32, i32, Dest)>,
+    /// Which world is currently active (batch 6 T1). `Seed(seed)` for a
+    /// derived dungeon, `Floor(i)` for an authored singular place. See
+    /// `WorldId`'s doc comment for the root-world convention.
+    pub(crate) world: WorldId,
     pub(crate) msgs: Vec<String>,
     pub(crate) seed: u64,
     pub(crate) combat_rng: Rng,
@@ -347,6 +460,10 @@ impl Game {
             room_meta: Vec::new(),
             room_visited: Vec::new(),
             saved: (0..MAX_DEPTH).map(|_| None).collect(),
+            worlds: Vec::new(),
+            from: None,
+            portal: None,
+            world: WorldId::Seed(seed),
             msgs: Vec::new(),
             seed,
             combat_rng: channel(seed, &["combat"]),
@@ -361,13 +478,34 @@ impl Game {
         g
     }
 
+    /// The seed that channel draws (`worldgen`/`spawns`/`vault`/`tone`,
+    /// plus theme/lore lookups) should use for the CURRENT world (batch 6
+    /// T1). A `Seed` world uses its own seed — a portal world is literally
+    /// `Game`-worldgen under a different seed, so `gen_level` needs no
+    /// branching of its own, just this one substitution everywhere it used
+    /// to say `self.seed`. A `Floor` world has no worldgen (const ASCII,
+    /// zero RNG — see `Game::instantiate_floor`) but still wants a theme
+    /// for INCIDENTAL flavor (torch-tier warnings, potion/sword adjectives
+    /// via `Game::adj`) since those fire regardless of which world you're
+    /// in; rather than invent a per-floor theme table, it borrows the root
+    /// world's depth-1 theme (`self.seed` at depth 1, which `self.depth`
+    /// already IS on a floor — see `Game::depth`'s floor convention) — a
+    /// floor's own identity comes from `content::AUTHORED_FLOORS`'
+    /// name/describe line instead, never from this borrowed theme's label.
+    fn world_seed(&self) -> u64 {
+        match self.world {
+            WorldId::Seed(s) => s,
+            WorldId::Floor(_) => self.seed,
+        }
+    }
+
     pub(crate) fn theme(&self) -> &'static Theme {
-        theme_for(self.seed, self.depth)
+        theme_for(self.world_seed(), self.depth)
     }
 
     /// The filled lore line for a tier of the current depth's theme.
     fn lore_line(&self, tier: usize) -> String {
-        lore_line(self.seed, self.depth, tier)
+        lore_line(self.world_seed(), self.depth, tier)
     }
 
     fn mob_name(&self, k: MKind) -> &'static str {
@@ -396,10 +534,12 @@ impl Game {
         self.vis = vec![false; COLS * MAP_H];
         self.monsters.clear();
         self.items.clear();
+        self.portal = None;
 
         let depth_tag = self.depth.to_string();
-        let mut wr = channel(self.seed, &["worldgen", &depth_tag]);
-        let mut sr = channel(self.seed, &["spawns", &depth_tag]);
+        let world_seed = self.world_seed();
+        let mut wr = channel(world_seed, &["worldgen", &depth_tag]);
+        let mut sr = channel(world_seed, &["spawns", &depth_tag]);
 
         // rooms
         let mut rooms: Vec<(i32, i32, i32, i32)> = Vec::new(); // x,y,w,h
@@ -428,7 +568,7 @@ impl Game {
         // occasionally stamp one hand-authored vault as an extra room; the
         // corridor pass below connects its center like any other room
         let mut vault_room: Option<usize> = None;
-        let mut vr = channel(self.seed, &["vault", &depth_tag]);
+        let mut vr = channel(world_seed, &["vault", &depth_tag]);
         if vr.chance(2, 5) {
             let rows: Vec<&str> =
                 VAULTS[vr.range(0, VAULTS.len() as i32) as usize].lines().collect();
@@ -509,10 +649,77 @@ impl Game {
             .copied()
             .unwrap_or((sx + 1, sy));
         self.map[idx(sx, sy)] = Tile::UpStairs;
+        let is_root = self.world == WorldId::Seed(self.seed);
         if self.depth < MAX_DEPTH {
             self.map[idx(deepest.0, deepest.1)] = Tile::Stairs;
-        } else {
+        } else if is_root {
             self.items.push(Item { x: deepest.0, y: deepest.1, kind: IKind::Amulet });
+        } else {
+            /* batch 6 T1: the amulet and the win condition both live only
+               in the root world (see `Game::land_on_tile`'s `UpStairs`
+               arm) — a portal Seed-world's depth 5 has no amulet. Its
+               deepest room still rewards the trip: a Potion where the
+               amulet would have sat, plus a LoreC placed via the SAME
+               `sr` (spawns) draw every other item on this depth uses —
+               existing item machinery, no new mechanics. `rand_floor` may
+               occasionally fail to find a second free tile in a cramped
+               room; skipping the LoreC in that rare case is harmless, the
+               Potion alone still marks this depth's reward. */
+            self.items.push(Item { x: deepest.0, y: deepest.1, kind: IKind::Potion });
+            if let Some((lx, ly)) = self.rand_floor(&mut sr, 4) {
+                self.items.push(Item { x: lx, y: ly, kind: IKind::LoreC });
+            }
+        }
+
+        /* portal (batch 6 T1): chance(1,4) per depth, drawn from the SAME
+           `wr` worldgen channel used for every layout draw above (rooms,
+           vault placement, corridors) — inserted strictly AFTER all of
+           those, so this batch's golden diff is purely additive: existing
+           `wr` draws are byte-identical up to this point, this is a new
+           tail. Room choice excludes the entrance room (index 0 — see
+           `centers[0]`) and the exit room (whichever room's center is
+           `deepest`, holding Stairs/Amulet/the consolation Potion) so a
+           portal never doubles as, or blocks routing to, either. Position
+           is a channel-drawn floor tile inside that room, retried against
+           collision with anything already placed there (a vault-stamped
+           monster/item, or the entrance/exit tile itself). Destination
+           kind is rolled ONLY once a valid tile is actually found (not
+           inside the retry loop, so retries don't waste draws on a roll
+           that might be discarded): chance(1,3) an authored Floor, else a
+           derived World whose seed is `h64(world_seed, ["portal",
+           depth_tag, index_tag])` — frozen API (like `h64`'s own doc
+           comment says of the primitive itself): the whole multiverse is a
+           pure function of the root seed. `index_tag` is always "0" this
+           batch (at most one portal per depth) — reserved so a future
+           "more than one portal per depth" feature can extend the tag
+           scheme without colliding with this batch's derivations. */
+        if wr.chance(1, 4) {
+            let exit_idx = centers.iter().position(|&c| c == deepest);
+            let candidates: Vec<usize> =
+                (1..rooms.len()).filter(|&i| Some(i) != exit_idx).collect();
+            if !candidates.is_empty() {
+                let ri = candidates[wr.range(0, candidates.len() as i32) as usize];
+                let (rx, ry, rw, rh) = rooms[ri];
+                for _ in 0..40 {
+                    let px = wr.range(rx, rx + rw);
+                    let py = wr.range(ry, ry + rh);
+                    if self.map[idx(px, py)] == Tile::Floor
+                        && (px, py) != (sx, sy)
+                        && (px, py) != deepest
+                        && !self.items.iter().any(|it| (it.x, it.y) == (px, py))
+                        && !self.monsters.iter().any(|m| (m.x, m.y) == (px, py))
+                    {
+                        let dest = if wr.chance(1, 3) {
+                            Dest::Floor(wr.range(0, AUTHORED_FLOORS.len() as i32) as u8)
+                        } else {
+                            Dest::World(h64(world_seed, &["portal", &depth_tag, "0"]))
+                        };
+                        self.map[idx(px, py)] = Tile::Portal;
+                        self.portal = Some((px, py, dest));
+                        break;
+                    }
+                }
+            }
         }
 
         /* monsters: scale with depth, spawn on floor away from player.
@@ -570,7 +777,7 @@ impl Game {
         // room identity: kind + tone per room from the "tone" channel (its
         // own stream — adds zero draws to worldgen/spawns, so layouts and
         // goldens are untouched). Spawn room counts as already entered.
-        let mut tn = channel(self.seed, &["tone", &depth_tag]);
+        let mut tn = channel(world_seed, &["tone", &depth_tag]);
         self.room_meta = rooms
             .iter()
             .map(|_| (tn.range(0, 6) as u8, tn.range(0, 4) as u8))
@@ -702,7 +909,10 @@ impl Game {
         true
     }
 
-    /// Snapshot the current depth so it persists exactly as left.
+    /// Snapshot the current depth (of the CURRENT world — see `Game::saved`'s
+    /// doc comment) so it persists exactly as left. Indexes by `self.depth`
+    /// unconditionally: a `Floor` world's `depth` is pinned to 1 (see
+    /// `Game::instantiate_floor`), so this needs no world-kind branch.
     fn stash_level(&mut self) {
         let d = self.depth as usize - 1;
         self.saved[d] = Some(LevelState {
@@ -713,12 +923,42 @@ impl Game {
             rooms: std::mem::take(&mut self.rooms),
             room_meta: std::mem::take(&mut self.room_meta),
             room_visited: std::mem::take(&mut self.room_visited),
+            portal: self.portal.take(),
         });
     }
 
-    /// Restore a previously visited depth and place the player at `arrive`.
-    /// A monster that wandered onto the arrival tile is shoved aside.
+    /// Restore a previously visited depth and place the player at the first
+    /// tile of kind `arrive` found scanning the map (row-major). A monster
+    /// that wandered onto the arrival tile is shoved aside. Used by
+    /// `descend`/`ascend` (arrive on the stairs) and `enter_world_forward`
+    /// (arrive on the entrance `<`), where "the stairs tile" is exactly the
+    /// right arrival point and doesn't need to be threaded through as a
+    /// coordinate. `return_to_source` wants an EXACT coordinate instead
+    /// (the portal tile the player originally stepped through, not "the
+    /// first `<`") — see `restore_level_at`, which shares
+    /// `apply_restored_level` with this method rather than duplicating the
+    /// placement/monster-shove/FOV logic.
     fn restore_level(&mut self, ls: LevelState, arrive: Tile) {
+        let pos = (0..COLS as i32 * MAP_H as i32)
+            .map(|i| (i % COLS as i32, i / COLS as i32))
+            .find(|&(x, y)| ls.map[idx(x, y)] == arrive)
+            .unwrap_or((self.px, self.py));
+        self.apply_restored_level(ls, pos);
+    }
+
+    /// Restore a previously visited depth and place the player at the exact
+    /// `(x, y)` given, rather than searching for a tile kind — used by
+    /// `return_to_source`, which must land the player back ON the specific
+    /// portal tile it left through (see that method's doc comment for why
+    /// standing there is safe by construction).
+    fn restore_level_at(&mut self, ls: LevelState, x: i32, y: i32) {
+        self.apply_restored_level(ls, (x, y));
+    }
+
+    /// Shared tail for `restore_level`/`restore_level_at`: install the
+    /// snapshot's fields, place the player at `pos`, shove aside any
+    /// monster that wandered onto it, and refresh FOV.
+    fn apply_restored_level(&mut self, ls: LevelState, pos: (i32, i32)) {
         self.map = ls.map;
         self.seen = ls.seen;
         self.monsters = ls.monsters;
@@ -726,11 +966,8 @@ impl Game {
         self.rooms = ls.rooms;
         self.room_meta = ls.room_meta;
         self.room_visited = ls.room_visited;
+        self.portal = ls.portal;
         self.vis = vec![false; COLS * MAP_H];
-        let pos = (0..COLS as i32 * MAP_H as i32)
-            .map(|i| (i % COLS as i32, i / COLS as i32))
-            .find(|&(x, y)| self.map[idx(x, y)] == arrive)
-            .unwrap_or((self.px, self.py));
         self.px = pos.0;
         self.py = pos.1;
         if let Some(mi) = self.monsters.iter().position(|m| (m.x, m.y) == pos) {
@@ -753,6 +990,241 @@ impl Game {
             }
         }
         self.compute_fov();
+    }
+
+    /// Leave the current world for storage in `Game::worlds` (batch 6 T1):
+    /// stash its live level, then write its `WorldState` into the vector —
+    /// updating an existing slot in place if this world was visited (and
+    /// left) before, else appending a new one. This is what makes
+    /// `Game::worlds`' order "insertion by first-LEFT": a world's slot,
+    /// once created, never moves — a later revisit-then-leave overwrites
+    /// the SAME slot rather than reordering it, which is what keeps
+    /// `save::state_hash`'s iteration order stable across a replay that
+    /// re-enters a world it already left once.
+    fn leave_current_world(&mut self) {
+        self.stash_level();
+        let ws = WorldState {
+            saved: std::mem::take(&mut self.saved),
+            depth: self.depth,
+            from: self.from,
+        };
+        match self.worlds.iter().position(|(id, _)| *id == self.world) {
+            Some(i) => self.worlds[i].1 = ws,
+            None => self.worlds.push((self.world, ws)),
+        }
+    }
+
+    /// Take a world's stored `WorldState` out of `Game::worlds` by id,
+    /// leaving a cheap placeholder behind (never read while that world
+    /// isn't current — see `Game::worlds`' doc comment: hashing and every
+    /// other reader key off `Game::world` to know which side of the
+    /// current/stored split a world is on, so a stale placeholder sitting
+    /// in a slot between visits is harmless noise, not a correctness risk).
+    fn take_world_state(&mut self, wid: WorldId) -> Option<WorldState> {
+        let i = self.worlds.iter().position(|(id, _)| *id == wid)?;
+        let placeholder = WorldState { saved: Vec::new(), depth: 0, from: None };
+        Some(std::mem::replace(&mut self.worlds[i].1, placeholder))
+    }
+
+    /// Forward transit into `wid` (batch 6 T1): a portal step
+    /// (`Game::transit`), always arriving at that world's entrance — depth
+    /// 1 for a `Seed` world, the single level for a `Floor` — regardless of
+    /// whatever depth the player happened to be at on a previous visit
+    /// (contrast `enter_world_return`, which resumes exactly where a world
+    /// was left). If `wid` was visited before, its depth-1 (or sole) stash
+    /// is restored as-is (monsters/items exactly as last left); otherwise
+    /// it's generated/instantiated fresh. `from` becomes this world's
+    /// return provenance, unconditionally overwriting whatever was stored
+    /// before: stepping through the SAME door twice always returns via the
+    /// door you just used, grounded (you step back out where you came in).
+    fn enter_world_forward(&mut self, wid: WorldId, from: (WorldId, i32, i32)) {
+        self.world = wid;
+        self.from = Some(from);
+        self.depth = 1;
+        match self.take_world_state(wid) {
+            Some(ws) => {
+                self.saved = ws.saved;
+                match self.saved[0].take() {
+                    Some(ls) => self.restore_level(ls, Tile::UpStairs),
+                    None => self.regen_current_world(wid), // defensive; should not happen
+                }
+            }
+            None => {
+                self.saved = match wid {
+                    WorldId::Seed(_) => (0..MAX_DEPTH as usize).map(|_| None).collect(),
+                    WorldId::Floor(_) => vec![None],
+                };
+                self.regen_current_world(wid);
+            }
+        }
+    }
+
+    /// Return transit into `wid` (batch 6 T1, `Game::return_to_source`):
+    /// resumes `wid` EXACTLY as it was left — the depth it was left at, and
+    /// the level restored at that depth — placing the player at the exact
+    /// `(x, y)` of the portal tile they originally stepped through, not at
+    /// a searched-for tile kind. Panics if `wid` has no stored `WorldState`
+    /// or that depth was never stashed: both are unreachable given
+    /// `return_to_source` only ever calls this with a `from` provenance
+    /// that was itself set by a prior `enter_world_forward`/this same
+    /// method, which always leaves a matching stash behind.
+    fn enter_world_return(&mut self, wid: WorldId, x: i32, y: i32) {
+        self.world = wid;
+        let ws = self
+            .take_world_state(wid)
+            .expect("return_to_source: provenance world must have a stored WorldState");
+        self.depth = ws.depth;
+        self.saved = ws.saved;
+        self.from = ws.from;
+        let d = self.depth as usize - 1;
+        let ls = self.saved[d]
+            .take()
+            .expect("return_to_source: stashed level must exist for the depth just left");
+        self.restore_level_at(ls, x, y);
+    }
+
+    /// Generate/instantiate `wid` fresh: `gen_level` for a derived `Seed`
+    /// world (reused unchanged — see `Game::world_seed`), `instantiate_floor`
+    /// for an authored `Floor`.
+    fn regen_current_world(&mut self, wid: WorldId) {
+        match wid {
+            WorldId::Seed(_) => self.gen_level(),
+            WorldId::Floor(i) => self.instantiate_floor(i),
+        }
+    }
+
+    /// Instantiate an authored floor (batch 6 T1): parse
+    /// `content::AUTHORED_FLOORS[i]`'s const ASCII map directly into
+    /// `map`/`items`/`monsters` — zero RNG draws, unlike `gen_level`. A
+    /// smaller-than-80x25 map is centered and wall-padded. `rooms` gets one
+    /// entry covering the whole authored rect, pre-marked visited, so
+    /// `note_room_entry` has somewhere harmless to no-op against (a floor
+    /// has no room-tone system — it's one authored space, not a generated
+    /// sequence of rooms). Authored floors place no further portals this
+    /// batch (see `Game::portal`'s doc comment) and carry no lore items
+    /// (see `content::AUTHORED_FLOORS`'s doc comment on why).
+    fn instantiate_floor(&mut self, i: u8) {
+        self.map = vec![Tile::Wall; COLS * MAP_H];
+        self.seen = vec![false; COLS * MAP_H];
+        self.vis = vec![false; COLS * MAP_H];
+        self.monsters.clear();
+        self.items.clear();
+        self.portal = None;
+
+        let spec = &AUTHORED_FLOORS[i as usize];
+        let rows: Vec<&str> = spec.map.lines().collect();
+        let (fw, fh) = (rows[0].len() as i32, rows.len() as i32);
+        let ox = (COLS as i32 - fw) / 2;
+        let oy = (MAP_H as i32 - fh) / 2;
+        let mut start = (ox, oy);
+        for (j, row) in rows.iter().enumerate() {
+            for (col, c) in row.bytes().enumerate() {
+                let (tx, ty) = (ox + col as i32, oy + j as i32);
+                match c {
+                    b'#' => self.map[idx(tx, ty)] = Tile::Wall,
+                    b'.' => self.map[idx(tx, ty)] = Tile::Floor,
+                    b'<' => {
+                        self.map[idx(tx, ty)] = Tile::UpStairs;
+                        start = (tx, ty);
+                    }
+                    b'!' => {
+                        self.map[idx(tx, ty)] = Tile::Floor;
+                        self.items.push(Item { x: tx, y: ty, kind: IKind::Potion });
+                    }
+                    b')' => {
+                        self.map[idx(tx, ty)] = Tile::Floor;
+                        self.items.push(Item { x: tx, y: ty, kind: IKind::Sword });
+                    }
+                    b'r' | b'g' | b'O' => {
+                        self.map[idx(tx, ty)] = Tile::Floor;
+                        let kind = match c {
+                            b'r' => MKind::Rat,
+                            b'g' => MKind::Goblin,
+                            _ => MKind::Ogre,
+                        };
+                        let (hp, ..) = Monster::stats(kind);
+                        self.monsters.push(Monster { x: tx, y: ty, kind, hp, regard: 0, calm: false });
+                    }
+                    _ => {} // well-formedness (main.rs) guards the legal-char set
+                }
+            }
+        }
+        self.px = start.0;
+        self.py = start.1;
+        self.rooms = vec![(ox, oy, fw, fh)];
+        self.room_meta = vec![(0, 0)];
+        self.room_visited = vec![true];
+        self.compute_fov();
+        self.log(format!("You arrive at {}.", spec.name));
+        self.log(String::from(spec.describe));
+    }
+
+    /// Portal transit out of the current world (batch 6 T1,
+    /// `Game::wait_turn`): stash+store the current world, then enter the
+    /// destination — always at its entrance (`enter_world_forward`), never
+    /// resuming mid-depth even on a revisit. Logs its own arrival line
+    /// unconditionally (mirroring `descend`/`ascend`'s own
+    /// "You descend/climb..." line), on top of whatever `gen_level`/
+    /// `instantiate_floor` logs on a FRESH generation — two stacked log
+    /// lines on a first visit is the established pattern here (see
+    /// `descend`'s "You enter {theme}." + "Deeper, and harder..." + "You
+    /// descend to depth N."), not a bug to dedupe.
+    fn transit(&mut self) {
+        let Some((px, py, dest)) = self.portal else {
+            return; // defensive: only called while standing on a Portal tile
+        };
+        let src = self.world;
+        self.leave_current_world();
+        match dest {
+            Dest::World(seed) => self.enter_world_forward(WorldId::Seed(seed), (src, px, py)),
+            Dest::Floor(i) => self.enter_world_forward(WorldId::Floor(i), (src, px, py)),
+        }
+        self.log(format!("You step through into {}.", self.arrival_label(dest)));
+    }
+
+    /// Return to the world/tile a portal was entered from (batch 6 T1,
+    /// `Game::land_on_tile`'s `UpStairs` arm on a non-root world's depth 1,
+    /// or a `Floor`'s sole `<`): walk-on, like stairs — leaving is easy.
+    /// Lands the player standing exactly ON the source portal tile. This
+    /// does NOT immediately re-transit even though standing on a portal
+    /// tile is normally the trigger condition: transit only fires from
+    /// `wait_turn` on an explicit wait input, never as a side effect of
+    /// landing on a tile — so arriving here via a move is safe by
+    /// construction, no re-entrancy guard needed.
+    fn return_to_source(&mut self) {
+        let Some((src, x, y)) = self.from else {
+            return; // defensive: every non-root world sets `from` on entry
+        };
+        self.leave_current_world();
+        self.enter_world_return(src, x, y);
+        self.log(String::from("You step back through, right where you left."));
+    }
+
+    /// The label used for both the walk-over describe-line
+    /// (`portal_describe`) and the arrival line (`transit`): a `Seed`
+    /// dest's theme label plus its world hash, a `Floor` dest's authored
+    /// name.
+    fn arrival_label(&self, dest: Dest) -> String {
+        match dest {
+            Dest::World(seed) => theme_for(seed, 1).label.to_string(),
+            Dest::Floor(i) => AUTHORED_FLOORS[i as usize].name.to_string(),
+        }
+    }
+
+    /// Walk-over-a-portal describe line (batch 6 T1, `Game::land_on_tile`'s
+    /// `Tile::Portal` arm): grounded — both halves (theme label, world
+    /// hash) are DERIVED from the destination seed via existing machinery
+    /// (`content::theme_for`, `headless::world_hash`), the engine proving
+    /// what's on the other side by generating it, never inventing it. Logs
+    /// once per step-on; repeating on a later step-on is fine (same
+    /// convention as every other walk-over message in this file).
+    fn portal_describe(&self, dest: Dest) -> String {
+        match dest {
+            Dest::World(seed) => {
+                format!("Beyond it: {} ({:016x}).", theme_for(seed, 1).label, world_hash(seed))
+            }
+            Dest::Floor(i) => format!("Beyond it: {}.", AUTHORED_FLOORS[i as usize].name),
+        }
     }
 
     pub(crate) fn descend(&mut self) {
@@ -958,6 +1430,15 @@ impl Game {
         self.compute_fov();
     }
 
+    /// Waiting (byte 4) is also how a portal transits (batch 6 T1): a
+    /// deliberate reuse of the existing wait byte rather than a new input
+    /// byte, so the input vocabulary stays unchanged and neither sim bot
+    /// (which never emits wait — `--sim`'s greedy/pacifist policies only
+    /// ever emit move/talk bytes) can ever transit as a side effect of
+    /// routing. Light still burns FIRST via `spend_turn`, exactly like a
+    /// plain wait — dying in the dark mid-transit is a loss like any other
+    /// turn, lose-before-win doctrine holds regardless of which tile you're
+    /// standing on.
     pub(crate) fn wait_turn(&mut self) {
         // Same fx_hit-clearing discipline as try_move_player — see
         // `Game::fx_hit`'s doc comment.
@@ -965,8 +1446,13 @@ impl Game {
         if self.dead || self.won {
             return;
         }
+        let transiting = self.map[idx(self.px, self.py)] == Tile::Portal;
         if !self.spend_turn(0) {
             return;
+        }
+        if transiting {
+            self.transit();
+            return; // arriving world: monsters don't get a free hit, same courtesy as stairs
         }
         self.monsters_act(None);
         self.compute_fov();
@@ -995,12 +1481,30 @@ impl Game {
                     self.ascend();
                     return; // same courtesy on arrival upstairs
                 }
+                // batch 6 T1: depth 1 (or a Floor's sole level, always
+                // depth 1 — see `Game::instantiate_floor`) of a NON-root
+                // world is a return portal, not a win check — walking onto
+                // it transits back to where this world was entered from
+                // (`return_to_source`). The root world's own depth-1 `<`
+                // keeps its original win/refusal semantics untouched.
+                if self.world != WorldId::Seed(self.seed) {
+                    self.return_to_source();
+                    return;
+                }
                 if self.has_amulet {
                     self.won = true;
                     self.log(String::from("You climb into daylight. You made it! [R] new run"));
                     return;
                 }
                 self.log(String::from("The way out. You won't leave without the Amulet."));
+            }
+            Tile::Portal => {
+                // batch 6 T1: walking ONTO a portal never transits — only
+                // `wait_turn` (while standing on one) does. This just logs
+                // its destination; see `Game::portal_describe`.
+                if let Some((_, _, dest)) = self.portal {
+                    self.log(self.portal_describe(dest));
+                }
             }
             _ => {}
         }
