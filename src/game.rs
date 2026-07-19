@@ -120,13 +120,21 @@ pub(crate) enum WorldId {
 }
 
 /// A portal's destination, rolled once at generation time and cached (see
-/// `Tile::Portal`'s doc comment). `World`'s `u64` is a derived seed
+/// `Tile::Portal`'s doc comment). `World`'s first `u64` is a derived seed
 /// (`h64(world_seed, ["portal", depth_tag, index_tag])` — frozen API, see
 /// `Game::gen_level`'s portal-placement comment), never `Game::seed`
-/// itself. `Floor`'s `u8` indexes `content::AUTHORED_FLOORS`.
+/// itself. `World`'s second `u64` is `headless::world_hash(seed)`,
+/// memoized at the SAME generation site (perf fix, batch 6 review): it's a
+/// pure function of the first field, so computing it once here instead of
+/// on every walk-onto (`portal_describe` used to call `world_hash` fresh
+/// each time — generating all 5 depths of the destination world per step)
+/// is free to do and changes no observable output. Being pure-derived from
+/// an already-hashed field, it's deliberately EXCLUDED from `state_hash`
+/// (see `save::hash_portal`) rather than hashed again. `Floor`'s `u8`
+/// indexes `content::AUTHORED_FLOORS`.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Dest {
-    World(u64),
+    World(u64, u64),
     Floor(u8),
 }
 
@@ -712,7 +720,11 @@ impl Game {
                         let dest = if wr.chance(1, 3) {
                             Dest::Floor(wr.range(0, AUTHORED_FLOORS.len() as i32) as u8)
                         } else {
-                            Dest::World(h64(world_seed, &["portal", &depth_tag, "0"]))
+                            // world_hash memoized here, once, at generation
+                            // time (perf fix, batch 6 review) — see
+                            // `Dest::World`'s doc comment.
+                            let dseed = h64(world_seed, &["portal", &depth_tag, "0"]);
+                            Dest::World(dseed, world_hash(dseed))
                         };
                         self.map[idx(px, py)] = Tile::Portal;
                         self.portal = Some((px, py, dest));
@@ -1176,7 +1188,7 @@ impl Game {
         let src = self.world;
         self.leave_current_world();
         match dest {
-            Dest::World(seed) => self.enter_world_forward(WorldId::Seed(seed), (src, px, py)),
+            Dest::World(seed, _) => self.enter_world_forward(WorldId::Seed(seed), (src, px, py)),
             Dest::Floor(i) => self.enter_world_forward(WorldId::Floor(i), (src, px, py)),
         }
         self.log(format!("You step through into {}.", self.arrival_label(dest)));
@@ -1206,7 +1218,7 @@ impl Game {
     /// name.
     fn arrival_label(&self, dest: Dest) -> String {
         match dest {
-            Dest::World(seed) => theme_for(seed, 1).label.to_string(),
+            Dest::World(seed, _) => theme_for(seed, 1).label.to_string(),
             Dest::Floor(i) => AUTHORED_FLOORS[i as usize].name.to_string(),
         }
     }
@@ -1218,10 +1230,19 @@ impl Game {
     /// what's on the other side by generating it, never inventing it. Logs
     /// once per step-on; repeating on a later step-on is fine (same
     /// convention as every other walk-over message in this file).
+    ///
+    /// Perf (batch 6 review): the world hash used to be recomputed here via
+    /// a fresh `world_hash(seed)` call on EVERY walk-onto — regenerating
+    /// all 5 depths of the destination world each time a player stepped
+    /// onto the portal tile. It's now read from `Dest::World`'s memoized
+    /// second field (computed once, at portal-generation time — see that
+    /// enum's doc comment); output is unchanged since it's the same pure
+    /// function of the same seed, just computed once instead of on every
+    /// step-on.
     fn portal_describe(&self, dest: Dest) -> String {
         match dest {
-            Dest::World(seed) => {
-                format!("Beyond it: {} ({:016x}).", theme_for(seed, 1).label, world_hash(seed))
+            Dest::World(seed, whash) => {
+                format!("Beyond it: {} ({:016x}).", theme_for(seed, 1).label, whash)
             }
             Dest::Floor(i) => format!("Beyond it: {}.", AUTHORED_FLOORS[i as usize].name),
         }

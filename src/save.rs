@@ -134,6 +134,13 @@ fn hash_provenance(h: u64, from: Option<(WorldId, i32, i32)>) -> u64 {
 /// (`Tile::Portal` is a distinct discriminant), but its DESTINATION isn't —
 /// that's cached state, not derivable from the tile alone, so it's hashed
 /// here explicitly (see `Game::portal`'s doc comment on why it's cached).
+///
+/// `Dest::World`'s second field (the memoized `world_hash`, batch 6 review
+/// perf fix) is deliberately NOT hashed here: it's a pure function of the
+/// seed already being hashed on the line below, so it carries no
+/// information the seed doesn't already — hashing it too would be
+/// redundant, not more correct. See `Dest::World`'s doc comment in
+/// game.rs.
 fn hash_portal(h: u64, portal: Option<(i32, i32, Dest)>) -> u64 {
     match portal {
         Some((x, y, dest)) => {
@@ -141,7 +148,7 @@ fn hash_portal(h: u64, portal: Option<(i32, i32, Dest)>) -> u64 {
             let h = fnv_bytes(h, &x.to_le_bytes());
             let h = fnv_bytes(h, &y.to_le_bytes());
             match dest {
-                Dest::World(seed) => fnv_bytes(fnv_bytes(h, &[0]), &seed.to_le_bytes()),
+                Dest::World(seed, _) => fnv_bytes(fnv_bytes(h, &[0]), &seed.to_le_bytes()),
                 Dest::Floor(i) => fnv_bytes(fnv_bytes(h, &[1]), &[i]),
             }
         }

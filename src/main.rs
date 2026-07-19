@@ -1223,8 +1223,9 @@ mod tests {
             (Some((ax, ay, adest)), Some((bx, by, bdest))) => {
                 assert_eq!((ax, ay), (bx, by), "portal position must be deterministic");
                 match (adest, bdest) {
-                    (Dest::World(sa), Dest::World(sb)) => {
-                        assert_eq!(sa, sb, "derived destination seed must be deterministic")
+                    (Dest::World(sa, wa), Dest::World(sb, wb)) => {
+                        assert_eq!(sa, sb, "derived destination seed must be deterministic");
+                        assert_eq!(wa, wb, "memoized world hash must be deterministic too");
                     }
                     (Dest::Floor(ia), Dest::Floor(ib)) => {
                         assert_eq!(ia, ib, "destination floor index must be deterministic")
