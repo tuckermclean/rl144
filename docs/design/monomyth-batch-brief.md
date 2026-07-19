@@ -1,3 +1,4 @@
+# [DEFERRED 2026-07-19 — human call: a *next*, not a now. Do not execute until re-prioritized.]
 # Batch brief — monomyth instrumentation (lens + --journey + funnel)
 
 *Standalone first batch of the THOUSAND FACES spine (`monomyth.md` §5 items 1–2, sequencing
