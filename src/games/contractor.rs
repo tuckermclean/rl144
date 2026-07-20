@@ -601,6 +601,7 @@ const STRINGS: StringsDef = StringsDef {
     give_declined: "The {} has no use for that.",
     use_empty_hands: "Your hands are empty.",
     use_no_effect: "That isn't something you can use like that.",
+    resource_label: "Torch",
 };
 
 pub(crate) const GAME: GameDef = GameDef {

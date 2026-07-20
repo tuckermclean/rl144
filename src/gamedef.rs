@@ -366,4 +366,9 @@ pub(crate) struct StringsDef {
     /// batch 7 T2: the top of `Game.held` has no `ItemDef::on_use`. No-op,
     /// no turn.
     pub(crate) use_no_effect: &'static str,
+    /// batch 7 T3: the status-bar label for the run's light-pool resource
+    /// (`start_light`/`Game.light`). Cartridge-owned so engine rendering
+    /// code never hardcodes a game-specific resource name — a future
+    /// cartridge might call this "Battery" or "O2" instead of "Torch".
+    pub(crate) resource_label: &'static str,
 }

@@ -1459,6 +1459,32 @@ mod tests {
         assert_eq!(g.inputs, inputs);
     }
 
+    /// batch 7 T3 fix: `parse_ghost` must reject a `label_idx` that can't
+    /// index `GAME.ghost_labels` (untrusted, from a ghost file on disk) —
+    /// in bounds at `len()-1` parses fine, out of bounds at `len()` fails.
+    #[test]
+    fn parse_ghost_rejects_out_of_bounds_label_idx() {
+        let seed = 77u64;
+        let whash = 0xABCD_EF01_2345_6789u64;
+        let outcome = 0u8; // died_combat
+        let final_depth = 3u8;
+        let turns = 512u32;
+        let inputs = vec![0u8, 1, 2, 3];
+        let n = GAME.ghost_labels.len();
+
+        let in_bounds = ghost_bytes(seed, whash, outcome, final_depth, turns, (n - 1) as u8, &inputs);
+        assert!(
+            parse_ghost(&in_bounds).is_some(),
+            "label_idx == len()-1 is the last valid index and must parse"
+        );
+
+        let out_of_bounds = ghost_bytes(seed, whash, outcome, final_depth, turns, n as u8, &inputs);
+        assert!(
+            parse_ghost(&out_of_bounds).is_none(),
+            "label_idx == len() is one past the last valid index and must fail to parse"
+        );
+    }
+
     /// Echo (batch 4 task 2, save v2 substrate): after replaying a log
     /// whose retry byte (6) followed a death, `echo` equals the death
     /// position/depth, and — proving `echo` is presentation-only and NOT

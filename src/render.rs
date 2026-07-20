@@ -178,7 +178,13 @@ fn draw_status(
     let mut col = put_str(cells, 1, row, "HP [", PAL_STATUS);
     let hp_fg = if hp <= maxhp / 4 { PAL_ALERT } else { PAL_BAR_HP };
     col = put_bar(cells, col, row, bar_fill(hp, maxhp, 10), 10, hp_fg);
-    col = put_str(cells, col, row, &format!("] {}/{}  Torch [", hp, maxhp), PAL_STATUS);
+    col = put_str(
+        cells,
+        col,
+        row,
+        &format!("] {}/{}  {} [", hp, maxhp, GAME.strings.resource_label),
+        PAL_STATUS,
+    );
     let torch_fg = if radius <= 4 { PAL_ALERT } else { PAL_BAR_TORCH };
     col = put_bar(cells, col, row, bar_fill(light, start_light(), 10), 10, torch_fg);
     col = put_str(

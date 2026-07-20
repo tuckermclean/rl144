@@ -7,6 +7,7 @@
 // functions with zero I/O — the backends/main own writing the file.
 
 use crate::game::{Dest, Game, Item, Monster, Tile, WorldId};
+use crate::games::GAME;
 use crate::rng::{fnv_bytes, h64};
 
 // ---------- Save / replay: state is deltas (seed + input log) ----------
@@ -372,6 +373,15 @@ pub(crate) fn parse_ghost(bytes: &[u8]) -> Option<Ghost> {
     t.copy_from_slice(&bytes[23..27]);
     let turns = u32::from_le_bytes(t);
     let label_idx = bytes[27];
+    // Bounds-check against the active cartridge's label table before it
+    // survives into the `Ghost` struct — `label_idx` is untrusted (read
+    // from a ghost file on disk) and `GAME.ghost_labels.len()` is
+    // cartridge-variable, so an out-of-range index must fail the parse
+    // rather than become a live out-of-bounds index at the (currently
+    // dead-code) playback call site.
+    if label_idx as usize >= GAME.ghost_labels.len() {
+        return None;
+    }
     Some(Ghost {
         seed,
         world_hash,
