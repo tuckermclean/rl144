@@ -183,7 +183,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
     // batch 6 T1: which world is current, and where it was entered from.
     h = hash_world_id(h, g.world);
     h = hash_provenance(h, g.from);
-    let level = |h: u64, map: &[Tile], monsters: &[Monster], items: &[Item]| -> u64 {
+    let level = |h: u64, map: &[Tile], monsters: &[Monster], items: &[Item], blocks: &[(i32, i32)]| -> u64 {
         let mut h = h;
         for t in map {
             h = fnv_bytes(h, &[*t as u8]);
@@ -200,9 +200,16 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         for it in items {
             h = fnv_bytes(h, &[it.x as u8, it.y as u8, it.kind as u8]);
         }
+        // Push-blocks (batch 6 T2, sokoban): position is the whole of a
+        // block's state — see `Game::blocks`' doc comment on why this is
+        // run-defining ("the next player on this world finds your
+        // fossilized bad idea").
+        for &(bx, by) in blocks {
+            h = fnv_bytes(h, &[bx as u8, by as u8]);
+        }
         h
     };
-    h = level(h, &g.map, &g.monsters, &g.items);
+    h = level(h, &g.map, &g.monsters, &g.items, &g.blocks);
     h = hash_portal(h, g.portal);
     // The CURRENT world's own per-depth stash (batch 6 T1: `g.saved` is
     // scoped to whichever world `g.world` names — see that field's doc
@@ -211,7 +218,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         match s {
             Some(ls) => {
                 h = fnv_bytes(h, &[1]);
-                h = level(h, &ls.map, &ls.monsters, &ls.items);
+                h = level(h, &ls.map, &ls.monsters, &ls.items, &ls.blocks);
                 h = hash_portal(h, ls.portal);
             }
             None => h = fnv_bytes(h, &[0]),
@@ -234,7 +241,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
             match s {
                 Some(ls) => {
                     h = fnv_bytes(h, &[1]);
-                    h = level(h, &ls.map, &ls.monsters, &ls.items);
+                    h = level(h, &ls.map, &ls.monsters, &ls.items, &ls.blocks);
                     h = hash_portal(h, ls.portal);
                 }
                 None => h = fnv_bytes(h, &[0]),

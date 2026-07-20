@@ -80,7 +80,7 @@ pub(crate) const TIER_WARNINGS: [&str; 5] = [
 ];
 
 // ---------- Map ----------
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Tile {
     Wall,
     Floor,
@@ -101,6 +101,62 @@ pub(crate) enum Tile {
     /// placement pass) rather than re-derived on demand — see that field's
     /// doc comment for why.
     Portal,
+    /// A pit (batch 6 T2, sokoban, dump/render glyph `^`): vault-only this
+    /// batch (placed solely by `Game::stamp_vault` via the `^` legend char —
+    /// see `content::VAULTS`). Impassable to the player: `try_move_player`
+    /// refuses the step with a themed message and no turn, mirroring a wall
+    /// bump. Impassable to monsters too: `monsters_act`'s neighbor-step
+    /// check excludes it exactly like `Tile::Wall`. LOS passes over it
+    /// (waist-deep, not overhead — `los` only ever blocks on `Tile::Wall`,
+    /// so this needs no change there). `bfs_dist` treats it as blocking
+    /// too: it's the first tile kind that can strand a genuinely-
+    /// `Tile::Floor` pocket behind an impassable gap (a push-block bridges
+    /// it — see `Game::try_push`), so routing primitives (the solver, the
+    /// sim bots' loot sweep) must know the difference, or they'd treat an
+    /// unbridged pocket as reachable and either misjudge difficulty or, for
+    /// the sim bots, walk straight into a refused-move retry loop. A pushed
+    /// block that lands on a pit is destroyed and the pit FILLS: the tile
+    /// becomes `Tile::Floor` (the sokoban bridge), so `Pit` is never a
+    /// terminal tile kind, just a temporary gate.
+    Pit,
+    /// A goal tile (batch 6 T2, sokoban, dump/render glyph `x`): a walkable
+    /// floor variant (vault-only, placed via the `x` legend char) —
+    /// identical to `Tile::Floor` for every game-logic purpose (movement,
+    /// LOS, monster pathing, `rand_floor`'s exact-`Tile::Floor` spawn check
+    /// deliberately excludes it, same as it already excludes `Pit`/
+    /// `Portal`) except: it renders distinctly (`content::PAL_GOAL`), and a
+    /// push-chain's farthest member landing here LOCKS instead of merely
+    /// advancing — the mechanism per `docs/story/STORY-COMPILE-v1.md` §9-H
+    /// ("goal tile... a block pushed onto a goal locks and opens/reveals
+    /// the room's reward"). Chosen mechanism (simplest that makes an
+    /// authorable puzzle work, per the batch-6 Amendment 2 brief: "no
+    /// reveal machinery, the reward is physically gated"): the locked
+    /// block is removed from `Game::blocks` (absorbed, never pushable
+    /// again) and this tile becomes ordinary `Tile::Floor` — see
+    /// `Game::try_push`. The "opens the path" half is achieved by
+    /// authoring the goal at the end of a corridor the block itself was
+    /// blocking (see `content::VAULTS`'s "the goal cell"): once the block
+    /// is gone, the corridor is simply clear, no separate reveal step
+    /// needed.
+    Goal,
+}
+
+/// Push-chain cap (batch 6 T2, sokoban — ported from golem/topdown-puzzle's
+/// `shared/push.js`, `MAX_PUSH_CHAIN`, itself citing KyeScene.js's `if
+/// (chain.length > 2) return null`). A 3rd consecutive block in the push
+/// direction refuses the WHOLE push (`Game::try_push`'s chain-walk), no
+/// turn spent — topdown's "tooLong".
+pub(crate) const MAX_PUSH_CHAIN: usize = 2;
+
+/// Outcome of `Game::resolve_push`'s read-only chain-walk (batch 6 T2
+/// review fix): `TooLong`/`Blocked` are the two denial cases (see
+/// `Game::try_push`'s doc comment for what each means), `Ok` carries the
+/// resolved chain (nearest-first) and landing cell for a caller that
+/// intends to actually mutate state.
+enum PushResolution {
+    TooLong,
+    Blocked,
+    Ok(Vec<(i32, i32)>, (i32, i32)),
 }
 
 /// Identifies a world: either a derived dungeon keyed by its own seed, or a
@@ -293,6 +349,9 @@ pub(crate) struct LevelState {
     /// cached destination, snapshotted/restored alongside everything else
     /// on a stash/restore round trip. See `Game::portal`'s doc comment.
     pub(crate) portal: Option<(i32, i32, Dest)>,
+    /// This depth's push-blocks (batch 6 T2), snapshotted/restored like
+    /// every other per-level field. See `Game::blocks`' doc comment.
+    pub(crate) blocks: Vec<(i32, i32)>,
 }
 
 pub(crate) struct Game {
@@ -414,6 +473,26 @@ pub(crate) struct Game {
     /// place no further portals this batch — a deliberate scope cut, not a
     /// technical limit; see `content::AUTHORED_FLOORS`'s doc comment).
     pub(crate) portal: Option<(i32, i32, Dest)>,
+    /// This depth's push-blocks (batch 6 T2, sokoban — ported in spirit from
+    /// golem/topdown-puzzle's `shared/push.js`), vault-only this batch
+    /// (placed solely by the `B` vault legend char — see `content::VAULTS`
+    /// and `Game::stamp_vault`). Occupy a tile like a monster (block
+    /// player/monster movement — `Game::try_push`, `Game::monsters_act`'s
+    /// neighbor-step check), but LOS passes over them (waist-high — `los`
+    /// never consults this vector) and an item may sit underneath (an item
+    /// and a block coexisting at the same `(x, y)` is normal, not a bug:
+    /// the item is simply hidden until the block moves off, at which point
+    /// walking onto that now-vacated tile picks it up via the ordinary
+    /// `pickup` path — no special-casing needed). Push-chains cap at
+    /// `MAX_PUSH_CHAIN`; a chain member pushed into a `Tile::Pit` is
+    /// destroyed and the pit fills (`Tile::Floor`); a chain member pushed
+    /// onto a `Tile::Goal` LOCKS (removed from this vector, the tile
+    /// becomes ordinary `Tile::Floor` — see `Game::try_push`). Hashed by
+    /// `save::state_hash` (position is run-defining, same rationale as
+    /// monster/item position; also "the blocks persist per seed — the next
+    /// player on this world finds your fossilized bad idea," per
+    /// `docs/story/STORY-COMPILE-v1.md` §6.3).
+    pub(crate) blocks: Vec<(i32, i32)>,
     /// Which world is currently active (batch 6 T1). `Seed(seed)` for a
     /// derived dungeon, `Floor(i)` for an authored singular place. See
     /// `WorldId`'s doc comment for the root-world convention.
@@ -471,6 +550,7 @@ impl Game {
             worlds: Vec::new(),
             from: None,
             portal: None,
+            blocks: Vec::new(),
             world: WorldId::Seed(seed),
             msgs: Vec::new(),
             seed,
@@ -543,6 +623,7 @@ impl Game {
         self.monsters.clear();
         self.items.clear();
         self.portal = None;
+        self.blocks.clear();
 
         let depth_tag = self.depth.to_string();
         let world_seed = self.world_seed();
@@ -578,8 +659,8 @@ impl Game {
         let mut vault_room: Option<usize> = None;
         let mut vr = channel(world_seed, &["vault", &depth_tag]);
         if vr.chance(2, 5) {
-            let rows: Vec<&str> =
-                VAULTS[vr.range(0, VAULTS.len() as i32) as usize].lines().collect();
+            let vi = vr.range(0, VAULTS.len() as i32) as usize;
+            let rows: Vec<&str> = VAULTS[vi].lines().collect();
             let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
             for _ in 0..40 {
                 let x = vr.range(1, COLS as i32 - vw - 1);
@@ -590,36 +671,7 @@ impl Game {
                 if clash {
                     continue;
                 }
-                for (j, row) in rows.iter().enumerate() {
-                    for (i, c) in row.bytes().enumerate() {
-                        let (tx, ty) = (x + i as i32, y + j as i32);
-                        if c == b'#' {
-                            continue; // already wall
-                        }
-                        self.map[idx(tx, ty)] = Tile::Floor;
-                        match c {
-                            b'!' => self.items.push(Item { x: tx, y: ty, kind: IKind::Potion }),
-                            b')' => self.items.push(Item { x: tx, y: ty, kind: IKind::Sword }),
-                            b'r' | b'g' | b'O' => {
-                                let kind = match c {
-                                    b'r' => MKind::Rat,
-                                    b'g' => MKind::Goblin,
-                                    _ => MKind::Ogre,
-                                };
-                                let (hp, ..) = Monster::stats(kind);
-                                self.monsters.push(Monster {
-                                    x: tx,
-                                    y: ty,
-                                    kind,
-                                    hp,
-                                    regard: 0,
-                                    calm: false,
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                self.stamp_vault(VAULTS[vi], x, y);
                 vault_room = Some(rooms.len());
                 rooms.push((x, y, vw, vh));
                 break;
@@ -639,6 +691,24 @@ impl Game {
                 } else {
                     cy += (by - cy).signum();
                 }
+                // A corridor's straight carve punches through anything in
+                // its path unconditionally, same as it always has ("the
+                // carver breaks in" — ordinary `content::VAULTS` doctrine).
+                // batch 6 T2 review: an earlier version of this carve tried
+                // to special-case `Tile::Pit`/`Tile::Goal` (leave them
+                // un-overwritten, to stop a corridor from silently
+                // "solving" a sokoban gate for free) — reverted: on a rare
+                // seed the straight-line carve's OWN target cell can BE
+                // that protected tile (two consecutive room centers whose
+                // straight path is blocked at the exact cell a vault
+                // happened to place its pit/goal on), and refusing to ever
+                // paint Floor there could sever that corridor's own
+                // connectivity, which is worse (see `--solve`'s
+                // reachability proof — this must never regress). A corridor
+                // silently trivializing a pit "for free" is accepted, same
+                // spirit as walls; what must NOT happen is the exit itself
+                // depending on that gate — see the `deepest`-selection
+                // exclusion below for how that's actually prevented.
                 self.map[idx(cx, cy)] = Tile::Floor;
             }
         }
@@ -648,11 +718,32 @@ impl Game {
         self.py = sy;
         // BFS depth from the entrance is the level's act structure: the exit
         // (down-stairs, or the amulet on the last depth) goes in the DEEPEST
-        // reachable room, not the last-generated one.
+        // reachable room, not the last-generated one — EXCEPT a sokoban
+        // vault's own center (batch 6 T2 review fix): if this depth stamped
+        // one (`vault_room` is `Some` AND it actually placed blocks — vaults
+        // 0-2 have neither, so this is a no-op for them), its center is
+        // excluded from the candidate pool outright, so the exit can never
+        // land inside a sokoban room. Confirmed necessary empirically, not
+        // just in theory: an unrelated corridor can (and, on rare seeds,
+        // does) trivialize a vault's own pit — "the carver breaks in" is
+        // accepted for a pit same as a wall (see the corridor-carve comment
+        // above) — after which its blocks are just ordinary movable
+        // furniture in an open corridor. A `--sim` greedy bot never
+        // deliberately solves puzzles, but its wander-when-stuck fallback
+        // (headless.rs) WILL push a block it stumbles into if that push
+        // succeeds, and a block pushed hard up against a `Tile::Stairs`
+        // tile can never be pushed the rest of the way (landing on Stairs
+        // always refuses — `Game::try_push`) — a dead end for a bot that
+        // only ever routes, never backtracks. Keeping the exit out of
+        // sokoban rooms entirely sidesteps the whole failure class rather
+        // than chasing every way a corridor could produce it.
         let dist = bfs_dist(&self.map, (sx, sy));
+        let sokoban_vault_center =
+            vault_room.filter(|_| !self.blocks.is_empty()).map(|vi| centers[vi]);
         let deepest = centers
             .iter()
             .filter(|&&c| c != (sx, sy))
+            .filter(|&&c| Some(c) != sokoban_vault_center)
             .max_by_key(|&&(cx, cy)| dist[idx(cx, cy)])
             .copied()
             .unwrap_or((sx + 1, sy));
@@ -716,6 +807,7 @@ impl Game {
                         && (px, py) != deepest
                         && !self.items.iter().any(|it| (it.x, it.y) == (px, py))
                         && !self.monsters.iter().any(|m| (m.x, m.y) == (px, py))
+                        && !self.blocks.iter().any(|&b| b == (px, py))
                     {
                         let dest = if wr.chance(1, 3) {
                             Dest::Floor(wr.range(0, AUTHORED_FLOORS.len() as i32) as u8)
@@ -808,6 +900,50 @@ impl Game {
         self.log(format!("You enter {}.", t.label));
     }
 
+    /// Stamp a hand-authored vault's ASCII (`content::VAULTS`-style legend:
+    /// `#` wall — left untouched, `.` floor, `!` potion, `)` sword, `r`/`g`/
+    /// `O` monster of that stat row, and — batch 6 T2, sokoban — `^` pit,
+    /// `B` push-block, `x` goal) into `self.map`/`items`/`monsters`/
+    /// `blocks` at world-space origin `(ox, oy)`. Extracted from
+    /// `gen_level`'s inline vault-placement loop (batch 6 T2) so it has
+    /// exactly one implementation, shared by real worldgen (which calls
+    /// this once a collision-free spot is found) and the sokoban solution
+    /// tests (main.rs), which stamp a vault directly onto a synthetic map
+    /// with no worldgen RNG involved at all — a vault's tested solution can
+    /// therefore never silently drift from what actually gets stamped into
+    /// a real level.
+    pub(crate) fn stamp_vault(&mut self, spec: &str, ox: i32, oy: i32) {
+        for (j, row) in spec.lines().enumerate() {
+            for (i, c) in row.bytes().enumerate() {
+                let (tx, ty) = (ox + i as i32, oy + j as i32);
+                match c {
+                    b'#' => continue, // already wall
+                    b'^' => {
+                        self.map[idx(tx, ty)] = Tile::Pit;
+                        continue; // a pit never also carries an item/monster
+                    }
+                    b'x' => self.map[idx(tx, ty)] = Tile::Goal,
+                    _ => self.map[idx(tx, ty)] = Tile::Floor,
+                }
+                match c {
+                    b'!' => self.items.push(Item { x: tx, y: ty, kind: IKind::Potion }),
+                    b')' => self.items.push(Item { x: tx, y: ty, kind: IKind::Sword }),
+                    b'B' => self.blocks.push((tx, ty)),
+                    b'r' | b'g' | b'O' => {
+                        let kind = match c {
+                            b'r' => MKind::Rat,
+                            b'g' => MKind::Goblin,
+                            _ => MKind::Ogre,
+                        };
+                        let (hp, ..) = Monster::stats(kind);
+                        self.monsters.push(Monster { x: tx, y: ty, kind, hp, regard: 0, calm: false });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn rand_floor(&mut self, rng: &mut Rng, min_player_dist: i32) -> Option<(i32, i32)> {
         for _ in 0..200 {
             let x = rng.range(1, COLS as i32 - 1);
@@ -816,6 +952,11 @@ impl Game {
                 && (x - self.px).abs() + (y - self.py).abs() >= min_player_dist
                 && !self.monsters.iter().any(|m| m.x == x && m.y == y)
                 && !self.items.iter().any(|i| i.x == x && i.y == y)
+                // batch 6 T2: also skip a sokoban block's tile — Tile::Floor
+                // stays Floor under a block (it's a separate entity list,
+                // not a Tile variant), so without this a random spawn could
+                // otherwise land a monster or item directly on top of one.
+                && !self.blocks.iter().any(|&b| b == (x, y))
             {
                 return Some((x, y));
             }
@@ -936,6 +1077,7 @@ impl Game {
             room_meta: std::mem::take(&mut self.room_meta),
             room_visited: std::mem::take(&mut self.room_visited),
             portal: self.portal.take(),
+            blocks: std::mem::take(&mut self.blocks),
         });
     }
 
@@ -979,6 +1121,7 @@ impl Game {
         self.room_meta = ls.room_meta;
         self.room_visited = ls.room_visited;
         self.portal = ls.portal;
+        self.blocks = ls.blocks;
         self.vis = vec![false; COLS * MAP_H];
         self.px = pos.0;
         self.py = pos.1;
@@ -986,9 +1129,14 @@ impl Game {
             let (mx, my) = (self.monsters[mi].x, self.monsters[mi].y);
             let spot = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().find_map(|&(dx, dy)| {
                 let (tx, ty) = (mx + dx, my + dy);
+                // batch 6 T2: a shoved monster must not land on a pit or a
+                // block's tile either — same "not a legal step" set
+                // monsters_act's own neighbor check uses.
                 let free = in_map(tx, ty)
                     && self.map[idx(tx, ty)] != Tile::Wall
-                    && !self.monsters.iter().any(|m| (m.x, m.y) == (tx, ty));
+                    && self.map[idx(tx, ty)] != Tile::Pit
+                    && !self.monsters.iter().any(|m| (m.x, m.y) == (tx, ty))
+                    && !self.blocks.iter().any(|&b| b == (tx, ty));
                 if free { Some((tx, ty)) } else { None }
             });
             match spot {
@@ -1122,6 +1270,7 @@ impl Game {
         self.monsters.clear();
         self.items.clear();
         self.portal = None;
+        self.blocks.clear(); // authored floors place no sokoban blocks (batch 6 T2 scope)
 
         let spec = &AUTHORED_FLOORS[i as usize];
         let rows: Vec<&str> = spec.map.lines().collect();
@@ -1340,6 +1489,28 @@ impl Game {
             } else {
                 self.log(format!("You hit the {} for {}.", name, dmg));
             }
+        } else if self.blocks.contains(&(nx, ny)) {
+            // Sokoban (batch 6 T2): walking into a block attempts to push
+            // it — see `Game::try_push` for the chain-walk/denial/fill/lock
+            // semantics ported from golem/topdown-puzzle's push.js. On
+            // success the PLAYER also advances into the now-vacated (nx,
+            // ny), same turn, matching topdown's own resolveMove (the
+            // block(s) move, then the player's own MOVED event); on a
+            // refusal nothing moves and no turn passes, same as a wall
+            // bump — `try_push` has already logged the denial.
+            self.facing = Facing::from_delta(dx, dy);
+            if !self.try_push(nx, ny, dx, dy) {
+                return;
+            }
+            self.px = nx;
+            self.py = ny;
+            self.land_on_tile(nx, ny, None);
+            return;
+        } else if self.map[idx(nx, ny)] == Tile::Pit {
+            // Sokoban (batch 6 T2): a pit refuses the player exactly like a
+            // wall bump — no turn, grounded message, no mutation.
+            self.log(String::from("The floor drops away underfoot. You cannot cross."));
+            return;
         } else if self.map[idx(nx, ny)] != Tile::Wall {
             self.facing = Facing::from_delta(dx, dy);
             self.px = nx;
@@ -1357,6 +1528,130 @@ impl Game {
         }
         self.monsters_act(None);
         self.compute_fov();
+    }
+
+    /// Attempt to push the block chain starting at `(bx, by)` in direction
+    /// `(dx, dy)` — batch 6 T2, sokoban, ported in spirit from golem/
+    /// topdown-puzzle's `shared/push.js` (`getPushChain`/`resolveMove`):
+    /// chain-walk collects up to `MAX_PUSH_CHAIN` consecutive blocks,
+    /// nearest first; the landing cell (one tile past the farthest member)
+    /// decides the outcome:
+    ///   - out of bounds, `Tile::Wall`, `Tile::Stairs`/`Tile::UpStairs`/
+    ///     `Tile::Portal`, or occupied by a monster: the WHOLE push is
+    ///     refused — logs a denial, mutates nothing, costs no turn (same as
+    ///     `Tile::Pit`'s player-refusal, same as a wall bump).
+    ///   - a 3rd consecutive block (chain too long): refused the same way,
+    ///     before landing is ever computed — topdown's "tooLong".
+    ///   - `Tile::Pit`: the FARTHEST member is destroyed and the pit FILLS
+    ///     (`Tile::Floor`); a 2-chain's nearer member survives, advancing
+    ///     into the farthest's old slot.
+    ///   - `Tile::Floor`: every chain member advances one tile, farthest
+    ///     first (mirrors topdown's per-member MOVED ordering).
+    ///   - `Tile::Goal`: the farthest member LOCKS there instead of merely
+    ///     advancing — removed from `self.blocks` for good, tile becomes
+    ///     `Tile::Floor` (see `Tile::Goal`'s doc comment for why that's the
+    ///     whole mechanism, no separate reveal step).
+    /// Read-only chain-walk + landing-legality check (batch 6 T2 review
+    /// fix), factored out of `try_push` so it has exactly one
+    /// implementation, shared by two callers: `try_push` itself (which
+    /// mutates `self.map`/`self.blocks` once this resolves `Ok`) and
+    /// `Game::would_push_succeed` (a pure yes/no predicate, no mutation —
+    /// see that method's doc comment for why it exists). Never mutates
+    /// `self`.
+    fn resolve_push(&self, bx: i32, by: i32, dx: i32, dy: i32) -> PushResolution {
+        let mut chain: Vec<(i32, i32)> = Vec::new();
+        let (mut cx, mut cy) = (bx, by);
+        while self.blocks.contains(&(cx, cy)) {
+            chain.push((cx, cy));
+            if chain.len() > MAX_PUSH_CHAIN {
+                return PushResolution::TooLong;
+            }
+            cx += dx;
+            cy += dy;
+        }
+        let landing = (cx, cy);
+        let blocked = !in_map(landing.0, landing.1)
+            || matches!(
+                self.map[idx(landing.0, landing.1)],
+                Tile::Wall | Tile::Stairs | Tile::UpStairs | Tile::Portal
+            )
+            || self.monsters.iter().any(|m| (m.x, m.y) == landing);
+        if blocked {
+            return PushResolution::Blocked;
+        }
+        PushResolution::Ok(chain, landing)
+    }
+
+    /// Would pushing the block chain at `(bx, by)` in direction `(dx, dy)`
+    /// succeed RIGHT NOW, without actually doing it? (Batch 6 T2 review
+    /// fix.) `headless::sim_seed`'s routing uses this — never
+    /// `resolve_push`/`PushResolution` directly, both `pub(crate)` only for
+    /// this one cross-module caller — to decide, direction-by-direction,
+    /// whether stepping toward a block is a live option this turn: pushing
+    /// into `Tile::Pit`/`Tile::Goal`/`Tile::Floor` always succeeds (state
+    /// changes — fill, lock, or advance — so even if the SAME direction
+    /// gets tried again next turn, the block has moved and the situation
+    /// is different), but pushing into a wall/the stairs/a monster/a
+    /// too-long chain always refuses (state does NOT change, so blindly
+    /// retrying the identical decision forever is the actual sim-bot
+    /// deadlock this batch's review caught — see `game::bfs_dist`'s and
+    /// `headless::routing_map`'s doc comments for the two-fix history that
+    /// led here). Treating EVERY block as flatly impassable for routing
+    /// (an earlier version of this fix) was safe but overly conservative —
+    /// it also refused pushes that would have succeeded harmlessly, which
+    /// cost the sim bot real, winnable routes for no reason; checking the
+    /// actual outcome is both correct and precise.
+    pub(crate) fn would_push_succeed(&self, bx: i32, by: i32, dx: i32, dy: i32) -> bool {
+        matches!(self.resolve_push(bx, by, dx, dy), PushResolution::Ok(..))
+    }
+
+    /// Returns `true` on any of the three successful outcomes (caller still
+    /// needs to move the PLAYER into `(bx, by)` itself — not this method's
+    /// concern, mirroring how topdown keeps push resolution and the
+    /// player's own MOVED event as separate steps) and `false` on a
+    /// refusal. Draws no RNG — a push's outcome is pure geometry.
+    fn try_push(&mut self, bx: i32, by: i32, dx: i32, dy: i32) -> bool {
+        let resolved = match self.resolve_push(bx, by, dx, dy) {
+            PushResolution::TooLong => {
+                self.log(String::from("That row will not budge. Too many to push."));
+                return false;
+            }
+            PushResolution::Blocked => {
+                self.log(String::from("There is nowhere for it to go."));
+                return false;
+            }
+            PushResolution::Ok(chain, landing) => (chain, landing),
+        };
+        let (chain, landing) = resolved;
+        let into_pit = self.map[idx(landing.0, landing.1)] == Tile::Pit;
+        let onto_goal = self.map[idx(landing.0, landing.1)] == Tile::Goal;
+        let farthest = *chain.last().unwrap();
+        self.blocks.retain(|b| !chain.contains(b));
+        if into_pit {
+            self.map[idx(landing.0, landing.1)] = Tile::Floor; // the bridge fills
+            if chain.len() == 2 {
+                self.blocks.push(farthest); // the nearer member survives, advancing one slot
+            }
+            self.log(String::from("The block tips into the pit and is gone. The gap fills."));
+        } else {
+            // Floor/Goal landing: every member but the nearest advances to
+            // the position the member ahead of it just vacated (chain[i]'s
+            // new position, for i in 1..len, is exactly chain[i]'s OLD
+            // value — see the chain-walk above: chain[i] == chain[i-1] +
+            // (dx, dy) by construction). The nearest member's slot (bx, by)
+            // is deliberately left out: the player is about to occupy it.
+            for &p in &chain[1..] {
+                self.blocks.push(p);
+            }
+            if onto_goal {
+                self.map[idx(landing.0, landing.1)] = Tile::Floor; // locked: absorbed for good
+                self.log(String::from("The block settles into the goal. Something gives way."));
+            } else {
+                self.blocks.push(landing);
+                self.log(String::from("You shove the block."));
+            }
+        }
+        true
     }
 
     /// Talk: the mercy verb (batch 5, DECISION.md item 3 — the Henson
@@ -1611,10 +1906,16 @@ impl Game {
                 if (tx, ty) == (mx, my) {
                     continue;
                 }
+                // batch 6 T2: monsters never path onto a pit, and never
+                // wander onto a push-block's tile either (a block occupies
+                // space like a monster does) — same exclusion set as the
+                // player-facing checks in `try_move_player`/`try_push`.
                 if in_map(tx, ty)
                     && self.map[idx(tx, ty)] != Tile::Wall
+                    && self.map[idx(tx, ty)] != Tile::Pit
                     && (tx, ty) != (px, py)
                     && !self.monsters.iter().any(|m| m.x == tx && m.y == ty)
+                    && !self.blocks.iter().any(|&b| b == (tx, ty))
                 {
                     self.monsters[i].x = tx;
                     self.monsters[i].y = ty;
@@ -1662,7 +1963,33 @@ impl Game {
     }
 }
 
-/// BFS distances (4-dir, walls block) from `from` over a level map.
+/// BFS distances (4-dir) from `from` over a level map. Blocked by
+/// `Tile::Wall` and `Tile::Pit` (batch 6 T2: a pit is impassable to the
+/// player exactly like a wall is, see `Tile::Pit`'s doc comment) — this is
+/// the TRUE physical-floor connectivity, deliberately NOT aware of
+/// `Game::blocks` (batch 6 T2 review: an earlier version threaded a
+/// `blocks` parameter through here and had every caller pass it, on the
+/// reasoning that a block should read as impassable for routing purposes
+/// too — reverted, because it isn't safe at this layer). `Game::gen_level`
+/// and `headless::solve_seed` both need the map's REAL connectivity
+/// (whether a corridor genuinely reaches its target), and in this
+/// engine's straight-line-chain worldgen every corridor edge is a graph
+/// BRIDGE (room0-room1-...-roomN is a path, not a mesh) — an UNRELATED
+/// pair of rooms' corridor can, by sheer placement chance, cut straight
+/// through a sokoban vault's interior row (nothing stops it; "the carver
+/// breaks in" is the accepted convention for every vault, sokoban or not).
+/// If a `Game::blocks` position happens to land on exactly that cell,
+/// treating it as bfs-impassable HERE would sever the corridor and, with
+/// it, the ENTIRE rest of the level from the entrance — turning a
+/// perfectly winnable seed into a false `--solve` failure. (Confirmed by
+/// generating seed 4430: every room except the entrance's own read as
+/// unreachable the moment blocks were excluded here — the corridor
+/// connecting the entrance room to everything else happened to run
+/// straight through a vault's row.) The sokoban stuck-prevention this was
+/// meant to buy lives instead in `headless::sim_seed`, which builds its
+/// OWN blocks-augmented map for its two `bfs_dist` calls (see
+/// `headless::routing_map`) — scoped to the bot's routing decisions only,
+/// never to the solver's or worldgen's reachability proofs.
 pub(crate) fn bfs_dist(map: &[Tile], from: (i32, i32)) -> Vec<i32> {
     let mut dist = vec![-1i32; COLS * MAP_H];
     let mut q = std::collections::VecDeque::new();
@@ -1671,7 +1998,16 @@ pub(crate) fn bfs_dist(map: &[Tile], from: (i32, i32)) -> Vec<i32> {
     while let Some((cx, cy)) = q.pop_front() {
         for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
             let (nx, ny) = (cx + dx, cy + dy);
-            if in_map(nx, ny) && map[idx(nx, ny)] != Tile::Wall && dist[idx(nx, ny)] < 0 {
+            // `in_map` must short-circuit FIRST: `idx(nx, ny)` is only a
+            // valid array index once bounds are known good (the map's
+            // border is always Wall in every generation path, so this
+            // never actually fires today, but the check order should not
+            // rely on that invariant to stay safe).
+            if !in_map(nx, ny) {
+                continue;
+            }
+            let passable = !matches!(map[idx(nx, ny)], Tile::Wall | Tile::Pit);
+            if passable && dist[idx(nx, ny)] < 0 {
                 dist[idx(nx, ny)] = dist[idx(cx, cy)] + 1;
                 q.push_back((nx, ny));
             }

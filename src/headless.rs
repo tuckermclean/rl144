@@ -28,6 +28,8 @@ pub(crate) fn level_dump(g: &Game) -> String {
                 Tile::Stairs => '>',
                 Tile::UpStairs => '<',
                 Tile::Portal => '*',
+                Tile::Pit => '^',
+                Tile::Goal => 'x',
             };
             for it in &g.items {
                 if (it.x, it.y) == (x, y) {
@@ -37,6 +39,14 @@ pub(crate) fn level_dump(g: &Game) -> String {
                         IKind::Amulet => '&',
                         IKind::LoreA | IKind::LoreB | IKind::LoreC => '?',
                     };
+                }
+            }
+            // push-blocks (batch 6 T2, sokoban): drawn after items so a
+            // block covers a hidden item, matching render.rs's same
+            // item-then-block layering (see `Game::blocks`' doc comment).
+            for &(bx, by) in &g.blocks {
+                if (bx, by) == (x, y) {
+                    ch = 'B';
                 }
             }
             for m in &g.monsters {
@@ -184,6 +194,23 @@ fn find_tile(map: &[Tile], t: Tile) -> Option<(i32, i32)> {
     })
 }
 
+/// A copy of `g.map` with every `Game::blocks` position stamped `Tile::Wall`
+/// (batch 6 T2, sokoban) — `sim_seed`'s PREFERRED routing view (see the
+/// call site's doc comment for why this is a preference, not a
+/// reachability proof, and never `game::bfs_dist`'s or `solve_seed`'s own
+/// view — see `game::bfs_dist`'s doc comment for why blocks-awareness
+/// isn't safe at that layer). Rebuilt fresh each call (`g.map`/`g.blocks`
+/// both change turn to turn) — a full-grid clone plus a handful of writes,
+/// cheap at this scale (COLS*MAP_H = 2000 cells, same order of magnitude
+/// `bfs_dist` itself already walks every call).
+fn routing_map(g: &Game) -> Vec<Tile> {
+    let mut m = g.map.clone();
+    for &(bx, by) in &g.blocks {
+        m[idx(bx, by)] = Tile::Wall;
+    }
+    m
+}
+
 const SIM_TURN_CAP: u32 = 6000;
 /// Fixed neighbor order for tie-breaking the greedy step: N, S, W, E — this
 /// is also the apply_input byte order (0..=3), so the index IS the move.
@@ -302,10 +329,23 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         if turns >= SIM_TURN_CAP {
             return (stuck(turns, g.light, g.kills, g.spared), g.world);
         }
+        // Primary routing view (batch 6 T2 review fix): `Game::blocks`
+        // stamped `Tile::Wall` (`routing_map`) — a sim bot never
+        // deliberately solves a sokoban puzzle, so its PREFERRED routing
+        // should walk AROUND a block whenever ordinary floor offers a way
+        // around one (which it very often does — blocks sit in ordinary
+        // rooms/corridors, not sealed tunnels), exactly like a human
+        // player who doesn't feel like pushing today. This is deliberately
+        // NOT the same view `solve_seed`/`game::gen_level` use (see
+        // `game::bfs_dist`'s doc comment) — this one is local to routing
+        // preference, never reachability proof. The genuine "must push to
+        // progress" case is handled by the wander fallback below, not
+        // here.
+        let rmap = routing_map(&g);
         let objective = if g.has_amulet {
             find_tile(&g.map, Tile::UpStairs)
         } else {
-            let dist_from_player = bfs_dist(&g.map, (g.px, g.py));
+            let dist_from_player = bfs_dist(&rmap, (g.px, g.py));
             let loot = g
                 .items
                 .iter()
@@ -324,11 +364,18 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         let Some(objective) = objective else {
             return (stuck(turns, g.light, g.kills, g.spared), g.world);
         };
-        let dist = bfs_dist(&g.map, objective);
+        let dist = bfs_dist(&rmap, objective);
         let player_d = dist[idx(g.px, g.py)];
-        if player_d < 0 {
-            return (stuck(turns, g.light, g.kills, g.spared), g.world);
-        }
+        // batch 6 T2 review fix: a block's tile is a WALL in `rmap`, so
+        // `player_d < 0` here means "unreachable while avoiding every
+        // block" — not necessarily "unreachable, full stop." Don't declare
+        // stuck yet; fall through to the wander fallback below, which is
+        // allowed to push. Only genuinely `player_d >= 0` routes take the
+        // strict shortest-path branch below; `player_d < 0` skips straight
+        // to `step = None`, same as "no live candidate found."
+        let step_is_live = |nx: i32, ny: i32, dx: i32, dy: i32| -> bool {
+            !g.blocks.contains(&(nx, ny)) || g.would_push_succeed(nx, ny, dx, dy)
+        };
         // Walking onto Stairs always descends, and onto UpStairs always
         // ascends once depth > 1 — both unconditional, regardless of
         // intent (see `try_move_player`/`descend`/`ascend`). ascend()/
@@ -340,10 +387,19 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // trip trigger the transition properly next turn.
         let would_transition =
             |t: Tile| t == Tile::Stairs || (t == Tile::UpStairs && g.depth > 1);
-        let step = if player_d == 0 {
+        let step = if player_d < 0 {
+            None
+        } else if player_d == 0 {
             SIM_DIRS.iter().enumerate().find_map(|(b, (dx, dy))| {
                 let (nx, ny) = (g.px + dx, g.py + dy);
-                if in_map(nx, ny) && g.map[idx(nx, ny)] != Tile::Wall { Some(b as u8) } else { None }
+                // batch 6 T2: a pit is exactly as illegal a sidestep target
+                // as a wall (see `Tile::Pit`'s doc comment) — this path
+                // doesn't go through `bfs_dist`, so it needs the same
+                // exclusion made explicit here. `rmap` already makes a
+                // block a Wall, so no separate block check is needed on
+                // this branch (matches `dist`'s own view).
+                let ok = in_map(nx, ny) && !matches!(rmap[idx(nx, ny)], Tile::Wall | Tile::Pit);
+                if ok { Some(b as u8) } else { None }
             })
         } else {
             // Distances are computed on the real map — a transition tile is
@@ -364,6 +420,10 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                 .enumerate()
                 .find_map(|(b, (dx, dy))| {
                     let (nx, ny) = (g.px + dx, g.py + dy);
+                    // `dist` is `rmap`-based (blocks are Wall there), so a
+                    // block-occupied neighbor never matches `player_d - 1`
+                    // in the first place — no separate block check needed
+                    // on this branch.
                     if !in_map(nx, ny) || dist[idx(nx, ny)] != player_d - 1 {
                         return None;
                     }
@@ -375,6 +435,31 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                 })
                 .or(transition_fallback)
         };
+        // Last-resort wander fallback (batch 6 T2 review fix): the strict
+        // shortest-path search above can come back empty even when the
+        // objective genuinely IS reachable, because it only ever considers
+        // the ONE step a plain (block-oblivious) `bfs_dist` calls optimal —
+        // if that step happens to be a block whose push doesn't currently
+        // succeed (see `step_is_live`), a real player could still make
+        // progress by taking a DIFFERENT legal step this turn (a push that
+        // does succeed, or ordinary floor) and re-routing next turn once
+        // state has changed. Taking any merely-legal neighbor — not
+        // necessarily distance-reducing — converts a premature false
+        // "stuck" into either eventual progress or, worst case, the SAME
+        // outcome (SIM_TURN_CAP) a genuinely-unsolvable-by-this-bot
+        // situation would have reached anyway. Never fires outside a
+        // sokoban dead end: ordinary reachable floor always has SOME
+        // distance-reducing neighbor, so the strict search above never
+        // comes back empty for it.
+        let step = step.or_else(|| {
+            SIM_DIRS.iter().enumerate().find_map(|(b, (dx, dy))| {
+                let (nx, ny) = (g.px + dx, g.py + dy);
+                let ok = in_map(nx, ny)
+                    && !matches!(g.map[idx(nx, ny)], Tile::Wall | Tile::Pit)
+                    && step_is_live(nx, ny, *dx, *dy);
+                if ok { Some(b as u8) } else { None }
+            })
+        });
         match step {
             Some(b) => {
                 // Pacifist (batch 5 T2): if the tile this step lands on

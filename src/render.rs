@@ -8,9 +8,9 @@
 // "what does the world look like," backends answer "how do I draw that."
 
 use crate::content::{
-    PAL_ALERT, PAL_AMULET, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_CALM_TINT, PAL_LOG_FADE,
-    PAL_LORE, PAL_PLAYER, PAL_PORTAL, PAL_POTION, PAL_STAIRS, PAL_STATUS, PAL_SWORD, lore_line,
-    theme_for,
+    PAL_ALERT, PAL_AMULET, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_BLOCK, PAL_CALM_TINT,
+    PAL_GOAL, PAL_LOG_FADE, PAL_LORE, PAL_PIT, PAL_PLAYER, PAL_PORTAL, PAL_POTION, PAL_STAIRS,
+    PAL_STATUS, PAL_SWORD, lore_line, theme_for,
 };
 use crate::game::{
     COLS, Game, IKind, MAP_H, MAX_DEPTH, MKind, Monster, ROWS, START_LIGHT, Tile, fov_radius,
@@ -436,6 +436,8 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
                 Tile::Stairs => (b'>' as u16, PAL_STAIRS),
                 Tile::UpStairs => (b'<' as u16, PAL_STAIRS),
                 Tile::Portal => (b'*' as u16, PAL_PORTAL),
+                Tile::Pit => (b'^' as u16, PAL_PIT),
+                Tile::Goal => (b'x' as u16, PAL_GOAL),
             };
             let c = if g.vis[i] { scale(color, pct) } else { dim(color) };
             put(cells, x as usize, y as usize, ch, c);
@@ -466,6 +468,15 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
                 IKind::LoreA | IKind::LoreB | IKind::LoreC => (b'?', PAL_LORE),
             };
             put(cells, it.x as usize, it.y as usize, ch as u16, scale(c, pct));
+        }
+    }
+    // push-blocks (batch 6 T2, sokoban; visible only). Drawn AFTER items so
+    // a block visually covers an item hidden underneath it (see
+    // `Game::blocks`' doc comment) — matches `headless::level_dump`'s same
+    // item-then-block layering.
+    for &(bx, by) in &g.blocks {
+        if g.vis[idx(bx, by)] {
+            put(cells, bx as usize, by as usize, b'B' as u16, scale(PAL_BLOCK, pct));
         }
     }
     // monsters (visible only). Becalmed monsters (batch 5) render with

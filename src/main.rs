@@ -35,8 +35,8 @@ use content::{
 };
 #[cfg(test)]
 use game::{
-    COLS, Dest, MAP_H, MKind, Monster, TIER_WARNINGS, Tile, WorldId, bfs_dist, idx, in_map,
-    receptivity,
+    COLS, Dest, MAP_H, MAX_PUSH_CHAIN, MKind, Monster, TIER_WARNINGS, Tile, WorldId, bfs_dist, idx,
+    in_map, receptivity,
 };
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
@@ -257,7 +257,8 @@ mod tests {
             for (j, row) in rows.iter().enumerate() {
                 assert_eq!(row.len(), w, "vault {} row {} ragged", vi, j);
                 for (i, c) in row.bytes().enumerate() {
-                    assert!(b"#.!)rgO".contains(&c), "vault {} bad char {}", vi, c as char);
+                    // batch 6 T2: '^' pit, 'B' block, 'x' goal (sokoban).
+                    assert!(b"#.!)rgO^Bx".contains(&c), "vault {} bad char {}", vi, c as char);
                     if j == 0 || j == rows.len() - 1 || i == 0 || i == w - 1 {
                         assert_eq!(c, b'#', "vault {} border open at {},{}", vi, i, j);
                     }
@@ -265,6 +266,274 @@ mod tests {
             }
             let (cx, cy) = (w / 2, rows.len() / 2);
             assert_eq!(rows[cy].as_bytes()[cx], b'.', "vault {} center not floor", vi);
+        }
+    }
+
+    // ---------- Sokoban (batch 6 T2) ----------
+
+    /// Helper for the push-mechanics unit tests below: a real generated
+    /// `Game` (so seed/theme/RNG machinery is realistic) with monsters/
+    /// items/blocks cleared and a clean 10x10 floor patch stamped in,
+    /// player centered — isolates push semantics from worldgen entirely.
+    fn blank_room(seed: u64) -> Game {
+        let mut g = Game::new(seed);
+        g.monsters.clear();
+        g.items.clear();
+        g.blocks.clear();
+        for y in 5..15 {
+            for x in 5..15 {
+                g.map[idx(x, y)] = Tile::Floor;
+            }
+        }
+        g.px = 10;
+        g.py = 10;
+        g.turns = 0;
+        g
+    }
+
+    #[test]
+    fn max_push_chain_is_two() {
+        assert_eq!(MAX_PUSH_CHAIN, 2, "topdown-puzzle's cap; the batch brief pins this value");
+    }
+
+    #[test]
+    fn push_into_floor_advances_block_and_player() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        let before_turns = g.turns;
+        g.try_move_player(1, 0);
+        assert!(g.blocks.contains(&(12, 10)), "block should advance one tile");
+        assert!(!g.blocks.contains(&(11, 10)));
+        assert_eq!((g.px, g.py), (11, 10), "player advances into the vacated cell");
+        assert_eq!(g.turns, before_turns + 1, "a successful push costs a turn");
+    }
+
+    #[test]
+    fn push_into_wall_refuses_no_turn() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.map[idx(12, 10)] = Tile::Wall;
+        let before_turns = g.turns;
+        let before_light = g.light;
+        g.try_move_player(1, 0);
+        assert!(g.blocks.contains(&(11, 10)), "block must not move");
+        assert_eq!((g.px, g.py), (10, 10), "player must not move");
+        assert_eq!(g.turns, before_turns, "a refused push costs no turn");
+        assert_eq!(g.light, before_light, "a refused push burns no light");
+    }
+
+    #[test]
+    fn push_into_monster_refuses() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.monsters.push(Monster { x: 12, y: 10, kind: MKind::Rat, hp: 3, regard: 0, calm: false });
+        g.try_move_player(1, 0);
+        assert!(g.blocks.contains(&(11, 10)), "block must not move");
+        assert_eq!((g.px, g.py), (10, 10));
+    }
+
+    #[test]
+    fn push_into_stairs_refuses() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.map[idx(12, 10)] = Tile::Stairs;
+        g.try_move_player(1, 0);
+        assert!(g.blocks.contains(&(11, 10)));
+        assert_eq!((g.px, g.py), (10, 10));
+    }
+
+    #[test]
+    fn push_into_pit_destroys_block_and_fills() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.map[idx(12, 10)] = Tile::Pit;
+        g.try_move_player(1, 0);
+        assert!(g.blocks.is_empty(), "the block is destroyed");
+        assert_eq!(g.map[idx(12, 10)], Tile::Floor, "the pit fills");
+        assert_eq!((g.px, g.py), (11, 10));
+    }
+
+    #[test]
+    fn push_onto_goal_locks_block() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.map[idx(12, 10)] = Tile::Goal;
+        g.try_move_player(1, 0);
+        assert!(g.blocks.is_empty(), "the block is absorbed, no longer a live entity");
+        assert_eq!(g.map[idx(12, 10)], Tile::Floor, "the locked tile becomes ordinary floor");
+        assert_eq!((g.px, g.py), (11, 10));
+    }
+
+    #[test]
+    fn push_chain_of_two_works() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.blocks.push((12, 10));
+        g.try_move_player(1, 0);
+        assert!(g.blocks.contains(&(12, 10)), "nearer block advances into the farther's old slot");
+        assert!(g.blocks.contains(&(13, 10)), "farther block advances into the landing cell");
+        assert_eq!(g.blocks.len(), 2);
+        assert_eq!((g.px, g.py), (11, 10));
+    }
+
+    #[test]
+    fn push_chain_of_three_refuses() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.blocks.push((12, 10));
+        g.blocks.push((13, 10));
+        let before_turns = g.turns;
+        g.try_move_player(1, 0);
+        let mut want = vec![(11, 10), (12, 10), (13, 10)];
+        let mut got = g.blocks.clone();
+        want.sort();
+        got.sort();
+        assert_eq!(got, want, "a 3-chain must not move at all");
+        assert_eq!((g.px, g.py), (10, 10), "player must not move on a refused push");
+        assert_eq!(g.turns, before_turns);
+    }
+
+    #[test]
+    fn push_chain_of_two_into_pit_destroys_farthest_and_advances_survivor() {
+        let mut g = blank_room(1);
+        g.blocks.push((11, 10));
+        g.blocks.push((12, 10));
+        g.map[idx(13, 10)] = Tile::Pit;
+        g.try_move_player(1, 0);
+        assert_eq!(g.blocks, vec![(12, 10)], "the nearer block survives, advancing one slot");
+        assert_eq!(g.map[idx(13, 10)], Tile::Floor, "the pit fills");
+        assert_eq!((g.px, g.py), (11, 10));
+    }
+
+    /// Blocks are hashed state (batch 6 T2): two otherwise-identical games
+    /// differing only in a block's position must hash differently.
+    #[test]
+    fn blocks_are_hashed() {
+        let mut a = blank_room(1);
+        a.blocks.push((11, 10));
+        let mut b = blank_room(1);
+        b.blocks.push((12, 10));
+        assert_ne!(state_hash(&a), state_hash(&b), "differing block positions must hash differently");
+    }
+
+    /// Persistence round trip: push a block, leave the level, return — the
+    /// block stayed (the story's "fossilized bad idea", per
+    /// docs/story/STORY-COMPILE-v1.md §6.3).
+    #[test]
+    fn block_persists_across_descend_and_ascend() {
+        let mut g = Game::new(1);
+        let (px, py) = (g.px, g.py);
+        let spot = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .iter()
+            .map(|&(dx, dy)| (px + dx, py + dy))
+            .find(|&(x, y)| g.map[idx(x, y)] == Tile::Floor)
+            .expect("fixture: spawn room is larger than 1x1, so it has a floor neighbor");
+        g.blocks = vec![spot];
+        g.descend();
+        assert_eq!(g.depth, 2);
+        g.ascend();
+        assert_eq!(g.depth, 1);
+        assert_eq!(g.blocks, vec![spot], "block position must survive a stash/restore round trip");
+    }
+
+    /// Replay determinism with pushes: driving the SAME push through
+    /// `apply_input` twice from a fresh `Game::new` must land on an
+    /// identical `state_hash` — a push draws no RNG, so channel discipline
+    /// is trivially preserved, but this is the explicit regression gate.
+    #[test]
+    fn push_replay_is_deterministic() {
+        let dirs = [((1, 0), 3u8), ((-1, 0), 2u8), ((0, 1), 1u8), ((0, -1), 0u8)];
+        let build = |seed: u64| {
+            let mut g = Game::new(seed);
+            let (px, py) = (g.px, g.py);
+            let (spot, byte) = dirs
+                .iter()
+                .map(|&((dx, dy), b)| ((px + dx, py + dy), b))
+                .find(|&((x, y), _)| g.map[idx(x, y)] == Tile::Floor)
+                .expect("fixture: spawn has a floor neighbor");
+            g.blocks = vec![spot];
+            g.apply_input(byte);
+            g
+        };
+        let a = build(1);
+        let b = build(1);
+        assert_eq!(state_hash(&a), state_hash(&b), "two replays of the same push must hash identically");
+        assert_eq!(a.blocks, b.blocks);
+    }
+
+    #[test]
+    fn sokoban_vaults_present() {
+        assert!(VAULTS.len() >= 5, "expected the batch-6 T2 sokoban vaults at indices 3+");
+        let uses = |v: &str, c: u8| v.bytes().any(|b| b == c);
+        assert!(VAULTS[3..].iter().any(|v| uses(v, b'^')), "expected a true pit/bridge puzzle");
+        assert!(VAULTS[3..].iter().any(|v| uses(v, b'x')), "expected a goal-tile room");
+    }
+
+    /// SOLUTION TEST (batch 6 T2, ported discipline from golem/
+    /// topdown-puzzle's tests/solutions/*.moves.json): "the bridge" vault
+    /// ships with its proof of solvability — a checked-in move sequence
+    /// that pushes the block into the pit gap and walks to the reward.
+    #[test]
+    fn sokoban_bridge_vault_is_solvable() {
+        let vi = 3;
+        let mut g = Game::new(1);
+        g.map = vec![Tile::Wall; COLS * MAP_H];
+        g.monsters.clear();
+        g.items.clear();
+        g.blocks.clear();
+        let rows: Vec<&str> = VAULTS[vi].lines().collect();
+        let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
+        let (ox, oy) = (5, 5);
+        g.stamp_vault(VAULTS[vi], ox, oy);
+        g.px = ox + vw / 2;
+        g.py = oy + vh / 2;
+        assert!(!g.items.is_empty(), "fixture: the bridge vault has a reward item");
+        for _ in 0..3 {
+            g.apply_input(3); // East: push the block into the pit, then walk to the potion
+        }
+        assert!(g.items.is_empty(), "the reward must have been reached and picked up");
+    }
+
+    /// SOLUTION TEST: "the goal cell" — a checked-in move sequence that
+    /// pushes a 2-chain into the pit (destroying the farthest member,
+    /// filling the gap), keeps pushing the survivor onto the goal tile
+    /// (locking it), then walks to the reward.
+    #[test]
+    fn sokoban_goal_cell_vault_is_solvable() {
+        let vi = 4;
+        let mut g = Game::new(2);
+        g.map = vec![Tile::Wall; COLS * MAP_H];
+        g.monsters.clear();
+        g.items.clear();
+        g.blocks.clear();
+        let rows: Vec<&str> = VAULTS[vi].lines().collect();
+        let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
+        let (ox, oy) = (5, 5);
+        g.stamp_vault(VAULTS[vi], ox, oy);
+        g.px = ox + vw / 2;
+        g.py = oy + vh / 2;
+        assert!(!g.items.is_empty(), "fixture: the goal cell vault has a reward item");
+        assert_eq!(g.blocks.len(), 2, "fixture: the goal cell vault starts with a 2-chain");
+        for _ in 0..7 {
+            // East: 2-chain into the pit, survivor onto the goal, walk to the reward.
+            g.apply_input(3);
+        }
+        assert!(g.items.is_empty(), "the reward must have been reached and picked up");
+        assert!(g.blocks.is_empty(), "the surviving block must have locked onto the goal");
+    }
+
+    #[test]
+    fn sokoban_messages_fit_log_row() {
+        let msgs = [
+            "The floor drops away underfoot. You cannot cross.",
+            "That row will not budge. Too many to push.",
+            "There is nowhere for it to go.",
+            "The block tips into the pit and is gone. The gap fills.",
+            "The block settles into the goal. Something gives way.",
+            "You shove the block.",
+        ];
+        for m in msgs {
+            assert!(m.len() <= 78, "too long ({}): {}", m.len(), m);
         }
     }
 

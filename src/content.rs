@@ -271,15 +271,48 @@ pub(crate) const PAL_CALM_TINT: u32 = 0x9AB0C0;
 /// from any other tile glyph — `render_play` applies the same light-tier
 /// `scale(_, pct)` treatment every other glyph gets.
 pub(crate) const PAL_PORTAL: u32 = 0xFF40FF;
+/// Pit glyph color (batch 6 T2, sokoban): a dull red-black void, reads as
+/// hazard without competing with `PAL_ALERT` (HP/torch danger) or any
+/// theme's own wall/floor palette. Same light-tier `scale(_, pct)`
+/// treatment as every other map glyph.
+pub(crate) const PAL_PIT: u32 = 0x502020;
+/// Goal-tile glyph color (batch 6 T2, sokoban): a pale gold-green, distinct
+/// from the pit's red-black, the portal's magenta, and every theme's
+/// earthy wall/floor palette — reads as "aim here."
+pub(crate) const PAL_GOAL: u32 = 0xB0D080;
+/// Push-block glyph color (batch 6 T2, sokoban): plain stone gray, legible
+/// against every theme's floor color and distinct from pit/goal/portal.
+pub(crate) const PAL_BLOCK: u32 = 0x9A9A9A;
 
 // ---------- Vaults ----------
-/* Hand-authored rooms, stamped whole into a level by the "vault" channel.
-   Legend: '#' wall, '.' floor, '!' potion, ')' sword, 'r'/'g'/'O' monster
-   of that stat row. Rules: rectangular, solid '#' border, center tile '.'
-   (corridors target the center and will punch through walls to reach it —
-   sealed chambers are opened by the carver, and the solver gate proves the
-   exit stays reachable on every CI seed). */
-pub(crate) const VAULTS: [&str; 3] = [
+/* Hand-authored rooms, stamped whole into a level by the "vault" channel
+   (`Game::stamp_vault`). Legend: '#' wall, '.' floor, '!' potion, ')'
+   sword, 'r'/'g'/'O' monster of that stat row, and — batch 6 T2, sokoban,
+   ported in spirit from golem/topdown-puzzle's shared/push.js — '^' pit,
+   'B' push-block, 'x' goal. Rules: rectangular, solid '#' border, center
+   tile '.' (corridors target the center and will punch through walls to
+   reach it — sealed chambers are opened by the carver, and the solver gate
+   proves the exit stays reachable on every CI seed).
+
+   Sokoban vaults (indices 3+) always gate their reward behind a genuine
+   Pit crossing, never a bare block in open floor: `game::bfs_dist` blocks
+   on `Tile::Pit`, so a reward reachable only by pushing a block past a Pit
+   reads as UNREACHABLE via plain floor-walking until the pit is actually
+   filled — that's the shape a puzzle needs to exist at all. It is NOT,
+   however, what keeps the `--sim` bots safe (batch 6 T2 review finding:
+   an earlier assumption that it was turned out false — an unrelated
+   corridor can, and on rare seeds does, carve straight through a vault's
+   interior and trivialize its pit for free; "the carver breaks in" is
+   accepted for a pit exactly like a wall, see `Game::gen_level`'s
+   corridor-carve comment). What actually keeps a `--sim` bot from ever
+   deadlocking on one of these rooms is `Game::gen_level` excluding a
+   sokoban vault's own center from `deepest`-room (exit) selection — the
+   game's exit can never depend on solving one — plus `headless::sim_seed`
+   routing around a block whenever floor allows it and, as a last resort,
+   only ever pushing a block when `Game::would_push_succeed` confirms that
+   SPECIFIC push won't be refused. See headless.rs's `routing_map`/
+   `would_push_succeed` call site comments for the full mechanism. */
+pub(crate) const VAULTS: [&str; 5] = [
     // sealed reliquary: the carver breaks in
     "#########\n\
      #g.....g#\n\
@@ -300,6 +333,24 @@ pub(crate) const VAULTS: [&str; 3] = [
      #.##.##.#\n\
      #!.....O#\n\
      #########",
+    // the bridge (batch 6 T2, sokoban): the true pit-crossing puzzle — push
+    // the block into the gap to bridge it, then walk to the prize. Reward
+    // is a potion, not a sword — per Amendment 2 (the batch-6 plan's
+    // story-canon reconciliation): cheese doesn't exist as an item kind
+    // yet (batch 7's item table), so this slot is a stand-in.
+    // story: swap to cheese when the item table lands (batch 7)
+    "##########\n\
+     #.....B^!#\n\
+     ##########",
+    // the goal cell (batch 6 T2, sokoban): a 2-chain push destroys the
+    // farthest block into the pit (bridging it), the survivor keeps going
+    // and locks onto the goal tile, and ONLY THEN is the corridor clear to
+    // the sword beyond — demonstrates chain-of-two, pit-fill, and
+    // goal-lock in one authored room, and (per this file's VAULTS doc
+    // comment) keeps the whole reward bfs-ungated until actually solved.
+    "##################\n\
+     #.........BB^.x.)#\n\
+     ##################",
 ];
 
 // ---------- Ghost labels ----------
