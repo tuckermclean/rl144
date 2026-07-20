@@ -17,7 +17,7 @@
 // all looked up by index, never spelled out here.
 
 use crate::content::theme_for;
-use crate::gamedef::ItemEffect;
+use crate::gamedef::{ItemEffect, PickupBehavior, UseEffect};
 use crate::games::GAME;
 use crate::render::Facing;
 use crate::rng::{Rng, channel, h64};
@@ -381,6 +381,15 @@ pub(crate) struct Game {
     /// two conditions (with standing on the return depth's up-stairs) that
     /// wins the run.
     pub(crate) has_objective: bool,
+    /// batch 7 T2 (story §9-A's minimal inventory): item kinds picked up via
+    /// a `Hold`-behavior `ItemDef` (`Game::pickup`), LIFO — the most
+    /// recently picked-up item is `held.last()`, and it's always the one
+    /// GIVE (bytes 11-14) or USE (byte 15) act on; a landed GIVE/USE that
+    /// `consumes` pops it. No grid UI, deliberately (§9-A: "a small held-
+    /// items list, hashed, no grid UI"). Hashed by `save::state_hash` (which
+    /// item is held, and in what order, is run-defining, same rationale as
+    /// `monster.regard`/`Game::blocks`).
+    pub(crate) held: Vec<u8>,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
@@ -493,6 +502,7 @@ impl Game {
             facing: Facing::S,
             fx_hit: None,
             has_objective: false,
+            held: Vec::new(),
             monsters: Vec::new(),
             items: Vec::new(),
             rooms: Vec::new(),
@@ -802,12 +812,32 @@ impl Game {
             }
         }
         /* items: deep floors are a war of attrition, so supply scales too —
-           part of the same sim-gated balance pass as the spawn table. */
+           part of the same sim-gated balance pass as the spawn table. batch
+           7 T2: each slot first checks the bonus-item weight for THIS depth
+           (`loot_bonus_chance`, indexed by depth-1) before the existing
+           potion/sword roll — a depth with no table entry (or num==0) draws
+           nothing extra here, so pre-batch-7 depths (empty in the table
+           this batch ships) consume the spawns channel identically to
+           before; only the depths with a nonzero entry draw one additional
+           `sr.chance` per loot slot, which is why THIS batch's golden diff
+           is item-content-only on those depths and untouched everywhere
+           else (see the cartridge's `BALANCE.loot_bonus_chance` doc comment
+           and this batch's commit message). */
         let b = &GAME.balance;
         for _ in 0..sr.range(b.loot_count_lo, b.loot_count_hi) + (self.depth as i32 - 1) * b.loot_count_per_depth {
             if let Some((ix, iy)) = self.rand_floor(&mut sr, 4) {
-                let kind =
-                    if sr.chance(b.loot_potion_num, b.loot_potion_den) { b.loot_potion_item } else { b.loot_sword_item };
+                let bonus_weight = b.loot_bonus_chance.get(self.depth as usize - 1).copied();
+                let rolled_bonus = match bonus_weight {
+                    Some((num, den)) if num > 0 => sr.chance(num, den),
+                    _ => false,
+                };
+                let kind = if rolled_bonus {
+                    b.loot_bonus_item
+                } else if sr.chance(b.loot_potion_num, b.loot_potion_den) {
+                    b.loot_potion_item
+                } else {
+                    b.loot_sword_item
+                };
                 self.items.push(Item { x: ix, y: iy, kind });
             }
         }
@@ -1696,6 +1726,125 @@ impl Game {
         self.compute_fov();
     }
 
+    /// GIVE: the mercy verb's counterpart (batch 7 T2, story §5/§9-A).
+    /// Input bytes 11-14 (`apply_input`) map to N/S/W/E, mirroring the talk
+    /// bytes' 7-10 direction order exactly (which mirrors the move bytes'
+    /// 0-3 in turn). Offers the top of `self.held` (the most recently
+    /// picked-up `Hold` item — LIFO) to the adjacent monster in that
+    /// direction. No monster there, or nothing held, or a monster there but
+    /// no `GameDef::give_table` row for (held item, its kind): all three are
+    /// a no-op, no turn, one feedback line (`StringsDef::give_no_target`/
+    /// `give_empty_hands`/`give_declined`) — a give that doesn't happen
+    /// costs nothing, same spirit as a talk at a wall. A LANDED give (a
+    /// matching row exists) always costs a normal turn
+    /// (`spend_turn(0)`: no violence tax, giving is not violence), applies
+    /// the row's `regard_delta` (saturating, may cross `Monster::
+    /// talk_threshold` and becalm the target exactly like a landed talk),
+    /// heals the target to full if `heal_full`, logs the row's `line` (or,
+    /// if `None`, reuses the target's own stage-3 "unmoved" talk line — see
+    /// `GiveRule::line`'s doc comment), and pops `held` if `consumes`.
+    /// Unlike a landed talk, the target is NOT stayed — GIVE isn't
+    /// "listening," it's a delivered object, so `monsters_act` runs with
+    /// `None` exactly like a plain wait.
+    pub(crate) fn try_give_player(&mut self, dx: i32, dy: i32) {
+        self.fx_hit = None;
+        if self.dead || self.won {
+            return;
+        }
+        let (nx, ny) = (self.px + dx, self.py + dy);
+        if !in_map(nx, ny) {
+            return;
+        }
+        let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) else {
+            self.log(String::from(GAME.strings.give_no_target));
+            return; // nothing to give it to: no-op, no turn
+        };
+        self.facing = Facing::from_delta(dx, dy);
+        let Some(&item) = self.held.last() else {
+            self.log(String::from(GAME.strings.give_empty_hands));
+            return; // empty hands: no-op, no turn
+        };
+        let kind = self.monsters[mi].kind;
+        let name = self.mob_name(kind);
+        let Some(rule) =
+            GAME.give_table.iter().find(|r| r.item == item && (r.monster.is_none() || r.monster == Some(kind)))
+        else {
+            self.log(GAME.strings.give_declined.replace("{}", name));
+            return; // no give-table row for this (item, kind): no-op, no turn
+        };
+        if rule.heal_full {
+            self.monsters[mi].hp = GAME.monsters[kind as usize].hp;
+        }
+        let before = self.monsters[mi].regard;
+        self.monsters[mi].regard = if rule.regard_delta >= 0 {
+            before.saturating_add(rule.regard_delta as u8)
+        } else {
+            before.saturating_sub((-rule.regard_delta) as u8)
+        };
+        let regard = self.monsters[mi].regard;
+        if !self.monsters[mi].calm && regard >= Monster::talk_threshold(kind) {
+            self.monsters[mi].calm = true;
+            self.spared += 1;
+        }
+        let line = match rule.line {
+            Some(t) => String::from(t),
+            None => {
+                let v = self.flavor_rng.range(0, 2) as usize;
+                GAME.monsters[kind as usize].talk_lines[3][v].replace("{M}", name)
+            }
+        };
+        self.log(line);
+        if rule.consumes {
+            self.held.pop();
+        }
+        if !self.spend_turn(0) {
+            return; // died in the dark on a give turn: lose beats anything else
+        }
+        self.monsters_act(None);
+        self.compute_fov();
+    }
+
+    /// USE: self-applies the top of `self.held` (batch 7 T2, story §5/§9-A's
+    /// verb; §9-A's minimal inventory — LIFO, no grid UI). Input byte 15.
+    /// Nothing held, or the held item's `ItemDef::on_use` is `None`
+    /// (give-only items): no-op, no turn, one feedback line. A landed USE
+    /// always costs a normal turn (no violence tax — using an item on
+    /// yourself is not violence), applies the effect, logs `use_line`, and
+    /// pops `held` (every `UseEffect` this batch consumes the item — see
+    /// that enum's doc comment if a future non-consuming use is ever
+    /// added).
+    pub(crate) fn use_item(&mut self) {
+        self.fx_hit = None;
+        if self.dead || self.won {
+            return;
+        }
+        let Some(&kind) = self.held.last() else {
+            self.log(String::from(GAME.strings.use_empty_hands));
+            return; // empty hands: no-op, no turn
+        };
+        let def = &GAME.items[kind as usize];
+        let Some(effect) = def.on_use else {
+            self.log(String::from(GAME.strings.use_no_effect));
+            return; // this held item has no self-use: no-op, no turn
+        };
+        match effect {
+            UseEffect::Heal(amount) => {
+                let heal = amount.min(self.maxhp - self.hp);
+                self.hp += heal;
+            }
+            UseEffect::Light(amount) => {
+                self.light += amount;
+            }
+        }
+        self.log(String::from(def.use_line));
+        self.held.pop();
+        if !self.spend_turn(0) {
+            return; // died in the dark on a use turn: lose beats anything else
+        }
+        self.monsters_act(None);
+        self.compute_fov();
+    }
+
     /// Waiting (byte 4) is also how a portal transits (batch 6 T1): a
     /// deliberate reuse of the existing wait byte rather than a new input
     /// byte, so the input vocabulary stays unchanged and neither sim bot
@@ -1779,17 +1928,23 @@ impl Game {
         self.compute_fov();
     }
 
+    /// batch 7 T2 (story §9-A's minimal inventory): a `Hold`-behavior item
+    /// (`ItemDef::on_pickup`) is pushed onto `self.held` and its
+    /// `pickup_line` is logged verbatim — no `ItemEffect` is applied at
+    /// walk-over time; that waits for a later GIVE (`Game::try_give_player`)
+    /// or USE (`Game::use_item`). A `Consume` item keeps the original v0/v1
+    /// walk-over behavior unchanged.
     fn pickup(&mut self) {
         if let Some(i) = self.items.iter().position(|i| i.x == self.px && i.y == self.py) {
             let kind = self.items[i].kind;
             self.items.remove(i);
-            match GAME.items[kind as usize].effect {
-                ItemEffect::Heal(amount) => {
-                    let heal = amount.min(self.maxhp - self.hp);
-                    self.hp += heal;
-                    let a = self.adj();
-                    self.log(GAME.strings.heal.replacen("{}", a, 1).replacen("{}", &heal.to_string(), 1));
-                }
+            let def = &GAME.items[kind as usize];
+            if def.on_pickup == PickupBehavior::Hold {
+                self.held.push(kind);
+                self.log(String::from(def.pickup_line));
+                return;
+            }
+            match def.effect {
                 ItemEffect::AtkBonus(n) => {
                     self.atk += n;
                     let a = self.adj();
@@ -1805,6 +1960,13 @@ impl Game {
                     self.log(String::from(GAME.strings.lore_prefix));
                     self.log(line);
                 }
+                // Unreachable in practice: every `Hold` row (the only place
+                // `ItemEffect::None` appears) returns above before this
+                // match is ever reached. Kept as an explicit arm so this
+                // match stays exhaustive against the engine-primitive enum,
+                // not silently reliant on a cartridge never doing something
+                // unexpected.
+                ItemEffect::None => {}
             }
         }
     }
@@ -1891,12 +2053,17 @@ impl Game {
 }
 
 impl Game {
-    /// Input-byte vocabulary, 0-10 (save v3, batch 5): 0-4 move/wait (see
+    /// Input-byte vocabulary, 0-15 (save v4, batch 7 T2): 0-4 move/wait (see
     /// below), 5-6 are frontend/reconstruction-layer only (restart/retry —
     /// handled in `save::replay`, never reach here), 7-10 = talk-N/S/W/E,
-    /// direction order mirroring the move bytes exactly. Any other byte is
-    /// silently ignored (`_ => {}`) — this is the one place old logs (no
-    /// bytes 7-10) and this build's own bytes 5-6 both fall through
+    /// 11-14 = give-N/S/W/E, 15 = use — every directional pair's order
+    /// mirrors the move bytes' 0-3 direction order exactly (see
+    /// `Game::try_give_player`'s doc comment; the brief's original "11-12"
+    /// numbering is revised to 11-14 give + 15 use so give stays a 4-byte
+    /// directional block just like move/talk, rather than colliding one
+    /// value short of that shape). Any other byte is silently ignored
+    /// (`_ => {}`) — this is the one place old logs (v1/v2/v3, no bytes
+    /// 7-15) and any future build's own reserved bytes both fall through
     /// harmlessly.
     pub(crate) fn apply_input(&mut self, b: u8) {
         match b {
@@ -1909,6 +2076,11 @@ impl Game {
             8 => self.try_talk_player(0, 1),
             9 => self.try_talk_player(-1, 0),
             10 => self.try_talk_player(1, 0),
+            11 => self.try_give_player(0, -1),
+            12 => self.try_give_player(0, 1),
+            13 => self.try_give_player(-1, 0),
+            14 => self.try_give_player(1, 0),
+            15 => self.use_item(),
             _ => {}
         }
     }

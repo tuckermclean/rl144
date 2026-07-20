@@ -13,8 +13,8 @@
 // engine code — it's all data, so it stays fully replaceable.
 
 use crate::gamedef::{
-    AuthoredFloorDef, BalanceDef, GameDef, ItemDef, ItemEffect, MonsterDef, StringsDef, ThemeDef,
-    WinDef,
+    AuthoredFloorDef, BalanceDef, GameDef, GiveRule, ItemDef, ItemEffect, MonsterDef, PickupBehavior,
+    StringsDef, ThemeDef, UseEffect, WinDef,
 };
 
 // ---------- Monster/item kind indices ----------
@@ -33,6 +33,24 @@ pub(crate) const OBJECTIVE: crate::game::IKind = 2;
 pub(crate) const LORE_A: crate::game::IKind = 3;
 pub(crate) const LORE_B: crate::game::IKind = 4;
 pub(crate) const LORE_C: crate::game::IKind = 5;
+/* batch 7 T2 (story §5/§9-A): the three items the story asks for, plus the
+   GIVE/USE verbs (`gamedef::GiveRule`/`UseEffect`) their behaviors ride on.
+   All three are `PickupBehavior::Hold` (see `ItemDef::on_pickup`'s doc
+   comment) — walking over one adds it to `Game.held` and logs its find/take
+   line; nothing happens until a later GIVE or USE. */
+pub(crate) const CHEESE: crate::game::IKind = 6;
+// `#[allow(dead_code)]`: unlike CHEESE (used below in `GIVE_TABLE`/
+// `BALANCE.loot_bonus_item`), neither COAT nor TOWEL has a non-test
+// production-code reference yet — both are vault-find-only this batch with
+// no give-target (see `GIVE_TABLE`'s trailing comment and the `[YOURS]`
+// D2/D4 monster casts §12.14/the towel receipt still need). They exist as
+// named indices for main.rs's tests (which `cfg(test)`-gated code doesn't
+// count toward this crate's own dead-code analysis) and for whichever
+// future def row wires their give-targets in.
+#[allow(dead_code)]
+pub(crate) const COAT: crate::game::IKind = 7;
+#[allow(dead_code)]
+pub(crate) const TOWEL: crate::game::IKind = 8;
 
 /* Mercy as talk (batch 5, DECISION.md item 3 — the Henson ruling: "if you
    could talk to a rat, you could give a rat mercy"; addendum, human
@@ -140,13 +158,149 @@ const MONSTERS: [MonsterDef; 3] = [
     },
 ];
 
-const ITEMS: [ItemDef; 6] = [
-    ItemDef { glyph: b'!', color: 0xFF50A0, effect: ItemEffect::Heal(8) },
-    ItemDef { glyph: b')', color: 0x70B0FF, effect: ItemEffect::AtkBonus(2) },
-    ItemDef { glyph: b'&', color: 0xFFD700, effect: ItemEffect::Objective },
-    ItemDef { glyph: b'?', color: 0xC0A0FF, effect: ItemEffect::Lore(0) },
-    ItemDef { glyph: b'?', color: 0xC0A0FF, effect: ItemEffect::Lore(1) },
-    ItemDef { glyph: b'?', color: 0xC0A0FF, effect: ItemEffect::Lore(2) },
+/* batch 7 T2: the potion moves from `Consume` (old walk-over heal) to
+   `Hold` — give-ability requires holding it (story §5: "Potion, given...");
+   the walk-over heal becomes a USE effect instead (`on_use`), same amount
+   (8) and same eventual log line (NAR_031, moved verbatim from the old
+   pickup path to the new use path) — see `ItemDef::on_pickup`'s doc
+   comment. `potion_pickup_line` is new-authored (not a FLAVOR-DRAFT-v0 ID:
+   the draft never anticipated the potion becoming a Hold item) — flagged in
+   this batch's report for a human swap if a numbered line is ever assigned. */
+const POTION_PICKUP_LINE: &str = "You take a potion. Best saved, or spent.";
+const POTION_USE_LINE: &str = "You drink the potion. Your wounds close. The potion is gone forever."; // NAR_031, verbatim
+const CHEESE_PICKUP_LINE: &str = "You take the cheese. It is historically significant."; // NAR_032, verbatim
+const CHEESE_USE_LINE: &str = "You burn the cheese. Cheese is, technically, fuel."; // NAR_033, verbatim
+const POTION_GIVE_LINE: &str = "You offer the potion. This is not what potions are for. It works."; // NAR_035, verbatim
+const COAT_PICKUP_LINE: &str = "You find a coat. It is a normal coat for one normal monster."; // NAR_036, verbatim
+const TOWEL_PICKUP_LINE: &str = "You find a towel. You cannot imagine who needs it. You will."; // NAR_037, verbatim
+
+const ITEMS: [ItemDef; 9] = [
+    ItemDef {
+        glyph: b'!',
+        color: 0xFF50A0,
+        effect: ItemEffect::None,
+        on_pickup: PickupBehavior::Hold,
+        pickup_line: POTION_PICKUP_LINE,
+        on_use: Some(UseEffect::Heal(8)),
+        use_line: POTION_USE_LINE,
+    },
+    ItemDef {
+        glyph: b')',
+        color: 0x70B0FF,
+        effect: ItemEffect::AtkBonus(2),
+        on_pickup: PickupBehavior::Consume,
+        pickup_line: "",
+        on_use: None,
+        use_line: "",
+    },
+    ItemDef {
+        glyph: b'&',
+        color: 0xFFD700,
+        effect: ItemEffect::Objective,
+        on_pickup: PickupBehavior::Consume,
+        pickup_line: "",
+        on_use: None,
+        use_line: "",
+    },
+    ItemDef {
+        glyph: b'?',
+        color: 0xC0A0FF,
+        effect: ItemEffect::Lore(0),
+        on_pickup: PickupBehavior::Consume,
+        pickup_line: "",
+        on_use: None,
+        use_line: "",
+    },
+    ItemDef {
+        glyph: b'?',
+        color: 0xC0A0FF,
+        effect: ItemEffect::Lore(1),
+        on_pickup: PickupBehavior::Consume,
+        pickup_line: "",
+        on_use: None,
+        use_line: "",
+    },
+    ItemDef {
+        glyph: b'?',
+        color: 0xC0A0FF,
+        effect: ItemEffect::Lore(2),
+        on_pickup: PickupBehavior::Consume,
+        pickup_line: "",
+        on_use: None,
+        use_line: "",
+    },
+    // CHEESE (batch 7 T2, story §4/§5 D1): the midden's own bait —
+    // `o`, adopted verbatim from docs/story/SPACES-DRAFT-v0.md's legend
+    // proposal for the cheese-wheel glyph. Held; burns for a light flicker
+    // on USE [TUNE +8]; given to a rat, a measured regard PENALTY (see
+    // `GIVE_TABLE` below) instead of the bait the genre promised.
+    ItemDef {
+        glyph: b'o',
+        color: 0xE8C840,
+        effect: ItemEffect::None,
+        on_pickup: PickupBehavior::Hold,
+        pickup_line: CHEESE_PICKUP_LINE,
+        on_use: Some(UseEffect::Light(8)),
+        use_line: CHEESE_USE_LINE,
+    },
+    // COAT (batch 7 T2, story §4 D2 / §5): vault-find only this batch, no
+    // give-target yet (the coat-monster doesn't exist — `GIVE_TABLE` has no
+    // row for this item, so GIVE gracefully no-ops per `StringsDef::
+    // give_declined`). Glyph `[` — non-colliding with every existing tile/
+    // item/monster/vault-legend character.
+    ItemDef {
+        glyph: b'[',
+        color: 0xA0785C,
+        effect: ItemEffect::None,
+        on_pickup: PickupBehavior::Hold,
+        pickup_line: COAT_PICKUP_LINE,
+        on_use: None,
+        use_line: "",
+    },
+    // TOWEL (batch 7 T2, story §4 D4 / §5): same shape as the coat — vault
+    // find, no give-target yet (the lost guy isn't a `GiveRule` target this
+    // batch either). Glyph `~`.
+    ItemDef {
+        glyph: b'~',
+        color: 0x60C0D0,
+        effect: ItemEffect::None,
+        on_pickup: PickupBehavior::Hold,
+        pickup_line: TOWEL_PICKUP_LINE,
+        on_use: None,
+        use_line: "",
+    },
+];
+
+/* GIVE table (batch 7 T2, story §5/§9-A). Row order doesn't matter for
+   correctness (`Game::try_give_player` scans for the first match and this
+   batch never lists two rows for the same item), but is kept
+   cheese-then-potion to match the items table above. */
+const GIVE_TABLE: [GiveRule; 2] = [
+    // cheese -> rat: measured regard PENALTY [TUNE -2] (story §4: "everyone
+    // knows rats want cheese... offering cheese: measured regard PENALTY").
+    // `line: None` reuses the rat's own stage-3 ("unmoved") talk line via
+    // `Game::try_give_player`'s generic fallback rather than inventing new
+    // give-specific flavor text — batch 7 T2 brief: "hooks into the
+    // existing talk/regard machinery, not new lines."
+    GiveRule { item: CHEESE, monster: Some(RAT), regard_delta: -2, line: None, heal_full: false, consumes: true },
+    // potion -> any monster: the single biggest regard event in the game
+    // [TUNE +3] (story §5: "Potion, given... undoing the wound after it
+    // made them listen"). `heal_full` undoes whatever wound made the
+    // target listen; NAR_035 verbatim.
+    GiveRule {
+        item: POTION,
+        monster: None,
+        regard_delta: 3,
+        line: Some(POTION_GIVE_LINE),
+        heal_full: true,
+        consumes: true,
+    },
+    // [YOURS/TUNE] story §5/§12.14: cheese also "works on ONE other
+    // monster" — a positive give-target, human-picked (the story is
+    // explicit that this is not a guessing job: goblin/ogre would both be
+    // wrong without the human's line). Deliberately left OUT of this table
+    // until that pick lands; GIVE-ing cheese at anything but a rat falls
+    // through to the generic `give_declined` no-op in the meantime.
 ];
 
 /* Meaning is authored upstream; the generator is a librarian. Each depth
@@ -246,11 +400,12 @@ const TONE_LINES: [[&str; 2]; 4] = [
 
 /* Hand-authored rooms, stamped whole into a level by the "vault" channel
    (`Game::stamp_vault`). Legend: '#' wall, '.' floor, '!' potion, ')'
-   sword, 'r'/'g'/'O' monster of that stat row, and — batch 6 T2, sokoban,
+   sword, 'r'/'g'/'O' monster of that stat row, — batch 6 T2, sokoban,
    ported in spirit from golem/topdown-puzzle's shared/push.js — '^' pit,
-   'B' push-block, 'x' goal. Rules: rectangular, solid '#' border, center
-   tile '.' (corridors target the center and will punch through walls to
-   reach it — sealed chambers are opened by the carver, and the solver gate
+   'B' push-block, 'x' goal, and — batch 7 T2, story §5/§6.3 — 'o' cheese,
+   '[' coat, '~' towel. Rules: rectangular, solid '#' border, center tile
+   '.' (corridors target the center and will punch through walls to reach
+   it — sealed chambers are opened by the carver, and the solver gate
    proves the exit stays reachable on every CI seed).
 
    Sokoban vaults (indices 3+) always gate their reward behind a genuine
@@ -279,16 +434,24 @@ const VAULTS: [&str; 5] = [
      #!.....O#\n\
      #########",
     // the bridge (batch 6 T2, sokoban): the true pit-crossing puzzle — push
-    // the block into the gap to bridge it, then walk to the prize.
+    // the block into the gap to bridge it, then walk to the prize. batch 7
+    // T2: this is the "cheese doesn't exist yet, use a potion, note the
+    // swap-slot" placeholder from the batch-6 plan — the prize is now the
+    // cheese itself ('o'), not a potion.
     "##########\n\
-     #.....B^!#\n\
+     #.....B^o#\n\
      ##########",
     // the goal cell (batch 6 T2, sokoban): a 2-chain push destroys the
     // farthest block into the pit (bridging it), the survivor keeps going
     // and locks onto the goal tile, and ONLY THEN is the corridor clear to
-    // the sword beyond.
+    // the sword beyond. batch 7 T2: two of the corridor's free floor tiles,
+    // immediately west of the player's start (which is unchanged), now
+    // hold the coat and towel — reachable without solving the puzzle at
+    // all, same room's ONE reward slot each per the batch-7 T2 brief;
+    // layout (walls/blocks/pit/goal positions, room width) is byte-for-byte
+    // unchanged from batch 6, only two floor cells' item content moved.
     "##################\n\
-     #.........BB^.x.)#\n\
+     #......[~.BB^.x.)#\n\
      ##################",
 ];
 
@@ -378,6 +541,14 @@ const BALANCE: BalanceDef = BalanceDef {
     loot_potion_den: 4,
     loot_potion_item: POTION,
     loot_sword_item: SWORD,
+    // batch 7 T2 (story §5/§11: cheese "mostly on depth 1-2" [TUNE]): this
+    // cartridge's bonus item IS the cheese (see `CHEESE`/`GIVE_TABLE`
+    // above) — a loot slot on depth 1 rolls it 2/5 of the time, depth 2
+    // 1/5, depth 3+ never (no entry — see `BalanceDef::loot_bonus_chance`'s
+    // doc comment for why a missing/zero entry costs zero extra
+    // spawns-channel draws on those depths).
+    loot_bonus_chance: &[(2, 5), (1, 5)],
+    loot_bonus_item: CHEESE,
     lore_items: [LORE_A, LORE_B, LORE_C],
     receptivity_regard_coeff: 18,
     receptivity_wound_coeff: 40,
@@ -417,13 +588,19 @@ const STRINGS: StringsDef = StringsDef {
     need_objective: "The way out. You won't leave without the Amulet.",
     pickup_objective: "You take {}. It is heavy. Climb, before dark!",
     lore_prefix: "A carved inscription:",
-    heal: "You quaff a {} draught. (+{} HP)",
     atk_item: "A {} blade, still sharp! (+{} ATK)",
     portal_arrive: "You step through into {}.",
     portal_return: "You step back through, right where you left.",
     portal_describe_world: "Beyond it: {} ({}).",
     portal_describe_floor: "Beyond it: {}.",
     floor_arrive: "You arrive at {}.",
+    // batch 7 T2 (give/use no-op feedback): dry, restates the engine fact,
+    // never invents an event — same grounding rule as every other line here.
+    give_no_target: "There is nothing there to give it to.",
+    give_empty_hands: "Your hands are empty.",
+    give_declined: "The {} has no use for that.",
+    use_empty_hands: "Your hands are empty.",
+    use_no_effect: "That isn't something you can use like that.",
 };
 
 pub(crate) const GAME: GameDef = GameDef {
@@ -438,4 +615,5 @@ pub(crate) const GAME: GameDef = GameDef {
     balance: BALANCE,
     win: WIN,
     strings: STRINGS,
+    give_table: &GIVE_TABLE,
 };

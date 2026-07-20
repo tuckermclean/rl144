@@ -41,7 +41,7 @@ use game::{
 #[cfg(test)]
 use games::GAME;
 #[cfg(test)]
-use games::contractor::{GOBLIN, OGRE, RAT};
+use games::contractor::{CHEESE, COAT, GOBLIN, OGRE, POTION, RAT, TOWEL};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -262,7 +262,8 @@ mod tests {
                 assert_eq!(row.len(), w, "vault {} row {} ragged", vi, j);
                 for (i, c) in row.bytes().enumerate() {
                     // batch 6 T2: '^' pit, 'B' block, 'x' goal (sokoban).
-                    assert!(b"#.!)rgO^Bx".contains(&c), "vault {} bad char {}", vi, c as char);
+                    // batch 7 T2: 'o' cheese, '[' coat, '~' towel.
+                    assert!(b"#.!)rgO^Bxo[~".contains(&c), "vault {} bad char {}", vi, c as char);
                     if j == 0 || j == rows.len() - 1 || i == 0 || i == w - 1 {
                         assert_eq!(c, b'#', "vault {} border open at {},{}", vi, i, j);
                     }
@@ -499,9 +500,11 @@ mod tests {
     }
 
     /// SOLUTION TEST: "the goal cell" — a checked-in move sequence that
-    /// pushes a 2-chain into the pit (destroying the farthest member,
-    /// filling the gap), keeps pushing the survivor onto the goal tile
-    /// (locking it), then walks to the reward.
+    /// walks west to collect the towel and coat (batch 7 T2: two free
+    /// floor cells immediately west of the start, no puzzle required),
+    /// walks back, then pushes a 2-chain into the pit (destroying the
+    /// farthest member, filling the gap), keeps pushing the survivor onto
+    /// the goal tile (locking it), then walks to the sword reward.
     #[test]
     fn sokoban_goal_cell_vault_is_solvable() {
         let vi = 4;
@@ -516,10 +519,17 @@ mod tests {
         g.stamp_vault(GAME.vaults[vi], ox, oy);
         g.px = ox + vw / 2;
         g.py = oy + vh / 2;
-        assert!(!g.items.is_empty(), "fixture: the goal cell vault has a reward item");
+        assert_eq!(g.items.len(), 3, "fixture: towel, coat, and the sword reward");
         assert_eq!(g.blocks.len(), 2, "fixture: the goal cell vault starts with a 2-chain");
-        for _ in 0..7 {
-            // East: 2-chain into the pit, survivor onto the goal, walk to the reward.
+        for _ in 0..2 {
+            // West: pick up the towel, then the coat.
+            g.apply_input(2);
+        }
+        assert_eq!(g.held, vec![TOWEL, COAT], "LIFO: coat picked up last, so it's on top (held.last())");
+        for _ in 0..9 {
+            // East: 2 to return to start, then 7 to solve the push puzzle
+            // exactly as before (2-chain into the pit, survivor onto the
+            // goal, walk to the reward).
             g.apply_input(3);
         }
         assert!(g.items.is_empty(), "the reward must have been reached and picked up");
@@ -590,6 +600,38 @@ mod tests {
                         assert!(filled.len() <= 78, "too long ({}): {}", filled.len(), filled);
                     }
                 }
+            }
+        }
+    }
+
+    /// Every GIVE/USE feedback and content string (batch 7 T2) must fit the
+    /// 78-char log row, including `give_declined`'s `{}` filled by every
+    /// theme's every mob name (same discipline as `talk_lines_fit_log_row`),
+    /// and every item's `pickup_line`/`use_line` and `GiveRule::line`.
+    #[test]
+    fn give_use_strings_fit_log_row() {
+        let statics = [
+            GAME.strings.give_no_target,
+            GAME.strings.give_empty_hands,
+            GAME.strings.use_empty_hands,
+            GAME.strings.use_no_effect,
+        ];
+        for s in statics {
+            assert!(s.len() <= 78, "too long ({}): {}", s.len(), s);
+        }
+        for t in GAME.themes {
+            for name in t.mobs {
+                let filled = GAME.strings.give_declined.replace("{}", name);
+                assert!(filled.len() <= 78, "too long ({}): {}", filled.len(), filled);
+            }
+        }
+        for item in GAME.items {
+            assert!(item.pickup_line.len() <= 78, "pickup_line too long: {}", item.pickup_line);
+            assert!(item.use_line.len() <= 78, "use_line too long: {}", item.use_line);
+        }
+        for row in GAME.give_table {
+            if let Some(line) = row.line {
+                assert!(line.len() <= 78, "give_table line too long: {}", line);
             }
         }
     }
@@ -1071,6 +1113,184 @@ mod tests {
         assert_eq!(state_hash(&a), state_hash(&b));
     }
 
+    // ---------- GIVE/USE (batch 7 T2, story §5/§9-A) ----------
+
+    /// Same determinism proof as `talk_bytes_replay_deterministic`, extended
+    /// to the full save-v4 vocabulary (0-4, 7-15 — give bytes 11-14 and use
+    /// byte 15 alongside move/wait/talk).
+    #[test]
+    fn give_use_bytes_replay_deterministic() {
+        let seed0 = 89u64;
+        let mut script = channel(seed0, &["test", "give_use_script"]);
+        let mut log: Vec<u8> = Vec::new();
+        for _ in 0..500 {
+            // 0..=4 move/wait, 7..=15 talk/give/use — skip 5/6, the
+            // reconstruction-layer bytes handled outside apply_input.
+            let roll = script.range(0, 14) as u8;
+            let b = if roll < 5 { roll } else { roll + 2 };
+            log.push(b);
+        }
+        let a = replay(seed0, &log);
+        let b = replay(seed0, &log);
+        assert_eq!(state_hash(&a), state_hash(&b));
+    }
+
+    /// `Game.held` (LIFO) is hashed, order and all: two otherwise-identical
+    /// games differing only in held ORDER must hash differently, and two
+    /// games given the identical held vector must hash identically.
+    #[test]
+    fn held_is_hashed() {
+        let mut a = Game::new(9);
+        let mut b = Game::new(9);
+        assert_eq!(state_hash(&a), state_hash(&b));
+
+        a.held = vec![POTION, CHEESE];
+        b.held = vec![CHEESE, POTION];
+        assert_ne!(state_hash(&a), state_hash(&b), "held order must be part of state_hash");
+
+        let mut c = Game::new(9);
+        c.held = vec![POTION, CHEESE];
+        assert_eq!(state_hash(&a), state_hash(&c), "identical held vectors must hash identically");
+    }
+
+    /// GIVE at an empty tile: no monster there, no-op, no turn, held
+    /// untouched.
+    #[test]
+    fn give_at_empty_tile_is_noop() {
+        let mut g = blank_room(1);
+        g.held = vec![CHEESE];
+        let before_turns = g.turns;
+        g.apply_input(11); // give-N: nothing north of a freshly-cleared room
+        assert_eq!(g.turns, before_turns, "an empty-tile give must cost no turn");
+        assert_eq!(g.held, vec![CHEESE], "an empty-tile give must not touch held");
+    }
+
+    /// GIVE with empty hands: a monster IS adjacent, but nothing is held —
+    /// no-op, no turn.
+    #[test]
+    fn give_with_empty_hands_is_noop() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false });
+        let before_turns = g.turns;
+        assert!(g.held.is_empty(), "fixture: nothing held");
+        g.apply_input(11); // give-N
+        assert_eq!(g.turns, before_turns, "an empty-handed give must cost no turn");
+    }
+
+    /// GIVE with a monster present and something held, but no give-table
+    /// row for that (item, kind) pair (coat has no give-target this batch):
+    /// graceful no-op, no turn, item stays held.
+    #[test]
+    fn give_declined_when_no_matching_rule() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false });
+        g.held = vec![COAT];
+        let before_turns = g.turns;
+        g.apply_input(11); // give-N
+        assert_eq!(g.turns, before_turns, "a declined give must cost no turn");
+        assert_eq!(g.held, vec![COAT], "a declined give must not consume the item");
+    }
+
+    /// Give cheese to a rat: the story's D1 grievance — a measured regard
+    /// PENALTY, applied through the give path (not new flavor text — see
+    /// `GiveRule::line`'s doc comment on reusing the rat's own stage-3
+    /// "unmoved" talk line).
+    #[test]
+    fn cheese_to_rat_is_a_regard_penalty() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 1, calm: false });
+        g.held = vec![CHEESE];
+        let before_turns = g.turns;
+        g.apply_input(11); // give-N
+        assert_eq!(g.monsters[0].regard, 0, "cheese-to-rat must apply the -2 [TUNE] penalty (saturating)");
+        assert!(g.held.is_empty(), "cheese must be consumed by a landed give");
+        assert_eq!(g.turns, before_turns + 1, "a landed give costs a turn");
+    }
+
+    /// Give the potion to a wounded monster: heals it to full AND raises
+    /// regard (story §5: "the single biggest regard event in the game").
+    #[test]
+    fn potion_given_heals_full_and_raises_regard() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false });
+        g.held = vec![POTION];
+        g.apply_input(11); // give-N
+        let maxhp = Monster::stats(RAT).hp;
+        assert_eq!(g.monsters[0].hp, maxhp, "potion-gift must heal the target to full");
+        assert_eq!(g.monsters[0].regard, 3, "potion-gift must apply the +3 [TUNE] regard bonus");
+        assert!(g.held.is_empty(), "the potion must be consumed by a landed give");
+    }
+
+    /// USE with nothing held: no-op, no turn.
+    #[test]
+    fn use_with_empty_hands_is_noop() {
+        let mut g = blank_room(1);
+        let before_turns = g.turns;
+        g.apply_input(15);
+        assert_eq!(g.turns, before_turns);
+    }
+
+    /// USE on a held item with no `on_use` (coat, towel): graceful no-op,
+    /// no turn, item stays held.
+    #[test]
+    fn use_on_no_effect_item_is_noop() {
+        let mut g = blank_room(1);
+        g.held = vec![TOWEL];
+        let before_turns = g.turns;
+        g.apply_input(15);
+        assert_eq!(g.turns, before_turns);
+        assert_eq!(g.held, vec![TOWEL], "a no-effect use must not consume the item");
+    }
+
+    /// USE-ing a potion heals exactly the same amount the old walk-over
+    /// pickup used to (8, capped by maxhp - hp) — the math moved, not the
+    /// number.
+    #[test]
+    fn potion_use_heals_same_as_old_walkover() {
+        let mut g = blank_room(1);
+        g.hp = (g.maxhp - 5).max(1);
+        let hp_before = g.hp;
+        g.held = vec![POTION];
+        g.apply_input(15);
+        let expected = hp_before + 8i32.min(g.maxhp - hp_before);
+        assert_eq!(g.hp, expected, "USE-ing a potion must heal exactly like the old walk-over pickup did");
+        assert!(g.held.is_empty(), "a landed use must consume the potion");
+    }
+
+    /// USE-ing cheese burns it for +8 [TUNE] light, minus the ordinary
+    /// per-turn burn `spend_turn` still applies on top (USE is a turn like
+    /// any other).
+    #[test]
+    fn cheese_use_burns_for_light() {
+        let mut g = blank_room(1);
+        let light_before = g.light;
+        g.held = vec![CHEESE];
+        g.apply_input(15);
+        assert_eq!(
+            g.light,
+            light_before + 8 - GAME.balance.base_burn,
+            "cheese USE must add 8 [TUNE] light, then pay the ordinary per-turn burn"
+        );
+        assert!(g.held.is_empty(), "cheese must be consumed by a landed use");
+    }
+
+    /// The sim bots' deterministic USE rule (headless.rs `sim_seed`): once
+    /// hp drops to half of maxhp or below and a potion is held, USE fires.
+    /// This exercises the same condition/action pair directly (not through
+    /// a full sim run, which `sim_deterministic`/`pacifist_policy_
+    /// deterministic` already cover end to end).
+    #[test]
+    fn bot_use_rule_heals_when_wounded_and_holding_potion() {
+        let mut g = blank_room(1);
+        g.hp = g.maxhp / 2; // exactly at the threshold: 2*hp <= maxhp
+        let hp_before = g.hp;
+        g.held = vec![POTION];
+        assert!(2 * g.hp <= g.maxhp, "fixture: at or under half HP");
+        g.apply_input(15);
+        assert!(g.hp > hp_before, "USE-ing the held potion must heal");
+        assert!(g.held.is_empty());
+    }
+
     /// Play a scripted run live, save, replay the save: identical hashes.
     /// This is the determinism regression harness — a failure here means
     /// channel discipline broke somewhere.
@@ -1115,7 +1335,7 @@ mod tests {
     /// such a v1 blob, containing a byte 5 — this test is the unit-level
     /// proof that the case `make xhash` exercises end-to-end still works.
     #[test]
-    fn v1_save_replays_under_v3_parsing() {
+    fn v1_save_replays_under_v4_parsing() {
         let seed0 = 123u64;
         let log = vec![0u8, 1, 2, 3, 4, INPUT_RESTART, 0, 1, 2, 3, 4];
         let mut v1_bytes = Vec::new();
@@ -1136,10 +1356,10 @@ mod tests {
     /// Save v2 back-compat, same proof as the v1 test above but for a
     /// v2-versioned blob that also carries a byte 6 (INPUT_RETRY, which v2
     /// introduced but a v1 blob could never contain) — a v2 log still
-    /// never contains bytes 7-10 (talk didn't exist until save v3, batch 5),
-    /// so it too must replay byte-identically under today's parser.
+    /// never contains bytes 7-15 (talk/give/use didn't exist until save v3/
+    /// v4), so it too must replay byte-identically under today's parser.
     #[test]
-    fn v2_save_replays_under_v3_parsing() {
+    fn v2_save_replays_under_v4_parsing() {
         let seed0 = 321u64;
         let log = vec![0u8, 1, INPUT_RETRY, 2, 3, 4];
         let mut v2_bytes = Vec::new();
@@ -1157,18 +1377,41 @@ mod tests {
         assert_eq!(state_hash(&from_v2), state_hash(&direct));
     }
 
-    /// `save_bytes` writes the current version (3, batch 5) and a byte-4
-    /// version outside 1..=3 is rejected by `parse_save` — the "old binary
-    /// must reject a v3 save cleanly" half of the save-v3 rationale
-    /// (game.rs's `apply_input` handling talk bytes 7-10 is the other half).
+    /// Save v3 back-compat (batch 7 T2): a v3-versioned blob may carry talk
+    /// bytes (7-10) but never give/use (11-15, save v4) — it too must
+    /// replay byte-identically under today's parser.
+    #[test]
+    fn v3_save_replays_under_v4_parsing() {
+        let seed0 = 654u64;
+        let log = vec![0u8, 7, 1, 8, 2, 9, 3, 10, 4];
+        let mut v3_bytes = Vec::new();
+        v3_bytes.extend_from_slice(b"RL14");
+        v3_bytes.push(3); // v3
+        v3_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v3_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v3_bytes).expect("v3 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v3 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v3), state_hash(&direct));
+    }
+
+    /// `save_bytes` writes the current version (4, batch 7 T2) and a byte-4
+    /// version outside 1..=4 is rejected by `parse_save` — the "old binary
+    /// must reject a v4 save cleanly" half of the save-v4 rationale
+    /// (game.rs's `apply_input` handling give/use bytes 11-15 is the other
+    /// half).
     #[test]
     fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
         let bytes = save_bytes(7, &[0, 1, 2]);
-        assert_eq!(bytes[4], 3, "save_bytes must write the current version");
+        assert_eq!(bytes[4], 4, "save_bytes must write the current version");
         assert!(parse_save(&bytes).is_some());
 
         let mut future = bytes.clone();
-        future[4] = 4;
+        future[4] = 5;
         assert!(parse_save(&future).is_none(), "an unknown version must be rejected");
 
         let mut zero = bytes;

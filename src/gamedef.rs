@@ -48,6 +48,10 @@ pub(crate) struct GameDef {
     pub(crate) balance: BalanceDef,
     pub(crate) win: WinDef,
     pub(crate) strings: StringsDef,
+    /// GIVE-verb reaction table (batch 7 T2, story §5/§9-A): rows keyed by
+    /// (item kind, target monster kind — `None` matches any kind), consulted
+    /// by `Game::try_give_player`. See `GiveRule`'s doc comment.
+    pub(crate) give_table: &'static [GiveRule],
 }
 
 /// One monster kind's complete definition. `glyph` doubles as both the
@@ -79,16 +83,41 @@ pub(crate) struct ItemDef {
     pub(crate) glyph: u8,
     pub(crate) color: u32,
     pub(crate) effect: ItemEffect,
+    /// batch 7 T2 (story §9-A's minimal inventory): whether walking onto
+    /// this item applies `effect` immediately (`Consume` — the original v0
+    /// walk-over behavior) or instead adds it to `Game.held` (`Hold`, LIFO)
+    /// for a later directed GIVE or self-applied USE. A cartridge may move
+    /// an existing `Consume` item to `Hold` when it grows a give-ability
+    /// (see `on_use`'s doc comment for why: give-ability requires holding
+    /// it, so any walk-over effect that item used to apply immediately has
+    /// to move to USE instead) — see the active cartridge's own item table
+    /// for which rows are which and why.
+    pub(crate) on_pickup: PickupBehavior,
+    /// The line logged on a `Hold` pickup (ignored for `Consume` rows,
+    /// whose pickup message comes from `StringsDef`'s existing templated
+    /// fields — `atk_item`/`pickup_objective`/etc. — unchanged). Empty
+    /// string on every `Consume` row.
+    pub(crate) pickup_line: &'static str,
+    /// What USE (input byte 15) does when this is the top of `Game.held`.
+    /// `None` for a give-only item with no self-use — USE is a graceful
+    /// no-op on it.
+    pub(crate) on_use: Option<UseEffect>,
+    /// The line logged on a landed USE. Empty string when `on_use` is `None`.
+    pub(crate) use_line: &'static str,
 }
 
 /// What picking up an item does, as data rather than an engine-side match
 /// on a game-specific item name. `pickup()` in game.rs is the one place
 /// that interprets this enum; adding a new effect kind is a real engine
 /// primitive addition, not a per-cartridge concern.
+///
+/// batch 7 T2: there is no `Heal` variant here — the potion, this
+/// cartridge's only healing item, moved from `Consume`-on-walk-over to
+/// `Hold`-plus-`UseEffect::Heal` (see `ItemDef::on_pickup`'s doc comment),
+/// so nothing constructs a walk-over heal anymore. Re-add a variant here if
+/// a future cartridge item ever wants an immediate walk-over heal again.
 #[derive(Clone, Copy)]
 pub(crate) enum ItemEffect {
-    /// Restore up to this much HP, capped by `maxhp - hp`.
-    Heal(i32),
     /// Permanently raise player attack by this much.
     AtkBonus(i32),
     /// The run's win-condition item (only one item kind should carry this
@@ -96,6 +125,67 @@ pub(crate) enum ItemEffect {
     Objective,
     /// A buried-lore inscription at tier 0/1/2 (shallow/mid/deep).
     Lore(u8),
+    /// batch 7 T2: no immediate walk-over effect — every `Hold` item (see
+    /// `ItemDef::on_pickup`) carries this, since `Game::pickup`'s `Consume`
+    /// match is the only place `effect` is ever read and a `Hold` item
+    /// never reaches it.
+    None,
+}
+
+/// Whether a walk-over pickup applies `ItemDef::effect` immediately or adds
+/// the item to `Game.held` for later GIVE/USE. See `ItemDef::on_pickup`'s
+/// doc comment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PickupBehavior {
+    Consume,
+    Hold,
+}
+
+/// What USE (input byte 15, batch 7 T2) does to the most-recently-held item,
+/// self-applied. `Game::use_item` is the one engine site that interprets
+/// this enum.
+#[derive(Clone, Copy)]
+pub(crate) enum UseEffect {
+    /// Restore up to this much HP, capped by `maxhp - hp` — same formula
+    /// `ItemEffect::Heal` used at walk-over before the potion moved to
+    /// `Hold` this batch.
+    Heal(i32),
+    /// Add this much to the run's light pool — see the active cartridge's
+    /// own item table for which item burns and why.
+    Light(i32),
+}
+
+/// One GIVE-table row (batch 7 T2, story §5/§9-A): what happens when the
+/// player offers the top of `Game.held` to an adjacent monster of a given
+/// kind. Consulted by `Game::try_give_player`, which scans `GameDef::
+/// give_table` for the first row matching (held item, target kind) — exact
+/// kind match preferred implicitly by table order (a cartridge author
+/// should list specific-kind rows before a wildcard row for the same item,
+/// though this batch's table never needs both for one item). No matching
+/// row is a graceful no-op (an item with no give-target row yet — see the
+/// active cartridge's own item table for which ones): logged via
+/// `StringsDef::give_declined`, no turn spent, item stays held.
+pub(crate) struct GiveRule {
+    pub(crate) item: crate::game::IKind,
+    /// `None` matches any monster kind (the potion's universal row).
+    pub(crate) monster: Option<crate::game::MKind>,
+    /// Applied to the target's `regard` via saturating add/sub — may cross
+    /// `Monster::talk_threshold` and becalm it, exactly like a landed talk
+    /// (`Game::try_talk_player`'s same crossing check).
+    pub(crate) regard_delta: i8,
+    /// `Some` for a dedicated reaction line (the potion's NAR_035, verbatim
+    /// from FLAVOR-DRAFT-v0); `None` reuses the target's own stage-3
+    /// ("unmoved") talk line — a penalty row hooks into the existing
+    /// talk/regard machinery instead of inventing new give-specific flavor
+    /// text (batch 7 T2 brief; see the active cartridge's own table for
+    /// which row this is).
+    pub(crate) line: Option<&'static str>,
+    /// Heals the target to its kind's full HP (`MonsterDef::hp`) — the
+    /// potion-gift's "single biggest regard event," undoing whatever wound
+    /// made it listen (story §5).
+    pub(crate) heal_full: bool,
+    /// Whether a landed give removes the item from `Game.held`.
+    pub(crate) consumes: bool,
 }
 
 /// One theme's complete authored identity: label, the run's win-condition
@@ -167,6 +257,18 @@ pub(crate) struct BalanceDef {
     pub(crate) loot_potion_den: u64,
     pub(crate) loot_potion_item: u8,
     pub(crate) loot_sword_item: u8,
+    /// batch 7 T2: per-depth `chance(num, den)` for a loot slot to draw
+    /// `loot_bonus_item` instead of rolling potion/sword, indexed by
+    /// `depth - 1` — an engine primitive for "a bonus item kind weighted
+    /// toward shallow depths," whatever a cartridge wants that item to BE
+    /// (see the active cartridge's own balance table for what it names and
+    /// why). An entry with `num == 0`, or a depth past the end of this
+    /// slice, means "never roll it here" and — the important part — draws
+    /// NOTHING from the spawns channel for that check, so depths with no
+    /// weight cost zero extra RNG draws versus pre-batch-7 worldgen (see
+    /// `Game::gen_level`'s loot loop).
+    pub(crate) loot_bonus_chance: &'static [(u64, u64)],
+    pub(crate) loot_bonus_item: u8,
     /// Buried-lore item indices by tier (shallow/mid/deep).
     pub(crate) lore_items: [u8; 3],
     /// `receptivity()`'s linear-term coefficients — see that function's doc
@@ -236,8 +338,6 @@ pub(crate) struct StringsDef {
     /// `{}` fills from the theme's objective name.
     pub(crate) pickup_objective: &'static str,
     pub(crate) lore_prefix: &'static str,
-    /// `{}` fill order: adjective, heal amount.
-    pub(crate) heal: &'static str,
     /// `{}` fill order: adjective, attack bonus.
     pub(crate) atk_item: &'static str,
     /// `{}` fills from the destination's arrival label.
@@ -250,4 +350,20 @@ pub(crate) struct StringsDef {
     pub(crate) portal_describe_floor: &'static str,
     /// `{}` fills from the floor's name.
     pub(crate) floor_arrive: &'static str,
+    /// batch 7 T2 (GIVE, byte 11-14): no monster stands in the offered
+    /// direction. No-op, no turn.
+    pub(crate) give_no_target: &'static str,
+    /// batch 7 T2: GIVE attempted with nothing in `Game.held`. No-op, no
+    /// turn.
+    pub(crate) give_empty_hands: &'static str,
+    /// batch 7 T2: a monster is present and something is held, but
+    /// `GameDef::give_table` has no row for that (item, kind) pair — an
+    /// item's graceful no-give-target state. `{}` fills from the monster
+    /// name. No-op, no turn.
+    pub(crate) give_declined: &'static str,
+    /// batch 7 T2 (USE, byte 15): nothing in `Game.held`. No-op, no turn.
+    pub(crate) use_empty_hands: &'static str,
+    /// batch 7 T2: the top of `Game.held` has no `ItemDef::on_use`. No-op,
+    /// no turn.
+    pub(crate) use_no_effect: &'static str,
 }

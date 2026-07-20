@@ -167,6 +167,11 @@ fn set_timing(mut base: Termios, vmin: u8, vtime: u8) {
 enum Input {
     Move(u8),
     Talk(u8),
+    /// GIVE (batch 7 T2, story §5/§9-A): carries the resolved 11-14
+    /// `apply_input` byte, same convention as `Talk`. See `read_give_chord`.
+    Give(u8),
+    /// USE (batch 7 T2): byte 15, no chord — a single key.
+    Use,
     Wait,
     Restart,
     NewWorld,
@@ -175,6 +180,9 @@ enum Input {
     Quit,
     Ignore,
     TalkCancelled,
+    /// Give chord armed then abandoned — see `TalkCancelled`'s doc comment,
+    /// same shape one byte range up.
+    GiveCancelled,
 }
 
 /// Read a possible escape-sequence follow-up byte under the VTIME=1/VMIN=0
@@ -245,6 +253,10 @@ fn read_input(raw: Termios) -> Input {
         b'r' => Input::Restart,
         b'n' => Input::NewWorld,
         b't' => read_talk_chord(raw),
+        // batch 7 T2: `g` begins the give chord (mirrors `t`'s talk chord
+        // exactly — see `read_give_chord`); `u` is USE, no chord needed.
+        b'g' => read_give_chord(raw),
+        b'u' => Input::Use,
         _ => Input::Ignore,
     }
 }
@@ -300,6 +312,37 @@ fn read_talk_chord(raw: Termios) -> Input {
         return match dir {
             Some(d) => Input::Talk(d + 7),
             None => Input::TalkCancelled,
+        };
+    }
+}
+
+/// Give chord, second half (batch 7 T2, story §5/§9-A). Identical shape to
+/// `read_talk_chord` one byte range up (11=N,12=S,13=W,14=E instead of
+/// 7-10) — a second (or third...) `g` re-arms rather than cancelling, same
+/// cross-backend-parity rationale as the talk chord's own doc comment.
+fn read_give_chord(raw: Termios) -> Input {
+    loop {
+        let Some(b) = raw_read_byte() else { return Input::GiveCancelled }; // EOF
+        let dir = match b {
+            b'g' => continue, // re-arm: keep reading for a direction
+            0x1b => {
+                set_timing(raw, 0, 1);
+                let ev = read_escape_seq();
+                set_timing(raw, 1, 0);
+                match ev {
+                    Input::Move(d) => Some(d),
+                    _ => None, // F1/F5/unrecognized/timeout: cancel
+                }
+            }
+            b'w' | b'k' => Some(0),
+            b's' | b'j' => Some(1),
+            b'a' | b'h' => Some(2),
+            b'd' | b'l' => Some(3),
+            _ => None,
+        };
+        return match dir {
+            Some(d) => Input::Give(d + 11),
+            None => Input::GiveCancelled,
         };
     }
 }
@@ -544,6 +587,28 @@ pub(crate) fn run(
                     // a byte that would otherwise be a no-op.
                     Input::TalkCancelled => {
                         game.log(String::from("Talk cancelled."));
+                    }
+                    // Give chord completion (batch 7 T2): `b` is already the
+                    // resolved 11-14 byte (see `read_give_chord`) — same
+                    // discipline as Talk/Move.
+                    Input::Give(b) => {
+                        input_log.push(b);
+                        attempt_log.push(b);
+                        game.apply_input(b);
+                        confirm_armed = false;
+                    }
+                    // Give chord cancelled — same shape as TalkCancelled.
+                    Input::GiveCancelled => {
+                        game.log(String::from("Give cancelled."));
+                    }
+                    // USE (batch 7 T2): byte 15, no chord, same
+                    // input_log/attempt_log/apply_input/confirm_armed
+                    // discipline as Wait.
+                    Input::Use => {
+                        input_log.push(15);
+                        attempt_log.push(15);
+                        game.apply_input(15);
+                        confirm_armed = false;
                     }
                     Input::Wait => {
                         input_log.push(4);

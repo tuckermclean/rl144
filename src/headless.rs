@@ -270,8 +270,11 @@ impl Policy {
 ///
 /// Returns the terminal `WorldId` alongside the `SimResult` (batch 6 T1):
 /// the bot drives the game exclusively through `apply_input` with move
-/// bytes 0-3 (and talk bytes 7-10 for `Policy::Pacifist`) — it NEVER emits
-/// wait (byte 4), the only input that can transit a portal (see
+/// bytes 0-3 (talk bytes 7-10 for `Policy::Pacifist`, and USE byte 15 for
+/// both policies once batch 7 T2's half-HP-and-holding-a-potion rule fires
+/// — see the doc comment at that check's call site) — it NEVER emits wait
+/// (byte 4) or GIVE (11-14, unused by either policy this batch), the only
+/// input that can transit a portal (see
 /// `game::Game::wait_turn`'s doc comment) — so this should always come back
 /// `WorldId::Seed(seed)` (still the root world). `sim_main` ignores it;
 /// `bot_never_transits` (main.rs) is the test that actually checks it,
@@ -324,6 +327,35 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         };
         if turns >= SIM_TURN_CAP {
             return (stuck(turns, g.light, g.kills, g.spared), g.world);
+        }
+        // batch 7 T2: the potion moved from walk-over Consume to Hold this
+        // batch (see `ItemDef::on_pickup`'s doc comment) — a bot that never
+        // learned USE would simply never heal again, which is a real
+        // behavior change the bands must measure honestly rather than paper
+        // over. Both policies apply the same deterministic rule, evaluated
+        // every turn before routing: half HP or worse, AND the cartridge's
+        // designated potion item (`GAME.balance.loot_potion_item` — the
+        // engine names it generically, same convention `gen_level`'s loot
+        // table already uses) is on TOP of `held` (`held.last()` — USE
+        // always acts on the LIFO top) -> emit USE (byte 15) and skip
+        // straight to the next turn. Deliberately `last()`, not `contains()`
+        // (review fix): a held item with `on_use: None` sitting on top of a
+        // buried potion makes USE a COMPLETE no-op (`Game::use_item` returns
+        // before touching any state at all, not even spending a turn), so a
+        // `contains()` check would fire the identical no-op every single
+        // iteration forever — an infinite loop that only ever ends at
+        // `SIM_TURN_CAP`, misreported as "stuck" (confirmed empirically:
+        // seeds 14/17/25/30/33/34/38/43/44 of 0..50 hung at turns=6000
+        // under `contains()` and are clean under `last()`). If the potion
+        // isn't on top, this bot simply doesn't drink it yet — an accepted
+        // limitation ("manage your inventory" is not this rule's job), not
+        // a bug, and never an infinite loop either way since every OTHER
+        // held item this cartridge ships with a real `on_use` still spends
+        // a real turn.
+        if 2 * g.hp <= g.maxhp && g.held.last() == Some(&GAME.balance.loot_potion_item) {
+            g.apply_input(15);
+            turns += 1;
+            continue;
         }
         // Primary routing view (batch 6 T2 review fix): `Game::blocks`
         // stamped `Tile::Wall` (`routing_map`) — a sim bot never

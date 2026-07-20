@@ -12,23 +12,26 @@ use crate::rng::{fnv_bytes, h64};
 // ---------- Save / replay: state is deltas (seed + input log) ----------
 /* A save is the original seed plus one byte per input; the world is
    reconstructed by replaying. Byte format, no serde:
-     "RL14" | version u8 (=1, 2, or 3) | seed u64 LE | input bytes...
+     "RL14" | version u8 (=1, 2, 3, or 4) | seed u64 LE | input bytes...
    Inputs: 0=N 1=S 2=W 3=E 4=wait 5=restart(reroll to a new seed)
    6=retry(same seed, save v2 — see INPUT_RETRY) 7=talk-N 8=talk-S 9=talk-W
    10=talk-E (save v3, batch 5, DECISION.md item 3 — the Henson ruling;
-   direction order mirrors move bytes 0-3 exactly, see
+   direction order mirrors move bytes 0-3 exactly) 11=give-N 12=give-S
+   13=give-W 14=give-E 15=use (save v4, batch 7 T2, story §5/§9-A; give's
+   direction order mirrors talk's/move's exactly, see
    `game::Game::apply_input`). Tens of bytes per save. `save_bytes` always
-   writes v3; `parse_save` accepts v1, v2, or v3 — a v1 or v2 log never
-   contains bytes 7-10 (talk didn't exist yet), so it replays byte-identical
-   under v3 parsing either way (see the
-   `v1_save_replays_under_v3_parsing`/`v2_save_replays_under_v3_parsing`
-   tests in main.rs, and `make xhash`, whose fixture is a v1 blob). This is
-   a version bump rather than a silent superset precisely so an OLD binary
-   (whose own `parse_save` only ever accepted 1 or 2) REJECTS a v3 save
-   cleanly instead of silently ignoring talk bytes and diverging from what
-   was actually played. */
+   writes v4; `parse_save` accepts v1, v2, v3, or v4 — a v1/v2/v3 log never
+   contains bytes 11-15 (give/use didn't exist yet), so it replays byte-
+   identical under v4 parsing either way (see the
+   `v1_save_replays_under_v4_parsing`/`v2_save_replays_under_v4_parsing`/
+   `v3_save_replays_under_v4_parsing` tests in main.rs, and `make xhash`,
+   whose fixture is a v1 blob). This is a version bump rather than a silent
+   superset precisely so an OLD binary (whose own `parse_save` only ever
+   accepted up to v3) REJECTS a v4 save cleanly instead of silently
+   ignoring give/use bytes and diverging from what was actually played —
+   same discipline the v2->v3 talk bump established. */
 const SAVE_MAGIC: &[u8; 4] = b"RL14";
-const SAVE_VERSION: u8 = 3;
+const SAVE_VERSION: u8 = 4;
 pub(crate) const INPUT_RESTART: u8 = 5;
 /// Save v2 (batch 4 task 2, DECISION.md sign-off item 2): reconstruct
 /// `Game::new(g.seed)` — same world, next attempt — instead of rerolling
@@ -47,7 +50,7 @@ pub(crate) fn save_bytes(seed0: u64, inputs: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn parse_save(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
-    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=3).contains(&bytes[4]) {
+    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=4).contains(&bytes[4]) {
         return None;
     }
     let mut s = [0u8; 8];
@@ -179,6 +182,13 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         g.parley_rng.0,
     ] {
         h = fnv_bytes(h, &v.to_le_bytes());
+    }
+    // batch 7 T2: `Game.held` (the LIFO held-items list) — order matters
+    // (GIVE/USE always act on `held.last()`), so it's hashed as a
+    // length-prefixed byte sequence rather than folded in unordered.
+    h = fnv_bytes(h, &(g.held.len() as u64).to_le_bytes());
+    for &k in &g.held {
+        h = fnv_bytes(h, &[k]);
     }
     // batch 6 T1: which world is current, and where it was entered from.
     h = hash_world_id(h, g.world);
