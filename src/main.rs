@@ -14,6 +14,8 @@ compile_error!("backend features are mutually exclusive");
 
 mod content;
 mod game;
+mod gamedef;
+mod games;
 mod headless;
 mod render;
 mod rng;
@@ -30,14 +32,16 @@ use rng::h64;
 use save::{parse_save, replay, state_hash};
 
 #[cfg(test)]
-use content::{
-    AUTHORED_FLOORS, GHOST_LABELS, KINDS, TALK_LINES, THEMES, TONE_LINES, VAULTS, ghost_label_idx,
-};
+use content::ghost_label_idx;
 #[cfg(test)]
 use game::{
-    COLS, Dest, MAP_H, MAX_PUSH_CHAIN, MKind, Monster, TIER_WARNINGS, Tile, WorldId, bfs_dist, idx,
-    in_map, receptivity,
+    COLS, Dest, MAP_H, MAX_PUSH_CHAIN, MKind, Monster, Tile, WorldId, bfs_dist, idx, in_map,
+    receptivity,
 };
+#[cfg(test)]
+use games::GAME;
+#[cfg(test)]
+use games::contractor::{GOBLIN, OGRE, RAT};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -250,7 +254,7 @@ mod tests {
     /// legend chars only. Reachability itself is proven by the solver gate.
     #[test]
     fn vaults_well_formed() {
-        for (vi, v) in VAULTS.iter().enumerate() {
+        for (vi, v) in GAME.vaults.iter().enumerate() {
             let rows: Vec<&str> = v.lines().collect();
             let w = rows[0].len();
             assert!(rows.len() >= 3 && w >= 3, "vault {} too small", vi);
@@ -326,7 +330,7 @@ mod tests {
     fn push_into_monster_refuses() {
         let mut g = blank_room(1);
         g.blocks.push((11, 10));
-        g.monsters.push(Monster { x: 12, y: 10, kind: MKind::Rat, hp: 3, regard: 0, calm: false });
+        g.monsters.push(Monster { x: 12, y: 10, kind: RAT, hp: 3, regard: 0, calm: false });
         g.try_move_player(1, 0);
         assert!(g.blocks.contains(&(11, 10)), "block must not move");
         assert_eq!((g.px, g.py), (10, 10));
@@ -463,10 +467,10 @@ mod tests {
 
     #[test]
     fn sokoban_vaults_present() {
-        assert!(VAULTS.len() >= 5, "expected the batch-6 T2 sokoban vaults at indices 3+");
+        assert!(GAME.vaults.len() >= 5, "expected the batch-6 T2 sokoban vaults at indices 3+");
         let uses = |v: &str, c: u8| v.bytes().any(|b| b == c);
-        assert!(VAULTS[3..].iter().any(|v| uses(v, b'^')), "expected a true pit/bridge puzzle");
-        assert!(VAULTS[3..].iter().any(|v| uses(v, b'x')), "expected a goal-tile room");
+        assert!(GAME.vaults[3..].iter().any(|v| uses(v, b'^')), "expected a true pit/bridge puzzle");
+        assert!(GAME.vaults[3..].iter().any(|v| uses(v, b'x')), "expected a goal-tile room");
     }
 
     /// SOLUTION TEST (batch 6 T2, ported discipline from golem/
@@ -481,10 +485,10 @@ mod tests {
         g.monsters.clear();
         g.items.clear();
         g.blocks.clear();
-        let rows: Vec<&str> = VAULTS[vi].lines().collect();
+        let rows: Vec<&str> = GAME.vaults[vi].lines().collect();
         let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
         let (ox, oy) = (5, 5);
-        g.stamp_vault(VAULTS[vi], ox, oy);
+        g.stamp_vault(GAME.vaults[vi], ox, oy);
         g.px = ox + vw / 2;
         g.py = oy + vh / 2;
         assert!(!g.items.is_empty(), "fixture: the bridge vault has a reward item");
@@ -506,10 +510,10 @@ mod tests {
         g.monsters.clear();
         g.items.clear();
         g.blocks.clear();
-        let rows: Vec<&str> = VAULTS[vi].lines().collect();
+        let rows: Vec<&str> = GAME.vaults[vi].lines().collect();
         let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
         let (ox, oy) = (5, 5);
-        g.stamp_vault(VAULTS[vi], ox, oy);
+        g.stamp_vault(GAME.vaults[vi], ox, oy);
         g.px = ox + vw / 2;
         g.py = oy + vh / 2;
         assert!(!g.items.is_empty(), "fixture: the goal cell vault has a reward item");
@@ -544,23 +548,25 @@ mod tests {
     /// adjective, not just one.
     #[test]
     fn theme_lines_fit_log_row() {
-        for lines in &TONE_LINES {
+        for lines in GAME.tone_lines {
             for line in lines {
-                for k in &KINDS {
+                for k in GAME.room_kinds {
                     assert!(line.replace("{K}", k).len() <= 78);
                 }
             }
         }
-        for t in &THEMES {
+        for t in GAME.themes {
             assert!(format!("You enter {}.", t.label).len() <= 78);
-            assert!(format!("You take {}. It is heavy. Climb, before dark!", t.amulet).len() <= 78);
+            assert!(
+                format!("You take {}. It is heavy. Climb, before dark!", t.objective_name).len() <= 78
+            );
             for lore in &t.lore {
                 for slot in &t.slots {
                     let line = lore.replace("{A}", slot);
                     assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
                 }
             }
-            for warn in &TIER_WARNINGS {
+            for warn in &GAME.strings.tier_warnings {
                 for adj in &t.adjs {
                     let line = warn.replace("{}", adj);
                     assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
@@ -569,19 +575,17 @@ mod tests {
         }
     }
 
-    /// Every TALK_LINES template (batch 5, DECISION.md item 3 — the Henson
-    /// ruling) must fit the 78-char log row for EVERY theme's mob-name
-    /// filling — same length-test discipline as `theme_lines_fit_log_row`
-    /// above, just keyed by `[MKind as usize]` into `Theme::mobs` instead
-    /// of a flat slot table. `TALK_LINES`'s outer index is kind (rat=0,
-    /// goblin=1, ogre=2 — `MKind`'s declared order), matching
-    /// `Theme::mobs`'s index exactly (see `Game::mob_name`).
+    /// Every monster's talk-line template (batch 5, DECISION.md item 3 —
+    /// the Henson ruling) must fit the 78-char log row for EVERY theme's
+    /// mob-name filling — same length-test discipline as
+    /// `theme_lines_fit_log_row` above, just keyed by monster index into
+    /// `ThemeDef::mobs` instead of a flat slot table.
     #[test]
     fn talk_lines_fit_log_row() {
-        for (ki, kind_lines) in TALK_LINES.iter().enumerate() {
-            for stage_lines in kind_lines {
+        for (ki, monster) in GAME.monsters.iter().enumerate() {
+            for stage_lines in monster.talk_lines {
                 for line in stage_lines {
-                    for t in &THEMES {
+                    for t in GAME.themes {
                         let filled = line.replace("{M}", t.mobs[ki]);
                         assert!(filled.len() <= 78, "too long ({}): {}", filled.len(), filled);
                     }
@@ -597,7 +601,7 @@ mod tests {
         let l0 = g.light;
         g.wait_turn();
         assert_eq!(g.light, l0 - 1);
-        g.has_amulet = true;
+        g.has_objective = true;
         g.wait_turn();
         assert_eq!(g.light, l0 - 3);
     }
@@ -625,7 +629,7 @@ mod tests {
         g.monsters.push(Monster {
             x: px + dx,
             y: py + dy,
-            kind: MKind::Ogre,
+            kind: OGRE,
             hp: 999,
             regard: 0,
             calm: false,
@@ -652,7 +656,7 @@ mod tests {
         g.monsters.push(Monster {
             x: px + dx,
             y: py + dy,
-            kind: MKind::Rat,
+            kind: RAT,
             hp: 1, // guaranteed 1-hit kill
             regard: 0,
             calm: false,
@@ -669,7 +673,7 @@ mod tests {
     #[test]
     fn lose_beats_win_at_zero_light() {
         let mut g = Game::new(7);
-        g.has_amulet = true;
+        g.has_objective = true;
         g.light = 2; // burn of 2 lands exactly on 0
         // step off the entrance and back onto it
         let (ex, ey) = (g.px, g.py);
@@ -753,7 +757,7 @@ mod tests {
         g.monsters.push(Monster {
             x: px + adx,
             y: py + ady,
-            kind: MKind::Rat,
+            kind: RAT,
             hp: 1,
             regard: 0,
             calm: false,
@@ -761,14 +765,14 @@ mod tests {
         g.monsters.push(Monster {
             x: px + bdx,
             y: py + bdy,
-            kind: MKind::Goblin,
+            kind: GOBLIN,
             hp: 6,
             regard: 0,
             calm: false,
         });
         let hp0 = g.hp;
-        talk_until_landed(&mut g, adx, ady, MKind::Rat); // regard 0->1, threshold 2, not yet calm
-        let rat = g.monsters.iter().find(|m| m.kind == MKind::Rat).unwrap();
+        talk_until_landed(&mut g, adx, ady, RAT); // regard 0->1, threshold 2, not yet calm
+        let rat = g.monsters.iter().find(|m| m.kind == RAT).unwrap();
         assert_eq!(rat.regard, 1, "the talked-to rat's regard should have incremented exactly once");
         assert!(!rat.calm, "one landed talk (of 2) should not yet calm a rat");
         assert!(
@@ -797,18 +801,18 @@ mod tests {
         g.monsters.push(Monster {
             x: px + dx,
             y: py + dy,
-            kind: MKind::Rat,
+            kind: RAT,
             hp: 1, // near its kind max wound term — keeps receptivity high
             regard: 0,
             calm: false,
         });
         let spared0 = g.spared;
 
-        talk_until_landed(&mut g, dx, dy, MKind::Rat); // regard 0->1: below threshold 2
+        talk_until_landed(&mut g, dx, dy, RAT); // regard 0->1: below threshold 2
         assert!(!g.monsters[0].calm);
         assert_eq!(g.spared, spared0);
 
-        talk_until_landed(&mut g, dx, dy, MKind::Rat); // regard 1->2: threshold reached
+        talk_until_landed(&mut g, dx, dy, RAT); // regard 1->2: threshold reached
         assert!(g.monsters[0].calm, "the rat should be calm after 2 landed talks");
         assert_eq!(g.spared, spared0 + 1, "spared must increment exactly once, on the crossing");
 
@@ -834,14 +838,14 @@ mod tests {
         let mut g = Game::new(1);
         g.monsters.clear();
         g.atk = 3; // Game::new's default; +6*(atk-3) term is 0
-        let fresh_ogre = Monster { x: 0, y: 0, kind: MKind::Ogre, hp: 13, regard: 0, calm: false };
+        let fresh_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false };
         assert_eq!(receptivity(&fresh_ogre, &g), 20, "a fresh ogre should sit at exactly its BASE");
 
         // Wounded (1 of 13 hp -> wound term 40*(13-1)/13 = 36) plus a
         // strong player (atk 9 -> +6*(9-3) = 36) pushes well past 70:
         // 20 + 0 + 36 + 36 - 0 = 92.
         g.atk = 9;
-        let wounded_ogre = Monster { x: 0, y: 0, kind: MKind::Ogre, hp: 1, regard: 0, calm: false };
+        let wounded_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 1, regard: 0, calm: false };
         let r = receptivity(&wounded_ogre, &g);
         assert!(r >= 70, "wounded ogre + high atk should land >= 70-ish, got {}", r);
         assert_eq!(r, 92, "and the exact integer math should hold");
@@ -852,15 +856,15 @@ mod tests {
         // (20 + 0 + 0 - 18 - 10 = -8); receptivity must still floor at 5.
         g.atk = 0;
         g.light = 1;
-        let floor_ogre = Monster { x: 0, y: 0, kind: MKind::Ogre, hp: 13, regard: 0, calm: false };
+        let floor_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false };
         assert_eq!(receptivity(&floor_ogre, &g), 5, "receptivity must clamp at the floor of 5");
 
         // Clamp ceiling: a high-regard, badly wounded rat with a very
         // strong player would compute far past 100; receptivity must cap
         // at 95.
         g.atk = 20;
-        g.light = game::START_LIGHT;
-        let capped_rat = Monster { x: 0, y: 0, kind: MKind::Rat, hp: 1, regard: 10, calm: false };
+        g.light = game::start_light();
+        let capped_rat = Monster { x: 0, y: 0, kind: RAT, hp: 1, regard: 10, calm: false };
         assert_eq!(receptivity(&capped_rat, &g), 95, "receptivity must clamp at the ceiling of 95");
     }
 
@@ -894,7 +898,7 @@ mod tests {
             g.monsters.push(Monster {
                 x: px + dx,
                 y: py + dy,
-                kind: MKind::Ogre,
+                kind: OGRE,
                 hp: 13,
                 regard: 0,
                 calm: false,
@@ -945,7 +949,7 @@ mod tests {
         g.monsters.push(Monster {
             x: px + dx,
             y: py + dy,
-            kind: MKind::Ogre,
+            kind: OGRE,
             hp: 13,
             regard: 0,
             calm: false,
@@ -996,7 +1000,7 @@ mod tests {
             g.monsters.push(Monster {
                 x: px + dx,
                 y: py + dy,
-                kind: MKind::Ogre,
+                kind: OGRE,
                 hp: 999,
                 regard: 0,
                 calm: false,
@@ -1246,11 +1250,11 @@ mod tests {
         );
     }
 
-    /// GHOST_LABELS (content.rs): every preset phrase is ASCII and <=16
+    /// GAME.ghost_labels (content.rs): every preset phrase is ASCII and <=16
     /// bytes, per the RLG1 format's label_idx contract in save.rs.
     #[test]
     fn ghost_labels_fit_16_bytes() {
-        for label in &GHOST_LABELS {
+        for label in GAME.ghost_labels {
             assert!(label.is_ascii(), "non-ASCII ghost label: {}", label);
             assert!(label.len() <= 16, "ghost label too long ({}): {}", label.len(), label);
         }
@@ -1645,7 +1649,7 @@ mod tests {
     #[test]
     fn root_win_unaffected_by_portals() {
         let mut g = Game::new(7);
-        g.has_amulet = true;
+        g.has_objective = true;
         g.monsters.clear(); // keep the test about the win check, not combat
         let (ex, ey) = (g.px, g.py);
         let (dx, dy) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
@@ -1664,7 +1668,7 @@ mod tests {
     /// portal `<`, only legal legend chars, within the 80x25 grid.
     #[test]
     fn authored_floors_well_formed() {
-        for (fi, f) in AUTHORED_FLOORS.iter().enumerate() {
+        for (fi, f) in GAME.authored_floors.iter().enumerate() {
             let rows: Vec<&str> = f.map.lines().collect();
             let w = rows[0].len();
             assert!(rows.len() >= 3 && w >= 3, "floor {} too small", fi);
@@ -1691,7 +1695,7 @@ mod tests {
     /// discipline as `theme_lines_fit_log_row`/`talk_lines_fit_log_row`.
     #[test]
     fn authored_floors_flavor_fits_log_row() {
-        for f in &AUTHORED_FLOORS {
+        for f in GAME.authored_floors {
             assert!(f.describe.len() <= 78, "describe too long ({}): {}", f.describe.len(), f.describe);
             let arrival = format!("You arrive at {}.", f.name);
             assert!(arrival.len() <= 78, "arrival line too long ({}): {}", arrival.len(), arrival);

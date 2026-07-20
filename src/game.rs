@@ -3,11 +3,22 @@
 // combat, save/restore of visited depths), plus the grid helpers idx/in_map
 // and the solver's bfs_dist. apply_input is the client input-vocabulary
 // boundary between this engine and any frontend (window loop, replay, sim).
+//
+// THE UNBRAIDING (batch 7 T1): every game-specific fact (monster/item
+// stats, theme flavor, vault layouts, balance numbers, message templates)
+// used to live here as literal consts and match arms. It has all moved to
+// `crate::gamedef::GameDef` data, authored per-cartridge under `games/`
+// (one module per game; see that directory for the one shipped today). This
+// module reaches that data through exactly one seam — `crate::games::GAME`,
+// re-exported from `games/mod.rs` — and otherwise consumes only `GameDef`
+// fields:
+// `MKind`/`IKind` are plain indices into `GAME.monsters`/`GAME.items`, not
+// named variants; a monster/item's stats, glyph, color, and flavor text are
+// all looked up by index, never spelled out here.
 
-use crate::content::{
-    AUTHORED_FLOORS, KINDS, PAL_GOBLIN, PAL_OGRE, PAL_RAT, TALK_LINES, TONE_LINES, Theme, VAULTS,
-    lore_line, theme_for,
-};
+use crate::content::theme_for;
+use crate::gamedef::ItemEffect;
+use crate::games::GAME;
 use crate::render::Facing;
 use crate::rng::{Rng, channel, h64};
 // Layering note (batch 6 T1): `world_hash` is defined in headless.rs (the
@@ -23,61 +34,43 @@ use crate::headless::world_hash;
 pub(crate) const COLS: usize = 80;
 pub(crate) const ROWS: usize = 30;
 pub(crate) const MAP_H: usize = 25; // rows [0,25) map; row 25 status; rows [26,30) log
-pub(crate) const MAX_DEPTH: u32 = 5;
-const MONSTER_SIGHT: i32 = 8;
 
-/* Solver-derived: worst-case round-trip walk budget over the 10K CI seed
-   set is 1503 (--solve 10000, worstSeed 6592; budget = descend ×1 + climb
-   out ×2 per step, see solve_seed). Start light 2000 leaves ~33% margin for
-   combat, detours and loot runs. Changing this re-tunes every run: rerun
-   --solve and re-commit tests/solver-band.json alongside it.
-   pub(crate): render.rs reads this to compute the Torch bar's fill
-   proportion (light / START_LIGHT) in the status bar — read-only, the
-   value is never written from outside this module. */
-pub(crate) const START_LIGHT: i32 = 2000;
-
-/* Violence tax (batch 4, DECISION.md item 1 — mercy economy's first brick):
-   every bump-attack burns 1 extra light on top of the normal per-turn cost,
-   folded into spend_turn's single deduction so the light-0 death check
-   still runs exactly once and lose-before-win ordering holds. A wall bump
-   still burns nothing (try_move_player returns before any spend_turn call).
-   Re-baselined `--sim 5000` after adding the tax (2026-07-18): wins
-   726/5000 (14.5%, was 729/14.6%), deaths_combat 4266 (unchanged —
-   the greedy bot only fights when routing forces it through a monster,
-   so the tax rarely flips a run's outcome), deaths_dark 8 (was 5), stuck
-   0. tests/sim-band.json updated accordingly; win_pct band [10,25]
-   unchanged, deaths_dark band tightened around the new value. */
-pub(crate) const VIOLENCE_TAX: i32 = 1;
-
-/// Player FOV radius shrinks as the torch burns down. Percent of START_LIGHT.
-pub(crate) fn fov_radius(light: i32) -> i32 {
-    let pct = light * 100 / START_LIGHT;
-    match pct {
-        _ if pct > 50 => 8,
-        _ if pct > 30 => 6,
-        _ if pct > 18 => 5,
-        _ if pct > 10 => 4,
-        _ if pct > 4 => 3,
-        _ => 2,
-    }
+/// Total depth count for the active cartridge (was the engine's own
+/// `MAX_DEPTH` constant before the cartridge split — see `WinDef::max_depth`).
+pub(crate) fn max_depth() -> u32 {
+    GAME.win.max_depth
 }
 
-/// Tier-crossing torch warnings, one per FOV-radius step fov_radius can
-/// land on below the starting 8 (6, 5, 4, 3, 2 — see fov_radius's match
-/// arms). `{}` is filled with a theme adjective via `self.adj()` (a
-/// flavor_rng draw: deterministic in-run, replay-safe by construction,
-/// and on its own channel so it never perturbs worldgen/spawns/combat).
-/// Every template must fit the 78-char log row for EVERY theme's EVERY
-/// adjective — proved by `theme_lines_fit_log_row` in main.rs's test
-/// module. Grounding rule: restates the engine fact (the torch is
-/// dimming) with theme color, invents nothing.
-pub(crate) const TIER_WARNINGS: [&str; 5] = [
-    "The {} shadows edge closer as your torch burns low.",
-    "The flame gutters; the {} dark takes what light remains.",
-    "Darkness presses in, {} and patient, around your failing light.",
-    "Your torch is nearly spent. The {} dark waits. Hurry.",
-    "The last embers gutter. The {} dark is almost total.",
-];
+/// Run-wide light pool for the active cartridge, solver-derived — see the
+/// active cartridge's own comment on the derivation. `pub(crate)`: render.rs
+/// reads this to compute the Torch bar's fill proportion (light /
+/// start_light) in the status bar.
+pub(crate) fn start_light() -> i32 {
+    GAME.balance.start_light
+}
+
+/// Monster kind: a plain index into `GAME.monsters`, not a named variant —
+/// the engine has no notion of what kind 0 "is," only that it's a row in
+/// the active cartridge's monster table. See `Monster::stats`.
+pub(crate) type MKind = u8;
+/// Item kind: a plain index into `GAME.items`, same convention as `MKind`.
+pub(crate) type IKind = u8;
+
+/// Player FOV radius shrinks as the torch burns down. Percent of
+/// `start_light()`. Tiers come from `BalanceDef::fov_tiers`, checked in
+/// order — see that field's doc comment.
+pub(crate) fn fov_radius(light: i32) -> i32 {
+    let pct = light * 100 / GAME.balance.start_light;
+    for &(threshold, radius) in GAME.balance.fov_tiers {
+        if pct > threshold {
+            return radius;
+        }
+    }
+    // Unreachable given a well-formed `fov_tiers` table (its last entry's
+    // threshold should always match — see the field's doc comment); kept
+    // as a safe fallback rather than a panic.
+    2
+}
 
 // ---------- Map ----------
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,7 +78,7 @@ pub(crate) enum Tile {
     Wall,
     Floor,
     Stairs,   // '>' down
-    UpStairs, // '<' up; on depth 1 it is the way out (win tile, amulet in hand)
+    UpStairs, // '<' up; on the return depth it is the way out (win tile, objective in hand)
     /// A door to another world (batch 6 T1, dump/render glyph `*`). Passable
     /// floor for movement/LOS/monster-pathing purposes (`Game::los`'s wall
     /// check, `wall_mask`'s autotile mask, and `monsters_act`'s neighbor
@@ -103,7 +96,7 @@ pub(crate) enum Tile {
     Portal,
     /// A pit (batch 6 T2, sokoban, dump/render glyph `^`): vault-only this
     /// batch (placed solely by `Game::stamp_vault` via the `^` legend char —
-    /// see `content::VAULTS`). Impassable to the player: `try_move_player`
+    /// see `GAME.vaults`). Impassable to the player: `try_move_player`
     /// refuses the step with a themed message and no turn, mirroring a wall
     /// bump. Impassable to monsters too: `monsters_act`'s neighbor-step
     /// check excludes it exactly like `Tile::Wall`. LOS passes over it
@@ -126,18 +119,10 @@ pub(crate) enum Tile {
     /// deliberately excludes it, same as it already excludes `Pit`/
     /// `Portal`) except: it renders distinctly (`content::PAL_GOAL`), and a
     /// push-chain's farthest member landing here LOCKS instead of merely
-    /// advancing — the mechanism per `docs/story/STORY-COMPILE-v1.md` §9-H
-    /// ("goal tile... a block pushed onto a goal locks and opens/reveals
-    /// the room's reward"). Chosen mechanism (simplest that makes an
-    /// authorable puzzle work, per the batch-6 Amendment 2 brief: "no
-    /// reveal machinery, the reward is physically gated"): the locked
-    /// block is removed from `Game::blocks` (absorbed, never pushable
-    /// again) and this tile becomes ordinary `Tile::Floor` — see
-    /// `Game::try_push`. The "opens the path" half is achieved by
-    /// authoring the goal at the end of a corridor the block itself was
-    /// blocking (see `content::VAULTS`'s "the goal cell"): once the block
-    /// is gone, the corridor is simply clear, no separate reveal step
-    /// needed.
+    /// advancing. Chosen mechanism (simplest that makes an authorable
+    /// puzzle work): the locked block is removed from `Game::blocks`
+    /// (absorbed, never pushable again) and this tile becomes ordinary
+    /// `Tile::Floor` — see `Game::try_push`.
     Goal,
 }
 
@@ -161,9 +146,9 @@ enum PushResolution {
 
 /// Identifies a world: either a derived dungeon keyed by its own seed, or a
 /// hand-authored singular place keyed by its index into
-/// `content::AUTHORED_FLOORS` (batch 6 T1). `Game::world` is the CURRENT
+/// `GAME.authored_floors` (batch 6 T1). `Game::world` is the CURRENT
 /// world; the root world (the one a fresh `Game::new` starts in, and the
-/// only one with a win condition/amulet — see `Game::land_on_tile`'s
+/// only one with a win condition/objective — see `Game::land_on_tile`'s
 /// `Tile::UpStairs` arm) is always `Seed(g.seed)`, computed by comparison
 /// rather than a separate stored flag, so it can never drift out of sync
 /// with `g.seed`. `PartialEq`/`Eq` back the linear scans over `Game::worlds`
@@ -187,7 +172,7 @@ pub(crate) enum WorldId {
 /// is free to do and changes no observable output. Being pure-derived from
 /// an already-hashed field, it's deliberately EXCLUDED from `state_hash`
 /// (see `save::hash_portal`) rather than hashed again. `Floor`'s `u8`
-/// indexes `content::AUTHORED_FLOORS`.
+/// indexes `GAME.authored_floors`.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Dest {
     World(u64, u64),
@@ -207,13 +192,6 @@ pub(crate) struct WorldState {
     pub(crate) saved: Vec<Option<LevelState>>,
     pub(crate) depth: u32,
     pub(crate) from: Option<(WorldId, i32, i32)>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum MKind {
-    Rat,
-    Goblin,
-    Ogre,
 }
 
 #[derive(Clone)]
@@ -240,27 +218,20 @@ pub(crate) struct Monster {
 }
 
 impl Monster {
-    pub(crate) fn stats(kind: MKind) -> (i32, i32, u8, u32, &'static str) {
-        // (hp, atk, glyph, color, name)
-        match kind {
-            MKind::Rat => (3, 1, b'r', PAL_RAT, "rat"),
-            MKind::Goblin => (6, 2, b'g', PAL_GOBLIN, "goblin"),
-            MKind::Ogre => (13, 4, b'O', PAL_OGRE, "ogre"),
-        }
+    /// This kind's complete definition (stats/glyph/color/talk data),
+    /// looked up by index in the active cartridge's monster table. No
+    /// engine code names a specific kind — only the cartridge's own data
+    /// module does.
+    pub(crate) fn stats(kind: MKind) -> &'static crate::gamedef::MonsterDef {
+        &GAME.monsters[kind as usize]
     }
 
     /// Number of talks (batch 5) a monster must receive before it becomes
-    /// calm. Rat 2 (small, quick to back down), goblin 3 (wary, takes
-    /// convincing), ogre 4 (slow and heavy, takes the longest to stand
-    /// down) — starting values per the batch-5 plan, tuned against the
-    /// pacifist gate (T2/`tests/pacifist-band.json`), never retuned by
-    /// feel alone.
+    /// calm — per-kind, from the cartridge's own table (tuned against the
+    /// pacifist gate, `tests/pacifist-band.json`, never retuned by feel
+    /// alone).
     pub(crate) fn talk_threshold(kind: MKind) -> u8 {
-        match kind {
-            MKind::Rat => 2,
-            MKind::Goblin => 3,
-            MKind::Ogre => 4,
-        }
+        GAME.monsters[kind as usize].talk_threshold
     }
 }
 
@@ -273,58 +244,35 @@ impl Monster {
 /// monster this turn) or FAILS (no regard, no stay — the monster acts
 /// normally). Pure integer math over state already tracked; every term's
 /// provenance:
-///   `BASE[kind]`: rat 55, goblin 35, ogre 20 — starting values from the
-///   addendum, small/skittish reads as quicker to listen, large/stubborn as
-///   slower. Tunable within the addendum's [5,40] pacifist win_pct brief.
-///   `18 * m.regard`: persistence pays — each PRIOR landed talk (regard is
-///   only incremented on a landed roll, see `try_talk_player`) makes the
-///   next one likelier, so a monster mid-being-persuaded trends toward
-///   calm rather than resetting every attempt.
-///   `40 * (maxhp - m.hp) / maxhp`: wounds open ears — `maxhp` is the
-///   monster's OWN kind ceiling (`Monster::stats(m.kind).0`), not the
-///   player's; integer division truncates toward 0 (a fresh monster
-///   contributes exactly 0 here, a monster one hit from death contributes
-///   close to the full 40).
-///   `6 * (g.atk - 3)`: visible strength impresses — player atk starts at
-///   3 (`Game::new`), so this term is 0 at the run's start and grows by 12
-///   per sword (`Item::pickup`'s `IKind::Sword` arm, +2 atk each).
-///   `-10 if fov_radius(g.light) <= 4`: a guttering torch reads as
-///   weakness, not menace — `fov_radius` steps 8/6/5/4/3/2 as light burns
-///   down, so this fires on the bottom three tiers.
-///   `clamp(5, 95)`: never impossible, never certain, regardless of how
+///   `def.receptivity_base`: the cartridge's own per-kind starting point —
+///   small/skittish kinds read as quicker to listen, large/stubborn kinds
+///   as slower.
+///   `regard_coeff * m.regard`: persistence pays — each PRIOR landed talk
+///   (regard is only incremented on a landed roll, see `try_talk_player`)
+///   makes the next one likelier, so a monster mid-being-persuaded trends
+///   toward calm rather than resetting every attempt.
+///   `wound_coeff * (maxhp - m.hp) / maxhp`: wounds open ears — `maxhp` is
+///   the monster's OWN kind ceiling, not the player's; integer division
+///   truncates toward 0 (a fresh monster contributes exactly 0 here, a
+///   monster one hit from death contributes close to the full coefficient).
+///   `atk_coeff * (g.atk - starting_atk)`: visible strength impresses —
+///   `starting_atk` is the player's atk at `Game::new`, so this term is 0
+///   at the run's start and grows with every attack-boosting pickup.
+///   `-torch_penalty if fov_radius(g.light) <= torch_radius_threshold`: a
+///   guttering torch reads as weakness, not menace.
+///   `clamp(lo, hi)`: never impossible, never certain, regardless of how
 ///   the terms above sum.
 pub(crate) fn receptivity(m: &Monster, g: &Game) -> i32 {
-    let base = match m.kind {
-        MKind::Rat => 55,
-        MKind::Goblin => 35,
-        MKind::Ogre => 20,
-    };
-    let maxhp = Monster::stats(m.kind).0;
-    let torch_penalty = if fov_radius(g.light) <= 4 { 10 } else { 0 };
-    let r = base + 18 * m.regard as i32 + 40 * (maxhp - m.hp) / maxhp + 6 * (g.atk - 3)
+    let def = &GAME.monsters[m.kind as usize];
+    let maxhp = def.hp;
+    let b = &GAME.balance;
+    let torch_penalty =
+        if fov_radius(g.light) <= b.receptivity_torch_radius_threshold { b.receptivity_torch_penalty } else { 0 };
+    let r = def.receptivity_base + b.receptivity_regard_coeff * m.regard as i32
+        + b.receptivity_wound_coeff * (maxhp - m.hp) / maxhp
+        + b.receptivity_atk_coeff * (g.atk - b.starting_atk)
         - torch_penalty;
-    r.clamp(5, 95)
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum IKind {
-    Potion,
-    Sword,
-    Amulet,
-    LoreA, // shallow-tier inscription: theme lore template 0
-    LoreB, // mid-tier: template 1
-    LoreC, // deep-tier: template 2
-}
-
-impl IKind {
-    pub(crate) fn lore_tier(self) -> Option<usize> {
-        match self {
-            IKind::LoreA => Some(0),
-            IKind::LoreB => Some(1),
-            IKind::LoreC => Some(2),
-            _ => None,
-        }
-    }
+    r.clamp(b.receptivity_clamp.0, b.receptivity_clamp.1)
 }
 
 #[derive(Clone)]
@@ -334,7 +282,7 @@ pub(crate) struct Item {
     pub(crate) kind: IKind,
 }
 
-/// Snapshot of a visited depth, so the climb back out with the amulet is
+/// Snapshot of a visited depth, so the climb back out with the objective is
 /// through the world you left: same layout, taken items stay taken, dead
 /// monsters stay dead, live ones where they last stood.
 pub(crate) struct LevelState {
@@ -427,7 +375,12 @@ pub(crate) struct Game {
     /// deliberately doesn't (see the note near `backend_term::frame_bytes`).
     /// Presentation-only, same exclusion list as `facing` above.
     pub(crate) fx_hit: Option<(i32, i32)>,
-    pub(crate) has_amulet: bool,
+    /// Whether the player currently holds the run's win-condition item
+    /// (`ItemEffect::Objective` — see `Game::pickup`). Doubles the per-turn
+    /// light burn (`WinDef::carry_burn`, it is heavy) and is the second of
+    /// two conditions (with standing on the return depth's up-stairs) that
+    /// wins the run.
+    pub(crate) has_objective: bool,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
@@ -435,7 +388,7 @@ pub(crate) struct Game {
     pub(crate) room_visited: Vec<bool>,
     /// The CURRENT world's per-depth stash (batch 6 T1: was unconditionally
     /// "the run's" stash before portals existed — now scoped to whichever
-    /// world `Game::world` names). Length `MAX_DEPTH` for a `Seed` world,
+    /// world `Game::world` names). Length `max_depth()` for a `Seed` world,
     /// length 1 for a `Floor` world (always index 0, since `Game::depth` is
     /// pinned to 1 there). Swapped out wholesale on every world transition
     /// (`Game::leave_current_world`/`enter_world_forward`/
@@ -453,8 +406,8 @@ pub(crate) struct Game {
     pub(crate) worlds: Vec<(WorldId, WorldState)>,
     /// Where the CURRENT world was entered FROM (batch 6 T1): the source
     /// world plus the exact portal tile there, so walking onto THIS world's
-    /// depth-1 (or a Floor's sole) `<` can transit back to precisely that
-    /// tile (`Game::return_to_source`) rather than searching for one.
+    /// entrance-depth (or a Floor's sole) `<` can transit back to precisely
+    /// that tile (`Game::return_to_source`) rather than searching for one.
     /// `None` for the root world (never entered via a portal) and, always,
     /// immediately after `Game::new` — see `WorldId`'s doc comment for why
     /// "root" is a comparison (`world == WorldId::Seed(seed)`) rather than a
@@ -467,16 +420,15 @@ pub(crate) struct Game {
     /// point on every lookup, for no benefit over storing the ~9 bytes this
     /// costs; `LevelState::portal` snapshots/restores it exactly like every
     /// other per-level field, and it's hashed in `save::state_hash` (stored
-    /// state that changes what a walk-onto/wait does is run-defining, same
-    /// rationale as `sealed_stairs`-style fields elsewhere in this
-    /// codebase's history). `None` on a `Floor` world (authored floors
-    /// place no further portals this batch — a deliberate scope cut, not a
-    /// technical limit; see `content::AUTHORED_FLOORS`'s doc comment).
+    /// state that changes what a walk-onto/wait does is run-defining).
+    /// `None` on a `Floor` world (authored floors place no further portals
+    /// this batch — a deliberate scope cut, not a technical limit; see
+    /// `AuthoredFloorDef`'s doc comment).
     pub(crate) portal: Option<(i32, i32, Dest)>,
     /// This depth's push-blocks (batch 6 T2, sokoban — ported in spirit from
     /// golem/topdown-puzzle's `shared/push.js`), vault-only this batch
-    /// (placed solely by the `B` vault legend char — see `content::VAULTS`
-    /// and `Game::stamp_vault`). Occupy a tile like a monster (block
+    /// (placed solely by a vault's `B` legend char — see `GAME.vaults` and
+    /// `Game::stamp_vault`). Occupy a tile like a monster (block
     /// player/monster movement — `Game::try_push`, `Game::monsters_act`'s
     /// neighbor-step check), but LOS passes over them (waist-high — `los`
     /// never consults this vector) and an item may sit underneath (an item
@@ -528,25 +480,25 @@ impl Game {
             vis: vec![false; COLS * MAP_H],
             px: 0,
             py: 0,
-            hp: 20,
-            maxhp: 20,
-            atk: 3,
+            hp: GAME.balance.starting_hp,
+            maxhp: GAME.balance.starting_hp,
+            atk: GAME.balance.starting_atk,
             depth: 1,
             kills: 0,
             spared: 0,
-            light: START_LIGHT,
+            light: GAME.balance.start_light,
             turns: 0,
             killer: None,
             echo: None,
             facing: Facing::S,
             fx_hit: None,
-            has_amulet: false,
+            has_objective: false,
             monsters: Vec::new(),
             items: Vec::new(),
             rooms: Vec::new(),
             room_meta: Vec::new(),
             room_visited: Vec::new(),
-            saved: (0..MAX_DEPTH).map(|_| None).collect(),
+            saved: (0..GAME.win.max_depth).map(|_| None).collect(),
             worlds: Vec::new(),
             from: None,
             portal: None,
@@ -562,7 +514,7 @@ impl Game {
             won: false,
         };
         g.gen_level();
-        g.log(String::from("Fetch the Amulet from depth 5 and climb back before dark!"));
+        g.log(String::from(GAME.strings.intro));
         g
     }
 
@@ -578,8 +530,8 @@ impl Game {
     /// in; rather than invent a per-floor theme table, it borrows the root
     /// world's depth-1 theme (`self.seed` at depth 1, which `self.depth`
     /// already IS on a floor — see `Game::depth`'s floor convention) — a
-    /// floor's own identity comes from `content::AUTHORED_FLOORS`'
-    /// name/describe line instead, never from this borrowed theme's label.
+    /// floor's own identity comes from `GAME.authored_floors`' name/
+    /// describe line instead, never from this borrowed theme's label.
     fn world_seed(&self) -> u64 {
         match self.world {
             WorldId::Seed(s) => s,
@@ -587,13 +539,13 @@ impl Game {
         }
     }
 
-    pub(crate) fn theme(&self) -> &'static Theme {
+    pub(crate) fn theme(&self) -> &'static crate::gamedef::ThemeDef {
         theme_for(self.world_seed(), self.depth)
     }
 
     /// The filled lore line for a tier of the current depth's theme.
     fn lore_line(&self, tier: usize) -> String {
-        lore_line(self.world_seed(), self.depth, tier)
+        crate::content::lore_line(self.world_seed(), self.depth, tier)
     }
 
     fn mob_name(&self, k: MKind) -> &'static str {
@@ -659,8 +611,8 @@ impl Game {
         let mut vault_room: Option<usize> = None;
         let mut vr = channel(world_seed, &["vault", &depth_tag]);
         if vr.chance(2, 5) {
-            let vi = vr.range(0, VAULTS.len() as i32) as usize;
-            let rows: Vec<&str> = VAULTS[vi].lines().collect();
+            let vi = vr.range(0, GAME.vaults.len() as i32) as usize;
+            let rows: Vec<&str> = GAME.vaults[vi].lines().collect();
             let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
             for _ in 0..40 {
                 let x = vr.range(1, COLS as i32 - vw - 1);
@@ -671,7 +623,7 @@ impl Game {
                 if clash {
                     continue;
                 }
-                self.stamp_vault(VAULTS[vi], x, y);
+                self.stamp_vault(GAME.vaults[vi], x, y);
                 vault_room = Some(rooms.len());
                 rooms.push((x, y, vw, vh));
                 break;
@@ -693,9 +645,9 @@ impl Game {
                 }
                 // A corridor's straight carve punches through anything in
                 // its path unconditionally, same as it always has ("the
-                // carver breaks in" — ordinary `content::VAULTS` doctrine).
-                // batch 6 T2 review: an earlier version of this carve tried
-                // to special-case `Tile::Pit`/`Tile::Goal` (leave them
+                // carver breaks in" — ordinary vault doctrine). batch 6 T2
+                // review: an earlier version of this carve tried to
+                // special-case `Tile::Pit`/`Tile::Goal` (leave them
                 // un-overwritten, to stop a corridor from silently
                 // "solving" a sokoban gate for free) — reverted: on a rare
                 // seed the straight-line carve's OWN target cell can BE
@@ -717,26 +669,27 @@ impl Game {
         self.px = sx;
         self.py = sy;
         // BFS depth from the entrance is the level's act structure: the exit
-        // (down-stairs, or the amulet on the last depth) goes in the DEEPEST
-        // reachable room, not the last-generated one — EXCEPT a sokoban
-        // vault's own center (batch 6 T2 review fix): if this depth stamped
-        // one (`vault_room` is `Some` AND it actually placed blocks — vaults
-        // 0-2 have neither, so this is a no-op for them), its center is
-        // excluded from the candidate pool outright, so the exit can never
-        // land inside a sokoban room. Confirmed necessary empirically, not
-        // just in theory: an unrelated corridor can (and, on rare seeds,
-        // does) trivialize a vault's own pit — "the carver breaks in" is
-        // accepted for a pit same as a wall (see the corridor-carve comment
-        // above) — after which its blocks are just ordinary movable
-        // furniture in an open corridor. A `--sim` greedy bot never
-        // deliberately solves puzzles, but its wander-when-stuck fallback
-        // (headless.rs) WILL push a block it stumbles into if that push
-        // succeeds, and a block pushed hard up against a `Tile::Stairs`
-        // tile can never be pushed the rest of the way (landing on Stairs
-        // always refuses — `Game::try_push`) — a dead end for a bot that
-        // only ever routes, never backtracks. Keeping the exit out of
-        // sokoban rooms entirely sidesteps the whole failure class rather
-        // than chasing every way a corridor could produce it.
+        // (down-stairs, or the objective item on the last depth) goes in
+        // the DEEPEST reachable room, not the last-generated one — EXCEPT a
+        // sokoban vault's own center (batch 6 T2 review fix): if this depth
+        // stamped one (`vault_room` is `Some` AND it actually placed
+        // blocks — some vaults have neither, so this is a no-op for them),
+        // its center is excluded from the candidate pool outright, so the
+        // exit can never land inside a sokoban room. Confirmed necessary
+        // empirically, not just in theory: an unrelated corridor can (and,
+        // on rare seeds, does) trivialize a vault's own pit — "the carver
+        // breaks in" is accepted for a pit same as a wall (see the
+        // corridor-carve comment above) — after which its blocks are just
+        // ordinary movable furniture in an open corridor. A `--sim` greedy
+        // bot never deliberately solves puzzles, but its wander-when-stuck
+        // fallback (headless.rs) WILL push a block it stumbles into if that
+        // push succeeds, and a block pushed hard up against a
+        // `Tile::Stairs` tile can never be pushed the rest of the way
+        // (landing on Stairs always refuses — `Game::try_push`) — a dead
+        // end for a bot that only ever routes, never backtracks. Keeping
+        // the exit out of sokoban rooms entirely sidesteps the whole
+        // failure class rather than chasing every way a corridor could
+        // produce it.
         let dist = bfs_dist(&self.map, (sx, sy));
         let sokoban_vault_center =
             vault_room.filter(|_| !self.blocks.is_empty()).map(|vi| centers[vi]);
@@ -749,47 +702,48 @@ impl Game {
             .unwrap_or((sx + 1, sy));
         self.map[idx(sx, sy)] = Tile::UpStairs;
         let is_root = self.world == WorldId::Seed(self.seed);
-        if self.depth < MAX_DEPTH {
+        if self.depth < GAME.win.max_depth {
             self.map[idx(deepest.0, deepest.1)] = Tile::Stairs;
         } else if is_root {
-            self.items.push(Item { x: deepest.0, y: deepest.1, kind: IKind::Amulet });
+            self.items.push(Item { x: deepest.0, y: deepest.1, kind: GAME.win.objective_item });
         } else {
-            /* batch 6 T1: the amulet and the win condition both live only
-               in the root world (see `Game::land_on_tile`'s `UpStairs`
-               arm) — a portal Seed-world's depth 5 has no amulet. Its
-               deepest room still rewards the trip: a Potion where the
-               amulet would have sat, plus a LoreC placed via the SAME
-               `sr` (spawns) draw every other item on this depth uses —
-               existing item machinery, no new mechanics. `rand_floor` may
-               occasionally fail to find a second free tile in a cramped
-               room; skipping the LoreC in that rare case is harmless, the
-               Potion alone still marks this depth's reward. */
-            self.items.push(Item { x: deepest.0, y: deepest.1, kind: IKind::Potion });
+            /* batch 6 T1: the win-condition item and the win condition both
+               live only in the root world (see `Game::land_on_tile`'s
+               `UpStairs` arm) — a portal Seed-world's last depth has no
+               objective item. Its deepest room still rewards the trip: a
+               Potion where the objective would have sat, plus a deep-tier
+               lore item placed via the SAME `sr` (spawns) draw every other
+               item on this depth uses — existing item machinery, no new
+               mechanics. `rand_floor` may occasionally fail to find a
+               second free tile in a cramped room; skipping the lore item
+               in that rare case is harmless, the Potion alone still marks
+               this depth's reward. */
+            self.items.push(Item { x: deepest.0, y: deepest.1, kind: GAME.balance.loot_potion_item });
             if let Some((lx, ly)) = self.rand_floor(&mut sr, 4) {
-                self.items.push(Item { x: lx, y: ly, kind: IKind::LoreC });
+                self.items.push(Item { x: lx, y: ly, kind: GAME.balance.lore_items[2] });
             }
         }
 
         /* portal (batch 6 T1): chance(1,4) per depth, drawn from the SAME
            `wr` worldgen channel used for every layout draw above (rooms,
            vault placement, corridors) — inserted strictly AFTER all of
-           those, so this batch's golden diff is purely additive: existing
-           `wr` draws are byte-identical up to this point, this is a new
-           tail. Room choice excludes the entrance room (index 0 — see
+           those, so this batch's golden diff was purely additive: existing
+           `wr` draws are byte-identical up to this point, this is a tail.
+           Room choice excludes the entrance room (index 0 — see
            `centers[0]`) and the exit room (whichever room's center is
-           `deepest`, holding Stairs/Amulet/the consolation Potion) so a
-           portal never doubles as, or blocks routing to, either. Position
-           is a channel-drawn floor tile inside that room, retried against
-           collision with anything already placed there (a vault-stamped
-           monster/item, or the entrance/exit tile itself). Destination
-           kind is rolled ONLY once a valid tile is actually found (not
-           inside the retry loop, so retries don't waste draws on a roll
-           that might be discarded): chance(1,3) an authored Floor, else a
-           derived World whose seed is `h64(world_seed, ["portal",
-           depth_tag, index_tag])` — frozen API (like `h64`'s own doc
-           comment says of the primitive itself): the whole multiverse is a
-           pure function of the root seed. `index_tag` is always "0" this
-           batch (at most one portal per depth) — reserved so a future
+           `deepest`, holding Stairs/the objective item/the consolation
+           Potion) so a portal never doubles as, or blocks routing to,
+           either. Position is a channel-drawn floor tile inside that room,
+           retried against collision with anything already placed there (a
+           vault-stamped monster/item, or the entrance/exit tile itself).
+           Destination kind is rolled ONLY once a valid tile is actually
+           found (not inside the retry loop, so retries don't waste draws
+           on a roll that might be discarded): chance(1,3) an authored
+           Floor, else a derived World whose seed is `h64(world_seed,
+           ["portal", depth_tag, index_tag])` — frozen API (like `h64`'s own
+           doc comment says of the primitive itself): the whole multiverse
+           is a pure function of the root seed. `index_tag` is always "0"
+           this batch (at most one portal per depth) — reserved so a future
            "more than one portal per depth" feature can extend the tag
            scheme without colliding with this batch's derivations. */
         if wr.chance(1, 4) {
@@ -810,7 +764,7 @@ impl Game {
                         && !self.blocks.iter().any(|&b| b == (px, py))
                     {
                         let dest = if wr.chance(1, 3) {
-                            Dest::Floor(wr.range(0, AUTHORED_FLOORS.len() as i32) as u8)
+                            Dest::Floor(wr.range(0, GAME.authored_floors.len() as i32) as u8)
                         } else {
                             // world_hash memoized here, once, at generation
                             // time (perf fix, batch 6 review) — see
@@ -828,33 +782,32 @@ impl Game {
 
         /* monsters: scale with depth, spawn on floor away from player.
            Sim-derived (batch 3 balance pass, gated by tests/sim-band.json):
-           count 3+depth (was 3+2×depth) and roll `d10 + depth` with rat <9,
-           goblin <13, ogre >=13 — rats and goblins stay on the table at
-           every depth (depth 5: rat 4/10, goblin 4/10, ogre 2/10); ogres
-           get common deep but never take over. Tune only against
+           count `spawn_base_count + depth` and roll `d10 + depth` against
+           the cartridge's own `monster_roll` threshold table (see
+           `BalanceDef::monster_roll`'s doc comment). Tune only against
            `--sim 5000` landing in the band. */
-        let count = 3 + self.depth as i32;
+        let count = GAME.balance.spawn_base_count + self.depth as i32;
         for _ in 0..count {
             if let Some((mx, my)) = self.rand_floor(&mut sr, 8) {
                 let roll = sr.range(0, 10) + self.depth as i32;
-                let kind = if roll < 9 {
-                    MKind::Rat
-                } else if roll < 13 {
-                    MKind::Goblin
-                } else {
-                    MKind::Ogre
-                };
-                let (hp, ..) = Monster::stats(kind);
+                let kind = GAME
+                    .balance
+                    .monster_roll
+                    .iter()
+                    .find(|&&(threshold, _)| roll < threshold)
+                    .map(|&(_, k)| k)
+                    .unwrap_or(GAME.balance.monster_roll[GAME.balance.monster_roll.len() - 1].1);
+                let hp = GAME.monsters[kind as usize].hp;
                 self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false });
             }
         }
         /* items: deep floors are a war of attrition, so supply scales too —
-           +(depth-1)*2 extra drops (d1 +0, d2 +2, d3 +4, d4 +6, d5 +8) on
-           top of the base 2..4. Part of the same sim-gated balance pass as
-           the spawn table. */
-        for _ in 0..sr.range(2, 4) + (self.depth as i32 - 1) * 2 {
+           part of the same sim-gated balance pass as the spawn table. */
+        let b = &GAME.balance;
+        for _ in 0..sr.range(b.loot_count_lo, b.loot_count_hi) + (self.depth as i32 - 1) * b.loot_count_per_depth {
             if let Some((ix, iy)) = self.rand_floor(&mut sr, 4) {
-                let kind = if sr.chance(3, 4) { IKind::Potion } else { IKind::Sword };
+                let kind =
+                    if sr.chance(b.loot_potion_num, b.loot_potion_den) { b.loot_potion_item } else { b.loot_sword_item };
                 self.items.push(Item { x: ix, y: iy, kind });
             }
         }
@@ -874,20 +827,24 @@ impl Game {
             {
                 continue;
             }
-            let kind = [IKind::LoreA, IKind::LoreB, IKind::LoreC][tier];
+            let kind = GAME.balance.lore_items[tier];
             self.items.push(Item { x: cx, y: cy, kind });
         }
 
         // room identity: kind + tone per room from the "tone" channel (its
         // own stream — adds zero draws to worldgen/spawns, so layouts and
         // goldens are untouched). Spawn room counts as already entered.
+        // `room_kinds.len() - 1` excludes the reserved LAST kind (vault),
+        // never drawn randomly — it's forced onto stamped vault rooms below.
+        let kind_roll_max = GAME.room_kinds.len() as i32 - 1;
+        let tone_roll_max = GAME.tone_lines.len() as i32;
         let mut tn = channel(world_seed, &["tone", &depth_tag]);
         self.room_meta = rooms
             .iter()
-            .map(|_| (tn.range(0, 6) as u8, tn.range(0, 4) as u8))
+            .map(|_| (tn.range(0, kind_roll_max) as u8, tn.range(0, tone_roll_max) as u8))
             .collect();
         if let Some(vi) = vault_room {
-            self.room_meta[vi].0 = 6; // forced "vault"
+            self.room_meta[vi].0 = (GAME.room_kinds.len() - 1) as u8; // forced "vault"
         }
         self.room_visited = vec![false; rooms.len()];
         self.room_visited[0] = true;
@@ -897,19 +854,21 @@ impl Game {
 
         // first arrival: name the place; its history is buried in the rooms
         let t = self.theme();
-        self.log(format!("You enter {}.", t.label));
+        self.log(GAME.strings.enter_theme.replace("{}", t.label));
     }
 
-    /// Stamp a hand-authored vault's ASCII (`content::VAULTS`-style legend:
-    /// `#` wall — left untouched, `.` floor, `!` potion, `)` sword, `r`/`g`/
-    /// `O` monster of that stat row, and — batch 6 T2, sokoban — `^` pit,
-    /// `B` push-block, `x` goal) into `self.map`/`items`/`monsters`/
-    /// `blocks` at world-space origin `(ox, oy)`. Extracted from
-    /// `gen_level`'s inline vault-placement loop (batch 6 T2) so it has
-    /// exactly one implementation, shared by real worldgen (which calls
-    /// this once a collision-free spot is found) and the sokoban solution
-    /// tests (main.rs), which stamp a vault directly onto a synthetic map
-    /// with no worldgen RNG involved at all — a vault's tested solution can
+    /// Stamp a hand-authored vault's ASCII (a `GAME.vaults`-style legend:
+    /// `#` wall — left untouched, `.` floor, `^` pit, `x` goal, `B`
+    /// push-block, and every other byte matched against the active
+    /// cartridge's item/monster glyphs — see `MonsterDef::glyph`/
+    /// `ItemDef::glyph`'s doc comments, a def's glyph doubles as its vault
+    /// legend character) into `self.map`/`items`/`monsters`/`blocks` at
+    /// world-space origin `(ox, oy)`. Extracted from `gen_level`'s inline
+    /// vault-placement loop (batch 6 T2) so it has exactly one
+    /// implementation, shared by real worldgen (which calls this once a
+    /// collision-free spot is found) and the sokoban solution tests
+    /// (main.rs), which stamp a vault directly onto a synthetic map with no
+    /// worldgen RNG involved at all — a vault's tested solution can
     /// therefore never silently drift from what actually gets stamped into
     /// a real level.
     pub(crate) fn stamp_vault(&mut self, spec: &str, ox: i32, oy: i32) {
@@ -925,20 +884,13 @@ impl Game {
                     b'x' => self.map[idx(tx, ty)] = Tile::Goal,
                     _ => self.map[idx(tx, ty)] = Tile::Floor,
                 }
-                match c {
-                    b'!' => self.items.push(Item { x: tx, y: ty, kind: IKind::Potion }),
-                    b')' => self.items.push(Item { x: tx, y: ty, kind: IKind::Sword }),
-                    b'B' => self.blocks.push((tx, ty)),
-                    b'r' | b'g' | b'O' => {
-                        let kind = match c {
-                            b'r' => MKind::Rat,
-                            b'g' => MKind::Goblin,
-                            _ => MKind::Ogre,
-                        };
-                        let (hp, ..) = Monster::stats(kind);
-                        self.monsters.push(Monster { x: tx, y: ty, kind, hp, regard: 0, calm: false });
-                    }
-                    _ => {}
+                if c == b'B' {
+                    self.blocks.push((tx, ty));
+                } else if let Some(ii) = GAME.items.iter().position(|it| it.glyph == c) {
+                    self.items.push(Item { x: tx, y: ty, kind: ii as IKind });
+                } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
+                    let hp = GAME.monsters[ki].hp;
+                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false });
                 }
             }
         }
@@ -1015,38 +967,40 @@ impl Game {
     }
 
     /// Whether `m` can currently see (and, in `monsters_act`, therefore
-    /// chase or attack) the player: within `MONSTER_SIGHT` (Chebyshev
-    /// distance) AND unobstructed line of sight. `pub(crate)` so
+    /// chase or attack) the player: within the cartridge's `monster_sight`
+    /// (Chebyshev distance) AND unobstructed line of sight. `pub(crate)` so
     /// `render::scene()` can derive monster facing from the SAME predicate
     /// `monsters_act` uses for chase/attack — one definition, not two that
     /// could drift — without storing any new per-monster state.
     pub(crate) fn monster_sees_player(&self, m: &Monster) -> bool {
         let dist = (self.px - m.x).abs().max((self.py - m.y).abs());
-        dist <= MONSTER_SIGHT && self.los(m.x, m.y, self.px, self.py)
+        dist <= GAME.balance.monster_sight && self.los(m.x, m.y, self.px, self.py)
     }
 
     // ---------- Turn logic ----------
-    /// Burn the torch for one player turn: 1 light, 2 while carrying the
-    /// amulet (it is heavy), plus `extra` (the violence tax on attack
-    /// turns; 0 for movement/waiting). Light 0 is death in the dark —
-    /// checked once, after the combined deduction, before any win
-    /// condition, golem-style. Returns false if the player died.
+    /// Burn the torch for one player turn: `base_burn` light, or
+    /// `WinDef::carry_burn` while carrying the objective (it is heavy),
+    /// plus `extra` (the violence tax on attack turns; 0 for
+    /// movement/waiting). Light 0 is death in the dark — checked once,
+    /// after the combined deduction, before any win condition,
+    /// golem-style. Returns false if the player died.
     fn spend_turn(&mut self, extra: i32) -> bool {
         self.turns += 1;
         let before = fov_radius(self.light);
-        self.light -= (if self.has_amulet { 2 } else { 1 }) + extra;
+        let base = if self.has_objective { GAME.win.carry_burn } else { GAME.balance.base_burn };
+        self.light -= base + extra;
         if self.light <= 0 {
             self.light = 0;
             self.dead = true;
-            self.log(String::from("Your torch dies. The darkness takes you. [R] to restart"));
+            self.log(String::from(GAME.strings.dark_death));
             self.compute_fov();
             return false;
         }
         let after = fov_radius(self.light);
         if after < before {
             // Index by the radius just crossed into: fov_radius only ever
-            // steps through 6, 5, 4, 3, 2 below the starting 8 (see
-            // fov_radius's match arms), so this covers every reachable
+            // steps through the tiers below the starting radius (see
+            // `BalanceDef::fov_tiers`), so this covers every reachable
             // `after` value; `_` is unreachable but kept for exhaustiveness
             // rather than a panic if that ever changes.
             let ti = match after {
@@ -1057,7 +1011,7 @@ impl Game {
                 _ => 4,
             };
             let a = self.adj();
-            self.log(TIER_WARNINGS[ti].replace("{}", a));
+            self.log(GAME.strings.tier_warnings[ti].replace("{}", a));
         }
         true
     }
@@ -1211,7 +1165,7 @@ impl Game {
             }
             None => {
                 self.saved = match wid {
-                    WorldId::Seed(_) => (0..MAX_DEPTH as usize).map(|_| None).collect(),
+                    WorldId::Seed(_) => (0..GAME.win.max_depth as usize).map(|_| None).collect(),
                     WorldId::Floor(_) => vec![None],
                 };
                 self.regen_current_world(wid);
@@ -1254,7 +1208,7 @@ impl Game {
     }
 
     /// Instantiate an authored floor (batch 6 T1): parse
-    /// `content::AUTHORED_FLOORS[i]`'s const ASCII map directly into
+    /// `GAME.authored_floors[i]`'s const ASCII map directly into
     /// `map`/`items`/`monsters` — zero RNG draws, unlike `gen_level`. A
     /// smaller-than-80x25 map is centered and wall-padded. `rooms` gets one
     /// entry covering the whole authored rect, pre-marked visited, so
@@ -1262,7 +1216,7 @@ impl Game {
     /// has no room-tone system — it's one authored space, not a generated
     /// sequence of rooms). Authored floors place no further portals this
     /// batch (see `Game::portal`'s doc comment) and carry no lore items
-    /// (see `content::AUTHORED_FLOORS`'s doc comment on why).
+    /// (see `AuthoredFloorDef`'s doc comment).
     fn instantiate_floor(&mut self, i: u8) {
         self.map = vec![Tile::Wall; COLS * MAP_H];
         self.seen = vec![false; COLS * MAP_H];
@@ -1272,7 +1226,7 @@ impl Game {
         self.portal = None;
         self.blocks.clear(); // authored floors place no sokoban blocks (batch 6 T2 scope)
 
-        let spec = &AUTHORED_FLOORS[i as usize];
+        let spec = &GAME.authored_floors[i as usize];
         let rows: Vec<&str> = spec.map.lines().collect();
         let (fw, fh) = (rows[0].len() as i32, rows.len() as i32);
         let ox = (COLS as i32 - fw) / 2;
@@ -1288,25 +1242,19 @@ impl Game {
                         self.map[idx(tx, ty)] = Tile::UpStairs;
                         start = (tx, ty);
                     }
-                    b'!' => {
-                        self.map[idx(tx, ty)] = Tile::Floor;
-                        self.items.push(Item { x: tx, y: ty, kind: IKind::Potion });
+                    _ => {
+                        if let Some(ii) = GAME.items.iter().position(|it| it.glyph == c) {
+                            self.map[idx(tx, ty)] = Tile::Floor;
+                            self.items.push(Item { x: tx, y: ty, kind: ii as IKind });
+                        } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
+                            self.map[idx(tx, ty)] = Tile::Floor;
+                            let hp = GAME.monsters[ki].hp;
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false });
+                        }
+                        // else: well-formedness (main.rs) guards the legal-
+                        // char set; an unrecognized byte leaves the default
+                        // Wall tile untouched.
                     }
-                    b')' => {
-                        self.map[idx(tx, ty)] = Tile::Floor;
-                        self.items.push(Item { x: tx, y: ty, kind: IKind::Sword });
-                    }
-                    b'r' | b'g' | b'O' => {
-                        self.map[idx(tx, ty)] = Tile::Floor;
-                        let kind = match c {
-                            b'r' => MKind::Rat,
-                            b'g' => MKind::Goblin,
-                            _ => MKind::Ogre,
-                        };
-                        let (hp, ..) = Monster::stats(kind);
-                        self.monsters.push(Monster { x: tx, y: ty, kind, hp, regard: 0, calm: false });
-                    }
-                    _ => {} // well-formedness (main.rs) guards the legal-char set
                 }
             }
         }
@@ -1316,7 +1264,7 @@ impl Game {
         self.room_meta = vec![(0, 0)];
         self.room_visited = vec![true];
         self.compute_fov();
-        self.log(format!("You arrive at {}.", spec.name));
+        self.log(GAME.strings.floor_arrive.replace("{}", spec.name));
         self.log(String::from(spec.describe));
     }
 
@@ -1327,9 +1275,8 @@ impl Game {
     /// unconditionally (mirroring `descend`/`ascend`'s own
     /// "You descend/climb..." line), on top of whatever `gen_level`/
     /// `instantiate_floor` logs on a FRESH generation — two stacked log
-    /// lines on a first visit is the established pattern here (see
-    /// `descend`'s "You enter {theme}." + "Deeper, and harder..." + "You
-    /// descend to depth N."), not a bug to dedupe.
+    /// lines on a first visit is the established pattern here, not a bug to
+    /// dedupe.
     fn transit(&mut self) {
         let Some((px, py, dest)) = self.portal else {
             return; // defensive: only called while standing on a Portal tile
@@ -1340,17 +1287,17 @@ impl Game {
             Dest::World(seed, _) => self.enter_world_forward(WorldId::Seed(seed), (src, px, py)),
             Dest::Floor(i) => self.enter_world_forward(WorldId::Floor(i), (src, px, py)),
         }
-        self.log(format!("You step through into {}.", self.arrival_label(dest)));
+        self.log(GAME.strings.portal_arrive.replace("{}", &self.arrival_label(dest)));
     }
 
     /// Return to the world/tile a portal was entered from (batch 6 T1,
-    /// `Game::land_on_tile`'s `UpStairs` arm on a non-root world's depth 1,
-    /// or a `Floor`'s sole `<`): walk-on, like stairs — leaving is easy.
-    /// Lands the player standing exactly ON the source portal tile. This
-    /// does NOT immediately re-transit even though standing on a portal
-    /// tile is normally the trigger condition: transit only fires from
-    /// `wait_turn` on an explicit wait input, never as a side effect of
-    /// landing on a tile — so arriving here via a move is safe by
+    /// `Game::land_on_tile`'s `UpStairs` arm on a non-root world's entrance
+    /// depth, or a `Floor`'s sole `<`): walk-on, like stairs — leaving is
+    /// easy. Lands the player standing exactly ON the source portal tile.
+    /// This does NOT immediately re-transit even though standing on a
+    /// portal tile is normally the trigger condition: transit only fires
+    /// from `wait_turn` on an explicit wait input, never as a side effect
+    /// of landing on a tile — so arriving here via a move is safe by
     /// construction, no re-entrancy guard needed.
     fn return_to_source(&mut self) {
         let Some((src, x, y)) = self.from else {
@@ -1358,7 +1305,7 @@ impl Game {
         };
         self.leave_current_world();
         self.enter_world_return(src, x, y);
-        self.log(String::from("You step back through, right where you left."));
+        self.log(String::from(GAME.strings.portal_return));
     }
 
     /// The label used for both the walk-over describe-line
@@ -1368,7 +1315,7 @@ impl Game {
     fn arrival_label(&self, dest: Dest) -> String {
         match dest {
             Dest::World(seed, _) => theme_for(seed, 1).label.to_string(),
-            Dest::Floor(i) => AUTHORED_FLOORS[i as usize].name.to_string(),
+            Dest::Floor(i) => GAME.authored_floors[i as usize].name.to_string(),
         }
     }
 
@@ -1390,10 +1337,12 @@ impl Game {
     /// step-on.
     fn portal_describe(&self, dest: Dest) -> String {
         match dest {
-            Dest::World(seed, whash) => {
-                format!("Beyond it: {} ({:016x}).", theme_for(seed, 1).label, whash)
-            }
-            Dest::Floor(i) => format!("Beyond it: {}.", AUTHORED_FLOORS[i as usize].name),
+            Dest::World(seed, whash) => GAME
+                .strings
+                .portal_describe_world
+                .replacen("{}", theme_for(seed, 1).label, 1)
+                .replacen("{}", &format!("{:016x}", whash), 1),
+            Dest::Floor(i) => GAME.strings.portal_describe_floor.replace("{}", GAME.authored_floors[i as usize].name),
         }
     }
 
@@ -1406,18 +1355,18 @@ impl Game {
             None => {
                 self.gen_level();
                 /* Sim-derived (batch 3 balance pass): each FIRST descent
-                   grants +4 max HP and heals 4 — hp <= old maxhp, so
-                   hp+4 <= new maxhp always; no clamp needed. Without this
-                   progression the greedy bot dies to combat 100% of the
-                   time (--sim 5000, batch 2); with it plus the softened
-                   spawn tables the win rate sits inside the [10,25]% band
+                   grants a max-HP/heal bump — hp <= old maxhp, so
+                   hp+gain <= new maxhp always; no clamp needed. Without
+                   this progression the greedy bot dies to combat 100% of
+                   the time (--sim 5000, batch 2); with it plus the
+                   softened spawn tables the win rate sits inside the band
                    in tests/sim-band.json. Retune via `--sim 5000`. */
-                self.maxhp += 4;
-                self.hp += 4;
-                self.log(String::from("Deeper, and harder. You feel tougher. (+4 HP)"));
+                self.maxhp += GAME.balance.hp_gain_per_depth;
+                self.hp += GAME.balance.hp_gain_per_depth;
+                self.log(String::from(GAME.strings.descend_first));
             }
         }
-        self.log(format!("You descend to depth {}.", self.depth));
+        self.log(GAME.strings.descend.replace("{}", &self.depth.to_string()));
     }
 
     pub(crate) fn ascend(&mut self) {
@@ -1428,7 +1377,7 @@ impl Game {
             Some(ls) => self.restore_level(ls, Tile::Stairs),
             None => self.gen_level(), // unreachable in play; belt and braces
         }
-        self.log(format!("You climb back to depth {}.", self.depth));
+        self.log(GAME.strings.ascend.replace("{}", &self.depth.to_string()));
     }
 
     /// First step into a room surfaces its tone line, once per level visit.
@@ -1441,8 +1390,8 @@ impl Game {
             if !self.room_visited[ri] {
                 self.room_visited[ri] = true;
                 let (k, t) = self.room_meta[ri];
-                let line = TONE_LINES[t as usize][self.flavor_rng.range(0, 2) as usize]
-                    .replace("{K}", KINDS[k as usize]);
+                let line = GAME.tone_lines[t as usize][self.flavor_rng.range(0, 2) as usize]
+                    .replace("{K}", GAME.room_kinds[k as usize]);
                 self.log(line);
             }
         }
@@ -1485,9 +1434,9 @@ impl Game {
             if self.monsters[mi].hp <= 0 {
                 self.monsters.remove(mi);
                 self.kills += 1;
-                self.log(format!("You slay the {}! ({} dmg)", name, dmg));
+                self.log(GAME.strings.slay.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
             } else {
-                self.log(format!("You hit the {} for {}.", name, dmg));
+                self.log(GAME.strings.hit.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
             }
         } else if self.blocks.contains(&(nx, ny)) {
             // Sokoban (batch 6 T2): walking into a block attempts to push
@@ -1509,7 +1458,7 @@ impl Game {
         } else if self.map[idx(nx, ny)] == Tile::Pit {
             // Sokoban (batch 6 T2): a pit refuses the player exactly like a
             // wall bump — no turn, grounded message, no mutation.
-            self.log(String::from("The floor drops away underfoot. You cannot cross."));
+            self.log(String::from(GAME.strings.pit_refuse));
             return;
         } else if self.map[idx(nx, ny)] != Tile::Wall {
             self.facing = Facing::from_delta(dx, dy);
@@ -1521,9 +1470,10 @@ impl Game {
             return; // bumped a wall: no turn passes
         }
         // attack path: the swing costs a turn too, plus the violence tax
-        // (see VIOLENCE_TAX doc comment) — folded into one deduction inside
-        // spend_turn so the light-0 death check still runs exactly once.
-        if !self.spend_turn(VIOLENCE_TAX) {
+        // (see `BalanceDef::violence_tax`) — folded into one deduction
+        // inside spend_turn so the light-0 death check still runs exactly
+        // once.
+        if !self.spend_turn(GAME.balance.violence_tax) {
             return;
         }
         self.monsters_act(None);
@@ -1613,11 +1563,11 @@ impl Game {
     fn try_push(&mut self, bx: i32, by: i32, dx: i32, dy: i32) -> bool {
         let resolved = match self.resolve_push(bx, by, dx, dy) {
             PushResolution::TooLong => {
-                self.log(String::from("That row will not budge. Too many to push."));
+                self.log(String::from(GAME.strings.push_too_long));
                 return false;
             }
             PushResolution::Blocked => {
-                self.log(String::from("There is nowhere for it to go."));
+                self.log(String::from(GAME.strings.push_blocked));
                 return false;
             }
             PushResolution::Ok(chain, landing) => (chain, landing),
@@ -1632,7 +1582,7 @@ impl Game {
             if chain.len() == 2 {
                 self.blocks.push(farthest); // the nearer member survives, advancing one slot
             }
-            self.log(String::from("The block tips into the pit and is gone. The gap fills."));
+            self.log(String::from(GAME.strings.push_pit_fill));
         } else {
             // Floor/Goal landing: every member but the nearest advances to
             // the position the member ahead of it just vacated (chain[i]'s
@@ -1645,10 +1595,10 @@ impl Game {
             }
             if onto_goal {
                 self.map[idx(landing.0, landing.1)] = Tile::Floor; // locked: absorbed for good
-                self.log(String::from("The block settles into the goal. Something gives way."));
+                self.log(String::from(GAME.strings.push_goal_lock));
             } else {
                 self.blocks.push(landing);
-                self.log(String::from("You shove the block."));
+                self.log(String::from(GAME.strings.push_ok));
             }
         }
         true
@@ -1666,8 +1616,8 @@ impl Game {
     /// `parley_rng.range(0, 100) < receptivity(&monster, self)` (its own
     /// named channel — see `Game::parley_rng`'s doc comment — never
     /// `combat_rng`):
-    ///   - LANDED: `regard` advances by one, keyed `content::TALK_LINES`
-    ///     stage 0/1/2 (first talk / a later one still below
+    ///   - LANDED: `regard` advances by one, keyed by the monster's own
+    ///     `talk_lines` stage 0/1/2 (first talk / a later one still below
     ///     `Monster::talk_threshold` / the one that crosses it — crossing
     ///     sets `calm` and counts `self.spared`, exactly as `kills` counts
     ///     a kill), and the monster does not get to attack THIS turn (it is
@@ -1682,7 +1632,7 @@ impl Game {
     ///     monster is NOT stayed (`monsters_act` receives `None` for it and
     ///     it acts normally, meaning it may attack this same turn if
     ///     adjacent and seeing the player), and a distinct stage-3 "unmoved"
-    ///     `TALK_LINES` line logs instead.
+    ///     line logs instead.
     /// Talking to an already-calm monster logs one more stage-2 line (same
     /// flavor_rng-picked variety, no roll — a calmed monster's answer is
     /// settled) but costs no turn; `regard` is naturally capped since this
@@ -1704,7 +1654,7 @@ impl Game {
         let name = self.mob_name(kind);
         if self.monsters[mi].calm {
             let v = self.flavor_rng.range(0, 2) as usize;
-            let line = TALK_LINES[kind as usize][2][v].replace("{M}", name);
+            let line = GAME.monsters[kind as usize].talk_lines[2][v].replace("{M}", name);
             self.log(line);
             return; // no turn cost change; regard stays capped
         }
@@ -1728,14 +1678,14 @@ impl Game {
                 self.spared += 1;
             }
             let v = self.flavor_rng.range(0, 2) as usize;
-            let line = TALK_LINES[kind as usize][stage][v].replace("{M}", name);
+            let line = GAME.monsters[kind as usize].talk_lines[stage][v].replace("{M}", name);
             self.log(line);
             Some(mi)
         } else {
             // Failed roll (addendum): no regard, no stay — the monster
             // acts normally this turn, whether that's an attack or a move.
             let v = self.flavor_rng.range(0, 2) as usize;
-            let line = TALK_LINES[kind as usize][3][v].replace("{M}", name);
+            let line = GAME.monsters[kind as usize].talk_lines[3][v].replace("{M}", name);
             self.log(line);
             None
         };
@@ -1793,26 +1743,27 @@ impl Game {
                 return; // fresh level: monsters don't get a free hit
             }
             Tile::UpStairs => {
-                if self.depth > 1 {
+                if self.depth > GAME.win.return_depth {
                     self.ascend();
                     return; // same courtesy on arrival upstairs
                 }
-                // batch 6 T1: depth 1 (or a Floor's sole level, always
-                // depth 1 — see `Game::instantiate_floor`) of a NON-root
-                // world is a return portal, not a win check — walking onto
-                // it transits back to where this world was entered from
-                // (`return_to_source`). The root world's own depth-1 `<`
-                // keeps its original win/refusal semantics untouched.
+                // batch 6 T1: the entrance depth (or a Floor's sole level,
+                // always depth 1 — see `Game::instantiate_floor`) of a
+                // NON-root world is a return portal, not a win check —
+                // walking onto it transits back to where this world was
+                // entered from (`return_to_source`). The root world's own
+                // entrance `<` keeps its original win/refusal semantics
+                // untouched.
                 if self.world != WorldId::Seed(self.seed) {
                     self.return_to_source();
                     return;
                 }
-                if self.has_amulet {
+                if self.has_objective {
                     self.won = true;
-                    self.log(String::from("You climb into daylight. You made it! [R] new run"));
+                    self.log(String::from(GAME.strings.win));
                     return;
                 }
-                self.log(String::from("The way out. You won't leave without the Amulet."));
+                self.log(String::from(GAME.strings.need_objective));
             }
             Tile::Portal => {
                 // batch 6 T1: walking ONTO a portal never transits — only
@@ -1832,26 +1783,26 @@ impl Game {
         if let Some(i) = self.items.iter().position(|i| i.x == self.px && i.y == self.py) {
             let kind = self.items[i].kind;
             self.items.remove(i);
-            match kind {
-                IKind::Potion => {
-                    let heal = 8.min(self.maxhp - self.hp);
+            match GAME.items[kind as usize].effect {
+                ItemEffect::Heal(amount) => {
+                    let heal = amount.min(self.maxhp - self.hp);
                     self.hp += heal;
                     let a = self.adj();
-                    self.log(format!("You quaff a {} draught. (+{} HP)", a, heal));
+                    self.log(GAME.strings.heal.replacen("{}", a, 1).replacen("{}", &heal.to_string(), 1));
                 }
-                IKind::Sword => {
-                    self.atk += 2;
+                ItemEffect::AtkBonus(n) => {
+                    self.atk += n;
                     let a = self.adj();
-                    self.log(format!("A {} blade, still sharp! (+2 ATK)", a));
+                    self.log(GAME.strings.atk_item.replacen("{}", a, 1).replacen("{}", &n.to_string(), 1));
                 }
-                IKind::Amulet => {
-                    self.has_amulet = true;
-                    let name = self.theme().amulet;
-                    self.log(format!("You take {}. It is heavy. Climb, before dark!", name));
+                ItemEffect::Objective => {
+                    self.has_objective = true;
+                    let name = self.theme().objective_name;
+                    self.log(GAME.strings.pickup_objective.replace("{}", name));
                 }
-                IKind::LoreA | IKind::LoreB | IKind::LoreC => {
-                    let line = self.lore_line(kind.lore_tier().unwrap());
-                    self.log(String::from("A carved inscription:"));
+                ItemEffect::Lore(tier) => {
+                    let line = self.lore_line(tier as usize);
+                    self.log(String::from(GAME.strings.lore_prefix));
                     self.log(line);
                 }
             }
@@ -1888,7 +1839,7 @@ impl Game {
                     // instead (it may still move; other monsters act
                     // normally, so a crowd stays dangerous).
                 } else {
-                    let (_, atk, _, _, _) = Monster::stats(self.monsters[i].kind);
+                    let atk = Monster::stats(self.monsters[i].kind).atk;
                     let dmg = atk + self.combat_rng.range(0, 2);
                     attacks.push((self.monsters[i].kind, dmg));
                     continue;
@@ -1931,10 +1882,10 @@ impl Game {
                 self.hp = 0;
                 self.dead = true;
                 self.killer = Some(name);
-                self.log(format!("The {} kills you... [R] to restart", name));
+                self.log(GAME.strings.killed_by.replace("{}", name));
                 return;
             }
-            self.log(format!("The {} hits you for {}.", name, dmg));
+            self.log(GAME.strings.hit_by.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
         }
     }
 }

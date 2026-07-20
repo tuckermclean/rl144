@@ -8,14 +8,15 @@
 // "what does the world look like," backends answer "how do I draw that."
 
 use crate::content::{
-    PAL_ALERT, PAL_AMULET, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_BLOCK, PAL_CALM_TINT,
-    PAL_GOAL, PAL_LOG_FADE, PAL_LORE, PAL_PIT, PAL_PLAYER, PAL_PORTAL, PAL_POTION, PAL_STAIRS,
-    PAL_STATUS, PAL_SWORD, lore_line, theme_for,
+    PAL_ALERT, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_BLOCK, PAL_CALM_TINT, PAL_GOAL,
+    PAL_LOG_FADE, PAL_LORE, PAL_PIT, PAL_PLAYER, PAL_PORTAL, PAL_STAIRS, PAL_STATUS, lore_line,
+    theme_for,
 };
 use crate::game::{
-    COLS, Game, IKind, MAP_H, MAX_DEPTH, MKind, Monster, ROWS, START_LIGHT, Tile, fov_radius,
-    idx, in_map,
+    COLS, Game, IKind, MAP_H, MKind, Monster, ROWS, Tile, fov_radius, idx, in_map, max_depth,
+    start_light,
 };
+use crate::games::GAME;
 
 /// A single terminal-style cell: one glyph plus its foreground/background
 /// color. `ch` is a Unicode BMP codepoint (u16): most glyphs are ASCII
@@ -66,18 +67,16 @@ pub(crate) fn scale(c: u32, pct: u32) -> u32 {
 }
 
 /// Brightness percentage for the current FOV radius: the torch burning down
-/// shrinks the radius (see `fov_radius`) and dims what's still visible. The
-/// last two tiers were deepened (was 50/40) so the closing dark reads as
-/// oppressive rather than merely dim.
+/// shrinks the radius (see `fov_radius`) and dims what's still visible.
+/// Tiers come from `BalanceDef::light_tiers` — exact-match lookup, falling
+/// back to the table's last entry for any radius not otherwise listed.
 fn light_pct(radius: i32) -> u32 {
-    match radius {
-        8 => 100,
-        6 => 85,
-        5 => 70,
-        4 => 55,
-        3 => 40,
-        _ => 28,
-    }
+    let tiers = GAME.balance.light_tiers;
+    tiers
+        .iter()
+        .find(|&&(r, _)| r == radius)
+        .map(|&(_, pct)| pct)
+        .unwrap_or(tiers[tiers.len() - 1].1)
 }
 
 /// Wall autotile table: 4-bit neighbor mask (N=1, S=2, W=4, E=8) -> a
@@ -159,7 +158,7 @@ fn bar_fill(value: i32, max: i32, total: usize) -> usize {
 }
 
 /// Draw the labeled status row (HP bar, Torch bar, ATK, depth, kills, the
-/// `[&]` amulet flag) starting at column 1 of `row`. Returns the column one
+/// `[&]` objective-carried flag) starting at column 1 of `row`. Returns the column one
 /// past the last cell written — doubles as the "does this fit 80 cols"
 /// measurement the `status_row_fits_80_cols` unit test uses directly,
 /// rather than maintaining a second plain-text formula that could drift
@@ -181,12 +180,12 @@ fn draw_status(
     col = put_bar(cells, col, row, bar_fill(hp, maxhp, 10), 10, hp_fg);
     col = put_str(cells, col, row, &format!("] {}/{}  Torch [", hp, maxhp), PAL_STATUS);
     let torch_fg = if radius <= 4 { PAL_ALERT } else { PAL_BAR_TORCH };
-    col = put_bar(cells, col, row, bar_fill(light, START_LIGHT, 10), 10, torch_fg);
+    col = put_bar(cells, col, row, bar_fill(light, start_light(), 10), 10, torch_fg);
     col = put_str(
         cells,
         col,
         row,
-        &format!("]  ATK {}  D{}/{}  K{}", atk, depth, MAX_DEPTH, kills),
+        &format!("]  ATK {}  D{}/{}  K{}", atk, depth, max_depth(), kills),
         PAL_STATUS,
     );
     if carrying {
@@ -461,13 +460,8 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
     // items (visible only)
     for it in &g.items {
         if g.vis[idx(it.x, it.y)] {
-            let (ch, c) = match it.kind {
-                IKind::Potion => (b'!', PAL_POTION),
-                IKind::Sword => (b')', PAL_SWORD),
-                IKind::Amulet => (b'&', PAL_AMULET),
-                IKind::LoreA | IKind::LoreB | IKind::LoreC => (b'?', PAL_LORE),
-            };
-            put(cells, it.x as usize, it.y as usize, ch as u16, scale(c, pct));
+            let def = &GAME.items[it.kind as usize];
+            put(cells, it.x as usize, it.y as usize, def.glyph as u16, scale(def.color, pct));
         }
     }
     // push-blocks (batch 6 T2, sokoban; visible only). Drawn AFTER items so
@@ -487,9 +481,9 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
     // and frame goldens are untouched.
     for m in &g.monsters {
         if g.vis[idx(m.x, m.y)] {
-            let (_, _, ch, c, _) = Monster::stats(m.kind);
-            let fg = if m.calm { PAL_CALM_TINT } else { c };
-            put(cells, m.x as usize, m.y as usize, ch as u16, scale(fg, pct));
+            let def = Monster::stats(m.kind);
+            let fg = if m.calm { PAL_CALM_TINT } else { def.color };
+            put(cells, m.x as usize, m.y as usize, def.glyph as u16, scale(fg, pct));
         }
     }
     // player — the torch itself gutters at the lowest radius (dim to 85%);
@@ -498,7 +492,7 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
     put(cells, g.px as usize, g.py as usize, b'@' as u16, player_fg);
 
     // status: labeled HP/Torch bars.
-    draw_status(cells, MAP_H, g.hp, g.maxhp, g.light, radius, g.atk, g.depth, g.kills, g.has_amulet);
+    draw_status(cells, MAP_H, g.hp, g.maxhp, g.light, radius, g.atk, g.depth, g.kills, g.has_objective);
 
     // log: last 4, older lines faded
     let n = g.msgs.len();
@@ -541,10 +535,10 @@ fn render_end(g: &Game, cells: &mut [Cell]) {
     draw_border(cells, PANEL_X0, PANEL_Y0, PANEL_W, PANEL_H, PAL_STATUS);
     let mut row = PANEL_Y0 + 2;
     if g.won {
-        let amulet = theme_for(g.seed, MAX_DEPTH).amulet;
+        let objective = theme_for(g.seed, max_depth()).objective_name;
         put_centered(cells, row, "YOU WON", PAL_PLAYER);
         row += 2;
-        put_centered(cells, row, &format!("You climbed into daylight with {}.", amulet), PAL_LORE);
+        put_centered(cells, row, &format!("You climbed into daylight with {}.", objective), PAL_LORE);
     } else {
         put_centered(cells, row, "YOU DIED", PAL_ALERT);
         row += 2;
@@ -558,7 +552,7 @@ fn render_end(g: &Game, cells: &mut [Cell]) {
     put_centered(
         cells,
         row,
-        &format!("Depth {}/{}  Kills {}  Turns {}  Light {}", g.depth, MAX_DEPTH, g.kills, g.turns, g.light),
+        &format!("Depth {}/{}  Kills {}  Turns {}  Light {}", g.depth, max_depth(), g.kills, g.turns, g.light),
         PAL_STATUS,
     );
     row += 1;
@@ -690,14 +684,15 @@ mod tests {
     /// The status row (HP bar + Torch bar + text) must fit within COLS=80
     /// even at the widest realistic values: maxhp 40 (the batch-3 HP
     /// progression tops out at 20 + 4*4 = 36; 40 leaves margin), light
-    /// 2000 (START_LIGHT itself — the torch bar is fixed-width regardless
-    /// of the numeric value, but this exercises the real constant), a
+    /// 2000 (the cartridge's own start_light() — the torch bar is
+    /// fixed-width regardless of the numeric value, but this exercises the
+    /// real constant), a
     /// double-digit ATK, and a four-digit kill count, both generous
     /// overestimates of anything a real run reaches.
     #[test]
     fn status_row_fits_80_cols() {
         let mut cells = vec![BLANK; CELLS];
-        let end_col = draw_status(&mut cells, 0, 40, 40, 2000, 8, 99, MAX_DEPTH, 9999, true);
+        let end_col = draw_status(&mut cells, 0, 40, 40, 2000, 8, 99, max_depth(), 9999, true);
         assert!(end_col <= COLS, "status row overflowed: ended at col {}", end_col);
     }
 
@@ -791,7 +786,7 @@ mod tests {
         let mut cells_normal = vec![BLANK; CELLS];
         render_cells(&g_normal, Screen::Play, &mut cells_normal);
         let normal_fg = cells_normal[my as usize * COLS + mx as usize].fg;
-        let (_, _, _, kind_color, _) = Monster::stats(normal_kind);
+        let kind_color = Monster::stats(normal_kind).color;
         assert_eq!(normal_fg, kind_color, "non-calm monster renders its kind's own color");
 
         let mut g_calm = Game::new(1);

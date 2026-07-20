@@ -169,7 +169,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         g.light as u64,
         g.kills as u64,
         g.turns as u64,
-        g.has_amulet as u64,
+        g.has_objective as u64,
         g.dead as u64,
         g.won as u64,
         g.spared as u64,

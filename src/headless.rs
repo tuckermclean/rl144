@@ -3,10 +3,9 @@
 // deterministic greedy-bot playthrough simulator (--sim). This is the test
 // harness CLAUDE.md requires to work in an environment with no display.
 
-use crate::content::{THEMES, theme_pick};
-use crate::game::{
-    COLS, Game, IKind, MAP_H, MAX_DEPTH, Monster, Tile, WorldId, bfs_dist, idx, in_map,
-};
+use crate::content::theme_for;
+use crate::game::{COLS, Game, MAP_H, Monster, Tile, WorldId, bfs_dist, idx, in_map, max_depth};
+use crate::games::GAME;
 use crate::rng::fnv_bytes;
 
 /// World identity: FNV-1a over the full 5-depth dump. The seed names the
@@ -33,12 +32,7 @@ pub(crate) fn level_dump(g: &Game) -> String {
             };
             for it in &g.items {
                 if (it.x, it.y) == (x, y) {
-                    ch = match it.kind {
-                        IKind::Potion => '!',
-                        IKind::Sword => ')',
-                        IKind::Amulet => '&',
-                        IKind::LoreA | IKind::LoreB | IKind::LoreC => '?',
-                    };
+                    ch = GAME.items[it.kind as usize].glyph as char;
                 }
             }
             // push-blocks (batch 6 T2, sokoban): drawn after items so a
@@ -51,7 +45,7 @@ pub(crate) fn level_dump(g: &Game) -> String {
             }
             for m in &g.monsters {
                 if (m.x, m.y) == (x, y) {
-                    ch = Monster::stats(m.kind).2 as char;
+                    ch = Monster::stats(m.kind).glyph as char;
                 }
             }
             if (g.px, g.py) == (x, y) {
@@ -67,23 +61,24 @@ pub(crate) fn level_dump(g: &Game) -> String {
 
 // ---------- Solver: winnability + walk-budget gate ----------
 /// Round-trip walk budget for one seed: for each depth, BFS from the entry
-/// to the exit (down-stairs, or the amulet on the last depth). budget =
-/// 3 × total shortest path — walk in ×1, carry the amulet out ×2 (it is
-/// heavy). Returns None if any exit is unreachable (unwinnable seed).
+/// to the exit (down-stairs, or the win-condition item on the last depth).
+/// budget = 3 × total shortest path — walk in ×1, carry the objective out
+/// ×2 (it is heavy). Returns None if any exit is unreachable (unwinnable
+/// seed).
 pub(crate) fn solve_seed(seed: u64) -> Option<i32> {
     let mut g = Game::new(seed);
     let mut total = 0;
-    for d in 1..=MAX_DEPTH {
+    for d in 1..=max_depth() {
         g.depth = d;
         g.gen_level();
-        let target = if d < MAX_DEPTH {
+        let target = if d < max_depth() {
             let s = (0..COLS as i32 * MAP_H as i32).find_map(|i| {
                 let (x, y) = (i % COLS as i32, i / COLS as i32);
                 if g.map[idx(x, y)] == Tile::Stairs { Some((x, y)) } else { None }
             });
             s?
         } else {
-            let a = g.items.iter().find(|it| it.kind == IKind::Amulet)?;
+            let a = g.items.iter().find(|it| it.kind == GAME.win.objective_item)?;
             (a.x, a.y)
         };
         let dd = bfs_dist(&g.map, (g.px, g.py))[idx(target.0, target.1)];
@@ -258,14 +253,15 @@ impl Policy {
 /// neighbor lookup: the first neighbor (in SIM_DIRS order) whose distance-
 /// from-objective is one less than the player's.
 ///
-/// Without the amulet, the bot sweeps the current depth's loot first: if
-/// any reachable non-Amulet item remains, the objective is the nearest one
-/// (BFS distance from the player, ties broken by smaller idx(x,y)) — this
-/// mirrors minimal human play (grab swords/potions before diving) rather
-/// than a blind beeline that never gets stronger. Only once the floor is
-/// clear does the objective become the down-stairs (or the amulet itself
-/// on depth 5). With the amulet, it's a pure beeline to the up-stairs — no
-/// detours, since carrying it burns light at 2x.
+/// Without the win-condition item, the bot sweeps the current depth's loot
+/// first: if any reachable non-objective item remains, the target is the
+/// nearest one (BFS distance from the player, ties broken by smaller
+/// idx(x,y)) — this mirrors minimal human play (grab swords/potions before
+/// diving) rather than a blind beeline that never gets stronger. Only once
+/// the floor is clear does the target become the down-stairs (or the
+/// objective item itself on the last depth). Once holding it, it's a pure
+/// beeline to the up-stairs — no detours, since carrying it burns light
+/// faster.
 ///
 /// `policy` (batch 5 T2) only touches the very last step: see `Policy`'s
 /// doc comment. Every BFS/objective/tie-break decision above is identical
@@ -342,22 +338,22 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // progress" case is handled by the wander fallback below, not
         // here.
         let rmap = routing_map(&g);
-        let objective = if g.has_amulet {
+        let objective = if g.has_objective {
             find_tile(&g.map, Tile::UpStairs)
         } else {
             let dist_from_player = bfs_dist(&rmap, (g.px, g.py));
             let loot = g
                 .items
                 .iter()
-                .filter(|it| it.kind != IKind::Amulet)
+                .filter(|it| it.kind != GAME.win.objective_item)
                 .filter(|it| in_map(it.x, it.y) && dist_from_player[idx(it.x, it.y)] >= 0)
                 .min_by_key(|it| (dist_from_player[idx(it.x, it.y)], idx(it.x, it.y)))
                 .map(|it| (it.x, it.y));
             loot.or_else(|| {
-                if g.depth < MAX_DEPTH {
+                if g.depth < max_depth() {
                     find_tile(&g.map, Tile::Stairs)
                 } else {
-                    g.items.iter().find(|it| it.kind == IKind::Amulet).map(|it| (it.x, it.y))
+                    g.items.iter().find(|it| it.kind == GAME.win.objective_item).map(|it| (it.x, it.y))
                 }
             })
         };
@@ -623,10 +619,10 @@ pub(crate) fn sim_main(n: u64, report: bool, policy: Policy) {
 pub(crate) fn dump(seed: u64) -> String {
     let mut g = Game::new(seed);
     let mut out = format!("seed={}\n", seed);
-    for d in 1..=MAX_DEPTH {
+    for d in 1..=max_depth() {
         g.depth = d;
         g.gen_level();
-        let t = &THEMES[theme_pick(seed, d).0];
+        let t = theme_for(seed, d);
         out.push_str(&format!("-- depth {} : {} --\n", d, t.label));
         out.push_str(&level_dump(&g));
     }
