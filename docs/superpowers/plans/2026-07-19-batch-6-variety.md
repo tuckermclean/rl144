@@ -116,3 +116,26 @@ green by T4). Dump legend additions (`+ ' ^ k c B`) documented in CLAUDE.md. Siz
 per task (budget ≤ +10 KB packed total). rustc 1.75; zero deps; no cfg in core; grounding
 doctrine on all new lines; input vocabulary UNCHANGED (no new bytes — doors/pushes ride
 existing move semantics).
+
+## Amendment 2 (2026-07-19): STORY COMPILE v1 is design law — batch rescoped
+
+docs/story/STORY-COMPILE-v1.md + FLAVOR-DRAFT-v0.md are canon. Reconciliation:
+- **DROPPED from this batch** (not story-priced; Rule 4 "new mechanics are priced, never
+  assumed"): keyed stair seal, decor mobs, ogre tell, ledger letter grade. The stale WIP stash
+  covering the seal gets dropped at batch end.
+- **T2 RESCOPED — sokoban per golem/topdown-puzzle + story §6.3/§9-H.** Study
+  ~/Documents/gitrepos/golem/games/topdown-puzzle/shared/push.js FIRST and adopt its semantics:
+  push chains capped at 2 (MAX_PUSH_CHAIN), farthest-to-nearest application, pit ("memory
+  hole") destroys the farthest member and FILLS, principled denial messages on blocked/tooLong.
+  Plus story requirements: every push costs light (turn cost = 1 light, [TUNE] dial noted);
+  GOAL TILES (dump glyph `x` — a block pushed onto a goal locks and opens/reveals the room's
+  reward; §9-H asks for it); blocks persist per seed (hashed LevelState — already our design;
+  "someone was here. someone was bad at this"); abandoning mid-solve always legal. Ship the
+  mechanism + 2-3 sokoban vault rooms (of the eventual 4-6); rewards per story: a lore tile,
+  and one room whose prize is more cheese — cheese doesn't exist yet, use a potion + note the
+  swap-slot for batch 7's item table.
+- **T3 (was T4) — goldens regen + docs closeout**: regenerate all dump+frame goldens once
+  (portals + sokoban tiles), full make check green, CLAUDE.md legend/status entry, and note
+  the story-canon adoption + rescope in the status log.
+- Batch 7+ implements the story's §9 asks in its own priority order (A first). The T1
+  AUTHORED_FLOORS machinery is the enabling tech for §9-J's fixed overworld screens.
