@@ -1,5 +1,17 @@
 # Batch 8 — voice two comes online (story §9-B/C/D + pickup scene)
 
+**STATUS: DONE (2026-07-21).** T1 `f7d8ec1`, T2 `b607037`, T3 (docs, this pass) — full status log
+entry in `CLAUDE.md`. Two deviations from this brief, both benign: (1) §9-C's pickup register
+turned out to need an engine hook, not just T2 cartridge data as assumed below — the kills-vs-spared
+branch at first pickup was folded into T1 as a review fix round (`PickedUp` split into
+`PickedUpBloody`/`PickedUpMerciful`). (2) The `Idle(n)` variant sketched below shipped as a unit
+`Idle` instead — nothing in this batch's line tables needed the turn-count parameter, and adding an
+unused one would have been speculative; noted as deferred (not dropped) in `gamedef.rs`'s doc
+comment. Verification: byte-identical to pre-batch-8 on goldens/frames/solve/sims; `xhash`
+`6aa72d29dc62f5bb` → `3bb93aae84ab61fb` (expected — `speech_attempts`/`objective_dropped` join
+hashed state); `cargo test` 106 (minifb) / 110 (term); sizes 560,752 stripped / 204,152 packed
+(+1,448 packed vs. the pre-batch-8 baseline, well inside this brief's ≤+8KB gate).
+
 *Implements the McGuffin's mechanical presence per STORY-COMPILE-v1: event lines (B), the
 record-keyed pickup register (C), put-down/pick-up as world events (D). All CHEAP per §9 —
 const tables keyed to counters the engine already tracks. Everything lands in the contractor
@@ -41,12 +53,19 @@ NAR_050-054); [YOURS] slots ship as the standing placeholders.*
 
 ## Tasks
 
-T1 — engine hooks (CarryEvent dispatch, byte 16 put-down, speech_attempts counter) + tests.
-Goldens/sims/solve untouched (no worldgen, no bot changes — verify identity).
-T2 — cartridge data: the full MCG table wiring (90 lines from FLAVOR-DRAFT verbatim), the
-pickup-register branch, NAR_050-054. Length tests across every line. Grounding audit is the
-review's job (Rule 5: grep the wired lines for duplicate-foreshadowing).
-T3 — docs + status (vocab 0-16, CarryEvent doctrine, the §9 checklist with B/C/D marked DONE).
+T1 — DONE (`f7d8ec1`). engine hooks (CarryEvent dispatch, byte 16 put-down, speech_attempts counter) + tests.
+Goldens/sims/solve untouched (no worldgen, no bot changes — verify identity). Picked up an extra
+fix-round item not scoped here: the §9-C pickup-register engine hook (`PickedUp` split into
+`PickedUpBloody`/`PickedUpMerciful`), found necessary in review — see the STATUS note above.
+T2 — DONE (`b607037`). cartridge data: the MCG table wiring from FLAVOR-DRAFT verbatim (7
+CarryEvent rows + the 4-line preamble — fewer than this brief's ballpark "90 lines" once the
+grounding-hold list below was applied), the pickup-register branch. NAR_050-054 held (all five
+hardcode "the amulet," true in none of this cartridge's four themed objective names — no
+`{}`-substitution mechanism exists to fix that). MCG_060/062 held (imply the unbuilt §9-E
+mood→light gift); MCG_063 held (the coat-monster doesn't exist, only the coat-item does).
+`MonsterAdjacent`/`TierCrossed`/`Idle` ship with empty pools (future-content gap). Length tests
+across every line. Grounding audit was the review's job (Rule 5) and produced the hold list above.
+T3 — DONE (docs, this pass). vocab 0-16, CarryEvent doctrine, the §9 checklist with B/C/D marked DONE.
 
 ## Gates
 
