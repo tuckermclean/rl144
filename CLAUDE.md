@@ -2,6 +2,20 @@
 
 A top-down roguelike in Rust. **Hard constraint: shipped binary + all assets ≤ 1.44MB (1,474,560 bytes), the capacity of a 3.5" floppy.** Everything else is negotiable; this is not.
 
+## Where this stands right now (read this first)
+
+If you're picking this up cold, this is the frontier — everything below in this file is durable doctrine/history, this section is the "what's next" pointer and goes stale fast, so trust `git log`/`git status` over it if they disagree.
+
+- `master` is at `caafb96` (pushed to `origin/master`). Batches 1–7 are done and merged: winnable balanced game, core/crust seam (minifb + terminal backends), mercy-as-talk, portals/multi-world, sokoban, and the engine/game cartridge split (`src/gamedef.rs` + `src/games/contractor.rs` — the engine is generic, the Contractor game is data).
+- A local `batch-8` branch exists, currently identical to `master` (no commits of its own yet). Its brief is already written and committed: `docs/superpowers/plans/2026-07-19-batch-8-mcguffin.md` — story §9-B/C/D (the McGuffin's event lines, pickup register keyed to your kill/spare record, put-down as its own input byte). **Nothing in that brief has been implemented yet.** The next action on this project is dispatching its T1 (engine hooks: `CarryEvent` dispatch, byte 16 for put-down, a `speech_attempts` counter) as an implementer subagent, per the house process below.
+- `docs/story/STORY-COMPILE-v1.md` + `FLAVOR-DRAFT-v0.md` are **design canon**, human-locked (see the Code-conventions bullet on this below) — "The Contractor, the McGuffin, and Half a Donkey." Its §9 asks are priced and ordered; work through them in order rather than inventing new mechanics. Checklist: **A done** (batch 7). **B/C/D queued** (batch 8, brief exists). E (McGuffin mood→light) through K (donkey re-glyph) are not yet briefed — write each one's brief from the story doc's own §9 entry when its turn comes, don't guess ahead.
+- `docs/story/SPACES-DRAFT-v0.md` is staged, unconsumed content (the Midden and Stage vaults, three overworld screens, two gag-vault proposals) — read it before writing batch 9's overworld brief. It flags its own asks that need pricing/sign-off before they can be built: several new dump-legend glyphs (`o` cheese, `T` tombstone, `%`/`,` draft-density dressing, `Y`/`D` trainer/donkey NPCs) and, more importantly, **a genuinely new mechanism** — deterministic screen-to-screen links (`=`) distinct from the random `*` portal, needed to wire the three overworld screens together. That mechanism has no brief and no sign-off yet; get one before building it.
+- Open placeholders still waiting on a human: story §12.14's second (positive) cheese give-target — which monster kind — is deliberately unassigned in `contractor.rs`'s `give_table` (a comment marks the slot; don't guess it). Most of `FLAVOR-DRAFT-v0.md`'s `[YOURS]`-tagged lines are still their placeholder text, not final copy — replacing one is a same-ID text swap, never a structural change (see that file's own header).
+- `docs/design/proposals/DECISION.md`'s Phase 3 (sprites/audio/NPC-vault cast) stays deferred behind the story's mechanics per the 2026-07-19 re-sequencing note in Roadmap context below — don't jump to presentation work before the story's §9 list is substantially built. DECISION.md item 4 (the NPC-vault worldgen MAJOR sign-off) is still unused/available — the eventual NPC cast (the coat, the mimic, the lost guy, the tired ones, the overworld's trainer/donkey) will need it.
+- `docs/design/monomyth.md` + `monomyth-batch-brief.md` are explicitly **deferred** ("a next, not a now" — human, 2026-07-19; the brief file's own header says so). Don't build from them unless re-prioritized.
+- `~/Documents/gitrepos/golem` (a sibling repo) is a source of ported mechanics — batch 6's sokoban came from its `games/topdown-puzzle/shared/push.js`. Its `games/some-hero` (doors/credential-gated locks/riddle puzzles) and its host-authoritative multiplayer protocol (5 message kinds, `packages/net`) are plausible sources for future batches (an eventual door/lock system, and Phase 4's networking) — check it before designing either from scratch.
+- The local, machine-specific SDD ledger at `.superpowers/sdd/progress.md` (gitignored, not in git) has a terser task-by-task narrative of every batch if you're on this same machine; this file is the durable, git-tracked equivalent and is authoritative if they ever disagree.
+
 ## Project shape
 
 - Single binary crate, split along engine seams (keep this module count; don't fragment further without justification):
@@ -145,6 +159,15 @@ Landed in v0.1 (was cut from v0): save/load — implemented as seed + input log,
 4. Both size numbers (stripped, packed) reported, with delta vs. baseline.
 5. Anything unverifiable headlessly explicitly flagged for human playtest.
 6. If you changed gameplay behavior, update this file's conventions section when the change makes a stated invariant false.
+
+## Subagent dispatch discipline
+
+This project is built almost entirely through dispatched implementer/reviewer subagents (one per task: implementer → reviewer → fix round(s) as needed → next task; a final whole-branch reviewer before every merge). Two hard-won rules, both because they've already cost real turns across batches 6–8:
+
+- **Every gate command an implementer or reviewer runs must be a plain, blocking shell call with an explicit long timeout (up to 600000 ms) — never backgrounded, never handed to a monitor, never "I'll check back later."** The full `make check` (two backends × two `--sim` policies × the solver) takes several minutes; that's fine, wait for it inside the same tool call. Subagents that instead background it and try to resume on a monitor notification have repeatedly stalled with the work half-done and nothing to show for it — say this explicitly, in these words if useful, in every dispatch prompt that runs `make check`, `cargo test`, or a multi-thousand-seed `--sim`/`--solve`.
+- **State the acceptance numbers up front when they're knowable** (a pure refactor's expected byte-identical gate values; an unchanged sim/solve baseline a task must not perturb) so the implementer can self-verify against a concrete target instead of an implicit "should still work." Independently re-run the empirical claims in every review rather than trusting a report's numbers — this repo's review passes have caught real bugs this way (a bot stuck in an infinite loop, a killing-blow visual effect that silently never rendered, a save-format claim that was actually correct but needed tracing to confirm).
+
+One session-management habit worth keeping: when a batch's story/design work implies a *new* mechanism (not just new content), write it into the relevant staging doc with an explicit "needs its own sign-off" flag rather than quietly building it — see how `SPACES-DRAFT-v0.md`'s screen-link glyph is marked above. Undersized asks get missed; flagged ones get their own brief.
 
 ## Status log (append-only; date each entry)
 
