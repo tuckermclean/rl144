@@ -123,6 +123,13 @@ fn hash_world_id(h: u64, w: WorldId) -> u64 {
     match w {
         WorldId::Seed(s) => fnv_bytes(fnv_bytes(h, &[0]), &s.to_le_bytes()),
         WorldId::Floor(i) => fnv_bytes(fnv_bytes(h, &[1]), &[i]),
+        // batch 9 T1: a THIRD, append-only discriminant tag (never 0/1,
+        // never renumbering the two above) so a `Seed`/`Floor`-only replay
+        // (every pre-batch-9 gate: solve/sim/dump never touch a Game via
+        // `state_hash` at all, and `make xhash`'s `ref.sav` replays through
+        // `Game::new` — a `Seed` world — until T3 switches the front door)
+        // hashes exactly as it always has.
+        WorldId::Overworld => fnv_bytes(h, &[2]),
     }
 }
 
@@ -169,6 +176,32 @@ fn hash_portal(h: u64, portal: Option<(i32, i32, Dest)>) -> u64 {
     }
 }
 
+/// Tile discriminant byte for `state_hash`'s per-cell map hash (batch 9 T1):
+/// `Tile::ScreenLink(bool)` carries a field, so the plain `as u8` cast this
+/// function used to be (Rust only allows that cast on a fieldless/"C-like"
+/// enum) stopped compiling the moment that variant was added — this
+/// function replaces it. The first 7 arms (`Wall`..`Goal`) are pinned to
+/// EXACTLY the discriminant values the old cast produced (declaration
+/// order, 0-6) so every pre-batch-9 dungeon map — which can never contain
+/// `ScreenLink`/`Hole`/`ShutDoor` — hashes byte-for-byte identically to
+/// before; the three new tiles get new, never-colliding values appended
+/// after, exercised only once a `Game` actually visits the overworld.
+fn tile_hash_byte(t: Tile) -> u8 {
+    match t {
+        Tile::Wall => 0,
+        Tile::Floor => 1,
+        Tile::Stairs => 2,
+        Tile::UpStairs => 3,
+        Tile::Portal => 4,
+        Tile::Pit => 5,
+        Tile::Goal => 6,
+        Tile::ScreenLink(false) => 7,
+        Tile::ScreenLink(true) => 8,
+        Tile::Hole => 9,
+        Tile::ShutDoor => 10,
+    }
+}
+
 pub(crate) fn state_hash(g: &Game) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for v in [
@@ -211,7 +244,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
     let level = |h: u64, map: &[Tile], monsters: &[Monster], items: &[Item], blocks: &[(i32, i32)]| -> u64 {
         let mut h = h;
         for t in map {
-            h = fnv_bytes(h, &[*t as u8]);
+            h = fnv_bytes(h, &[tile_hash_byte(*t)]);
         }
         for m in monsters {
             // regard/calm (batch 5, DECISION.md item 3) are hashed — mercy

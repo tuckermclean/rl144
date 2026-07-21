@@ -75,6 +75,36 @@ pub(crate) struct GameDef {
     /// replays this preamble. This cartridge ships it EMPTY (`&[]`); T2
     /// fills it with the story's register-opening lines.
     pub(crate) carried_preamble: &'static [&'static str],
+    /// The overworld's fixed 3-screen chain (batch 9 T1, story §9-J prep,
+    /// SIGN-OFF ASK #1): see `OverworldDef`'s doc comment.
+    pub(crate) overworld: OverworldDef,
+}
+
+/// One of the overworld's 3 fixed screens (batch 9 T1). Same shape as
+/// `AuthoredFloorDef` (name/describe/map, zero RNG) since
+/// `Game::instantiate_overworld_screen` parses `map` exactly the way
+/// `Game::instantiate_floor` parses an `AuthoredFloorDef` — see that
+/// method's doc comment for the shared parse convention, extended with
+/// three overworld-only tile glyphs on top of `AuthoredFloorDef`'s legend:
+/// `=` (`Tile::ScreenLink`, direction derived from which edge column it
+/// sits on — see that variant's doc comment), `V` (`Tile::Hole`), `+`
+/// (`Tile::ShutDoor`). `name`/`describe` are logged the same way a floor's
+/// are (see `StringsDef::overworld_enter`).
+pub(crate) struct OverworldScreenDef {
+    pub(crate) name: &'static str,
+    pub(crate) describe: &'static str,
+    pub(crate) map: &'static str,
+}
+
+/// The overworld's fixed, linear 3-screen chain (batch 9 T1, SIGN-OFF ASK
+/// #1): `OVR_1 == OVR_2 == OVR_3` per `docs/story/SPACES-DRAFT-v0.md` —
+/// `screens[0]` is screen/"depth" 1, `screens[1]` is 2, `screens[2]` is 3
+/// (`Game::depth` reused as the current screen index, exactly the way a
+/// `Floor` world already pins it to 1 — see `WorldId::Overworld`'s doc
+/// comment). Screen 0 authors an east-edge `=` only, screen 1 both edges,
+/// screen 2 a west-edge `=` only — a straight chain, never a loop.
+pub(crate) struct OverworldDef {
+    pub(crate) screens: [OverworldScreenDef; 3],
 }
 
 /// The McGuffin's voice (batch 8 T1, story §9-B/C/D): a generic engine
@@ -141,6 +171,45 @@ pub(crate) struct MonsterDef {
     /// `flavor_rng`. `{M}` fills from the theme's own mob name for this
     /// kind (`ThemeDef::mobs[kind_index]`).
     pub(crate) talk_lines: [[&'static str; 2]; 4],
+    /// batch 9 T1 (story §9-J prep, SIGN-OFF ASK #6): never chases or
+    /// attacks, from spawn — checked in `Game::monsters_act` beside the
+    /// existing `calm` skip. `false` for every pre-batch-9 kind. Unlike
+    /// `calm` (which only applies AFTER a landed talk crosses
+    /// `talk_threshold`), a passive monster never fights regardless of
+    /// `regard`/`calm` — talk/regard/`talk_lines` still climb normally
+    /// (the dialogue ladder works exactly as it does for any other kind),
+    /// only the AI-turn and bump-response halves differ (see `bump`).
+    pub(crate) passive: bool,
+    /// batch 9 T1 (SIGN-OFF ASK #6): what a player's bump does to this
+    /// kind, INSTEAD OF the ordinary bump-attack — see `BumpResponse`'s
+    /// doc comment. `Fight` for every pre-batch-9 kind (today's behavior,
+    /// unchanged). Runtime `calm` (becalmed via a landed talk) still
+    /// forces a yield regardless of this field, exactly as before batch 9
+    /// — see `Game::try_move_player`'s bump branch.
+    pub(crate) bump: BumpResponse,
+}
+
+/// A monster's reaction to a player's bump-into (batch 9 T1, SIGN-OFF ASK
+/// #6, story §9-J prep — the minimal trainer/donkey cast). `Fight`
+/// (default, every pre-batch-9 kind) is today's ordinary bump-attack,
+/// unchanged. `Yield` swaps position exactly like a becalmed monster's
+/// yield (no damage, no death) regardless of `MonsterDef::passive`/`calm`
+/// — the TRAINER's shape (`passive: true, bump: Yield`). `Shove` pushes
+/// the monster one tile in the bump direction if the destination is
+/// PLAIN WALKABLE FLOOR (`Tile::Floor` exactly — never onto a wall/pit/
+/// goal/portal/screen-link/hole/another monster/a push-block), else it
+/// plants and refuses (no damage, no move, no turn) — the DONKEY's shape
+/// (`passive: true, bump: Shove`): "you can nudge him around the paddock
+/// for comedy but never kill your own resurrection point." A successful
+/// `Shove` also advances the player into the vacated tile, same turn,
+/// mirroring the sokoban block-push convention (`Game::try_push`) this
+/// reuses in spirit. Runtime `calm` still forces a `Yield`-style swap
+/// regardless of this field — see `Game::try_move_player`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BumpResponse {
+    Fight,
+    Yield,
+    Shove,
 }
 
 /// One item kind's complete definition. `glyph` doubles as the vault/
@@ -455,4 +524,23 @@ pub(crate) struct StringsDef {
     /// batch 8 T1: put-down attempted while not carrying the objective.
     /// No-op, no turn.
     pub(crate) put_down_nothing_carried: &'static str,
+    /// batch 9 T1 (`Tile::ShutDoor`, story §9-J prep): a bump against a
+    /// shut door, always this batch (no `has_objective` branch — see that
+    /// tile's doc comment for the deferred smarter version). No-op, no
+    /// turn.
+    pub(crate) shut_door_refuse: &'static str,
+    /// batch 9 T1 (DONKEY's `BumpResponse::Shove`, and any future `Shove`
+    /// kind): a shove refused because the destination isn't plain floor.
+    /// `{}` fills from the monster's own name. No-op, no turn, no damage.
+    pub(crate) shove_refuse: &'static str,
+    /// batch 9 T1: logged once, unconditionally, by
+    /// `Game::instantiate_overworld_screen` on a FRESH screen generation
+    /// only (mirrors `floor_arrive`'s own fresh-gen-only convention) —
+    /// `{}` fills from the screen's own name.
+    pub(crate) overworld_enter: &'static str,
+    /// batch 9 T1: logged unconditionally by `Game::cross_screen_link` on
+    /// EVERY crossing, fresh or restored (mirrors `descend`/`ascend`/
+    /// `portal_arrive`'s own always-fires convention) — `{}` fills from
+    /// the destination screen's name.
+    pub(crate) overworld_cross: &'static str,
 }

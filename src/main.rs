@@ -27,7 +27,7 @@ mod backend_minifb;
 mod backend_term;
 
 use game::Game;
-use headless::{Policy, dump, sim_main, solve_main};
+use headless::{Policy, dump, dump_overworld, sim_main, solve_main};
 use rng::h64;
 use save::{parse_save, replay, state_hash};
 
@@ -43,7 +43,7 @@ use gamedef::CarryEvent;
 #[cfg(test)]
 use games::GAME;
 #[cfg(test)]
-use games::contractor::{CHEESE, COAT, GOBLIN, OGRE, POTION, RAT, TOWEL};
+use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, OGRE, POTION, RAT, TOWEL, TRAINER};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -123,6 +123,14 @@ fn main() {
     }
     if args.iter().any(|a| a == "--dump") {
         print!("{}", dump(seed));
+        return;
+    }
+    // batch 9 T1: seed-independent (fixed authored ASCII, zero RNG) — see
+    // `headless::dump_overworld`'s doc comment. Checked before `--dump`'s
+    // sibling handling above only in file order; both return immediately so
+    // order between them doesn't matter.
+    if args.iter().any(|a| a == "--dump-overworld") {
+        print!("{}", dump_overworld());
         return;
     }
     // --render-frame: render one initial frame straight to stdout and exit,
@@ -1906,14 +1914,17 @@ mod tests {
     #[test]
     fn levels_persist_across_stairs() {
         let mut g = Game::new(11);
-        let map1: Vec<u8> = g.map.iter().map(|t| *t as u8).collect();
+        // batch 9 T1: `Tile::ScreenLink(bool)` carries a field, so `Tile` can
+        // no longer be `as u8`-cast (only fieldless enums support that) —
+        // compare the `Tile` vectors directly instead (still `Clone`/
+        // `PartialEq`/`Debug`, so `assert_eq!` works unchanged).
+        let map1: Vec<Tile> = g.map.clone();
         let items1 = g.items.len();
         g.descend();
         assert_eq!(g.depth, 2);
         g.ascend();
         assert_eq!(g.depth, 1);
-        let map1b: Vec<u8> = g.map.iter().map(|t| *t as u8).collect();
-        assert_eq!(map1, map1b, "depth 1 layout changed across a round trip");
+        assert_eq!(map1, g.map, "depth 1 layout changed across a round trip");
         assert_eq!(items1, g.items.len(), "items respawned across a round trip");
         // and the player came back out standing on the down-stairs
         assert!(g.map[idx(g.px, g.py)] == Tile::Stairs);
@@ -2387,5 +2398,256 @@ mod tests {
             items_on_arrival - 1,
             "revisiting the SAME floor must restore its persisted state"
         );
+    }
+
+    // ---------- batch 9 T1: overworld skeleton (story §9-J prep) ----------
+
+    /// Mirrors `authored_floors_well_formed`: bordered by `#` (except where
+    /// a legal `=` link legitimately replaces the border), only legal
+    /// legend chars, within the 80x25 grid, and the exact link-count/edge
+    /// shape SIGN-OFF ASK #1 specifies (screen 0 east-only, screen 1 both
+    /// edges, screen 2 west-only — a straight chain, never a loop).
+    #[test]
+    fn overworld_screens_well_formed() {
+        for (si, screen) in GAME.overworld.screens.iter().enumerate() {
+            let rows: Vec<&str> = screen.map.lines().collect();
+            let w = rows[0].len();
+            assert!(rows.len() >= 3 && w >= 3, "overworld screen {} too small", si);
+            assert!(rows.len() <= MAP_H && w <= COLS, "overworld screen {} exceeds 80x25", si);
+            let mut west_links = 0;
+            let mut east_links = 0;
+            for (j, row) in rows.iter().enumerate() {
+                assert_eq!(row.len(), w, "overworld screen {} row {} ragged", si, j);
+                for (i, c) in row.bytes().enumerate() {
+                    let known = b"#.V+".contains(&c)
+                        || c == b'='
+                        || GAME.items.iter().any(|it| it.glyph == c)
+                        || GAME.monsters.iter().any(|m| m.glyph == c);
+                    assert!(known, "overworld screen {} bad char {}", si, c as char);
+                    let on_border = j == 0 || j == rows.len() - 1 || i == 0 || i == w - 1;
+                    if c == b'=' {
+                        assert!(
+                            i == 0 || i == w - 1,
+                            "overworld screen {} link not on an edge column at {},{}",
+                            si,
+                            i,
+                            j
+                        );
+                        if i == 0 {
+                            west_links += 1;
+                        } else {
+                            east_links += 1;
+                        }
+                    } else if on_border {
+                        assert_eq!(c, b'#', "overworld screen {} border open at {},{}", si, i, j);
+                    }
+                }
+            }
+            let (want_west, want_east) = match si {
+                0 => (0, 1),
+                1 => (1, 1),
+                2 => (1, 0),
+                _ => panic!("unexpected screen count"),
+            };
+            assert_eq!(west_links, want_west, "overworld screen {} west-link count", si);
+            assert_eq!(east_links, want_east, "overworld screen {} east-link count", si);
+        }
+    }
+
+    /// `Game::new` must stay byte-for-byte the frozen root-dungeon
+    /// constructor (SIGN-OFF ASK #3) even after being refactored to share
+    /// `Game::base` with `Game::new_overworld` — checked directly here
+    /// (goldens/solve/sim/xhash prove it too, but this is the one test that
+    /// names the invariant explicitly).
+    #[test]
+    fn game_new_unchanged_by_the_base_refactor() {
+        let g = Game::new(99);
+        assert_eq!(g.world, WorldId::Seed(99));
+        assert_eq!(g.depth, 1);
+        assert_eq!(g.hp, GAME.balance.starting_hp);
+        assert_eq!(g.maxhp, GAME.balance.starting_hp);
+        assert_eq!(g.atk, GAME.balance.starting_atk);
+        assert_eq!(g.light, GAME.balance.start_light);
+        assert_eq!(g.saved.len(), GAME.win.max_depth as usize);
+        assert_eq!(g.turns, 0);
+        assert!(!g.dead && !g.won);
+    }
+
+    /// `Game::new_overworld` starts in `WorldId::Overworld` at screen 1, with
+    /// a 3-slot stash, and the overworld's no-torch-clock exemption
+    /// (`Game::spend_turn`) means a plain wait burns no light while still
+    /// counting the turn.
+    #[test]
+    fn new_overworld_starts_in_overworld_and_burns_no_light() {
+        let mut g = Game::new_overworld(1);
+        assert_eq!(g.world, WorldId::Overworld);
+        assert_eq!(g.depth, 1);
+        assert_eq!(g.saved.len(), 3);
+        let (light_before, turns_before) = (g.light, g.turns);
+        g.wait_turn();
+        assert_eq!(g.light, light_before, "the overworld has no torch clock");
+        assert_eq!(g.turns, turns_before + 1, "turns still count as hashed, run-defining state");
+        assert!(!g.dead, "the overworld can never kill you in the dark");
+    }
+
+    /// Crossing a `Tile::ScreenLink` moves between overworld screens
+    /// instantly on walk-onto (SIGN-OFF ASK #2), in both directions, purely
+    /// via `Game::depth` (the current-screen convention SIGN-OFF ASK #1
+    /// reuses from `Floor`'s own `depth`-pinning).
+    #[test]
+    fn overworld_screen_link_crossing_moves_between_screens() {
+        let mut g = Game::new_overworld(5);
+        assert_eq!(g.depth, 1);
+        let find_link = |g: &Game, want_east: Option<bool>| {
+            (0..COLS as i32 * MAP_H as i32)
+                .map(|i| (i % COLS as i32, i / COLS as i32))
+                .find(|&(x, y)| match (g.map[idx(x, y)], want_east) {
+                    (Tile::ScreenLink(e), Some(w)) => e == w,
+                    (Tile::ScreenLink(_), None) => true,
+                    _ => false,
+                })
+                .expect("expected screen-link tile not found")
+        };
+        let (lx, ly) = find_link(&g, Some(true)); // screen 1's only link is east
+        step_onto(&mut g, lx, ly);
+        assert_eq!(g.depth, 2, "crossing the east link moves to screen 2");
+        assert_eq!(g.world, WorldId::Overworld);
+
+        let (lx2, ly2) = find_link(&g, Some(false)); // cross back via screen 2's west link
+        step_onto(&mut g, lx2, ly2);
+        assert_eq!(g.depth, 1, "crossing the west link returns to screen 1");
+    }
+
+    /// Crossing a `Tile::Hole` transits from the overworld into the ROOT
+    /// dungeon (`WorldId::Seed(seed)`), and the resulting depth-1 map is
+    /// byte-identical to what `Game::new(seed)` generates directly — proof
+    /// that reaching the dungeon via the hole is not a second, divergent
+    /// worldgen path (batch-9 brief Design §1's central claim).
+    #[test]
+    fn overworld_hole_crossing_enters_root_dungeon_unchanged() {
+        let mut g = Game::new_overworld(7);
+        let (hx, hy) = (0..COLS as i32 * MAP_H as i32)
+            .map(|i| (i % COLS as i32, i / COLS as i32))
+            .find(|&(x, y)| g.map[idx(x, y)] == Tile::Hole)
+            .expect("screen 1 must have a hole");
+        step_onto(&mut g, hx, hy);
+        assert_eq!(g.world, WorldId::Seed(7), "crossing the hole enters the root dungeon");
+        assert_eq!(g.depth, 1);
+        let direct = Game::new(7);
+        assert_eq!(level_dump(&g), level_dump(&direct), "hole-entered dungeon must match Game::new's directly");
+    }
+
+    /// `instantiate_overworld_screen`'s DEFAULT player-start scan (the
+    /// first-`Tile::Floor`-found-row-major rule, used both by
+    /// `Game::new_overworld`'s screen-1 entry and by
+    /// `cross_screen_link`'s own fresh-instantiate fallback before it
+    /// overrides the placement) must never land the player on a tile
+    /// occupied by a monster or an item — a real bug (found by review, then
+    /// confirmed empirically) where OVERWORLD_1's row-major-first floor-like
+    /// tile was the DONKEY's own `D` glyph: the map-value check
+    /// `self.map[idx(tx,ty)] == Tile::Floor` is also true on an
+    /// item/monster tile (both stamp `Tile::Floor` onto their own cell), so
+    /// the player spawned exactly on top of the donkey and hid it from
+    /// every render/dump (`--dump-overworld` showed `monsters=2` but only
+    /// one visible glyph). Checked directly via `instantiate_overworld_screen`
+    /// for every screen 1..=3, not just screen 1, so a future content pass
+    /// can't silently reintroduce the same class of collision on screen 2/3.
+    #[test]
+    fn overworld_default_start_never_collides_with_monster_or_item() {
+        for i in 1..=3usize {
+            let mut g = Game::new(1); // any root-dungeon Game; only used as a scratch receiver
+            g.instantiate_overworld_screen(i);
+            let start = (g.px, g.py);
+            for m in &g.monsters {
+                assert_ne!(start, (m.x, m.y), "screen {} start collides with a monster", i);
+            }
+            for it in &g.items {
+                assert_ne!(start, (it.x, it.y), "screen {} start collides with an item", i);
+            }
+        }
+    }
+
+    /// A `passive` monster (TRAINER/DONKEY) never chases or attacks, from
+    /// spawn, regardless of `regard`/`calm` — `Game::monsters_act`'s new
+    /// skip condition.
+    #[test]
+    fn passive_monster_never_chases_or_attacks() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: 12, y: 11, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false });
+        let hp_before = g.hp;
+        for _ in 0..20 {
+            g.wait_turn();
+            if g.dead {
+                break;
+            }
+        }
+        assert_eq!(g.hp, hp_before, "a passive monster never attacks even when adjacent");
+        assert_eq!((g.monsters[0].x, g.monsters[0].y), (12, 11), "a passive monster never chases either");
+    }
+
+    /// `BumpResponse::Fight` (every pre-batch-9 kind) is unchanged: a bump
+    /// attacks, the player doesn't move.
+    #[test]
+    fn bump_fight_kind_attacks_unchanged() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false });
+        g.try_move_player(1, 0);
+        assert_eq!((g.px, g.py), (10, 10), "attacking doesn't move the player");
+        assert!(g.monsters.is_empty() || g.monsters[0].hp < 3, "the rat takes damage or dies");
+    }
+
+    /// `BumpResponse::Yield` (the TRAINER's shape): a bump swaps position,
+    /// never damages, exactly like a becalmed monster's yield — but
+    /// unconditionally, with no talk required first.
+    #[test]
+    fn bump_yield_kind_swaps_without_damage() {
+        let mut g = blank_room(1);
+        let full_hp = GAME.monsters[TRAINER as usize].hp;
+        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false });
+        g.try_move_player(1, 0);
+        assert_eq!((g.px, g.py), (11, 10), "player swaps into the trainer's tile");
+        assert_eq!((g.monsters[0].x, g.monsters[0].y), (10, 10), "trainer swaps back to the player's old tile");
+        assert_eq!(g.monsters[0].hp, full_hp, "never damaged");
+    }
+
+    /// `BumpResponse::Shove` (the DONKEY's shape): a bump onto plain floor
+    /// pushes the donkey one tile and the player follows, never damaging it.
+    #[test]
+    fn bump_shove_kind_pushes_onto_floor() {
+        let mut g = blank_room(1);
+        let full_hp = GAME.monsters[DONKEY as usize].hp;
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false });
+        g.try_move_player(1, 0);
+        assert_eq!((g.monsters[0].x, g.monsters[0].y), (12, 10), "donkey shoved one tile");
+        assert_eq!((g.px, g.py), (11, 10), "player advances into the vacated tile");
+        assert_eq!(g.monsters[0].hp, full_hp, "never damaged");
+    }
+
+    /// `BumpResponse::Shove` refuses (plants, no move, no turn, no damage)
+    /// when the destination isn't plain walkable floor.
+    #[test]
+    fn bump_shove_kind_refuses_against_wall() {
+        let mut g = blank_room(1);
+        g.map[idx(12, 10)] = Tile::Wall;
+        let full_hp = GAME.monsters[DONKEY as usize].hp;
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false });
+        let before_turns = g.turns;
+        g.try_move_player(1, 0);
+        assert_eq!((g.monsters[0].x, g.monsters[0].y), (11, 10), "donkey plants, does not move");
+        assert_eq!((g.px, g.py), (10, 10), "player does not move");
+        assert_eq!(g.turns, before_turns, "a refused shove costs no turn");
+        assert_eq!(g.monsters[0].hp, full_hp, "never damaged");
+    }
+
+    /// `--dump-overworld` must always work headlessly and never open a
+    /// window: sane output for all 3 screens, deterministic (seed-
+    /// independent, zero RNG).
+    #[test]
+    fn dump_overworld_deterministic_and_sane() {
+        let out = dump_overworld();
+        assert_eq!(out, dump_overworld(), "dump_overworld must be deterministic");
+        assert_eq!(out.matches("-- screen ").count(), 3, "must print exactly 3 screens");
+        assert!(out.contains('='), "must show at least one screen-link glyph");
+        assert!(out.contains('V'), "must show the hole glyph");
     }
 }

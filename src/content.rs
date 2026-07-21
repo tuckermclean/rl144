@@ -97,3 +97,14 @@ pub(crate) const PAL_GOAL: u32 = 0xB0D080;
 /// Push-block glyph color (batch 6 T2, sokoban): plain stone gray, legible
 /// against typical floor colors and distinct from pit/goal/portal.
 pub(crate) const PAL_BLOCK: u32 = 0x9A9A9A;
+/// Screen-link glyph color (batch 9 T1, story §9-J prep): a cool cyan,
+/// distinct from the portal's magenta — reads as "a fixed way through," not
+/// a rolled destination.
+pub(crate) const PAL_SCREENLINK: u32 = 0x40D0E0;
+/// Hole glyph color (batch 9 T1): a deep near-black blue — the one true way
+/// down from the overworld into the dungeon, visually heavier than the
+/// screen-link's cyan.
+pub(crate) const PAL_HOLE: u32 = 0x202840;
+/// Shut-door glyph color (batch 9 T1): a dull iron gray-brown, reads as
+/// "closed" without competing with the pit's red-black or the alert color.
+pub(crate) const PAL_SHUTDOOR: u32 = 0x706050;

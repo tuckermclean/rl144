@@ -9,8 +9,8 @@
 
 use crate::content::{
     PAL_ALERT, PAL_BAR_EMPTY, PAL_BAR_HP, PAL_BAR_TORCH, PAL_BLOCK, PAL_CALM_TINT, PAL_GOAL,
-    PAL_LOG_FADE, PAL_LORE, PAL_PIT, PAL_PLAYER, PAL_PORTAL, PAL_STAIRS, PAL_STATUS, lore_line,
-    theme_for,
+    PAL_HOLE, PAL_LOG_FADE, PAL_LORE, PAL_PIT, PAL_PLAYER, PAL_PORTAL, PAL_SCREENLINK,
+    PAL_SHUTDOOR, PAL_STAIRS, PAL_STATUS, lore_line, theme_for,
 };
 use crate::game::{
     COLS, Game, IKind, MAP_H, MKind, Monster, ROWS, Tile, fov_radius, idx, in_map, max_depth,
@@ -443,6 +443,14 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
                 Tile::Portal => (b'*' as u16, PAL_PORTAL),
                 Tile::Pit => (b'^' as u16, PAL_PIT),
                 Tile::Goal => (b'x' as u16, PAL_GOAL),
+                // batch 9 T1, story §9-J prep: never appear in a dungeon
+                // map (`render_play` walks `g.map` regardless of which
+                // world is current, so these need arms to compile, but a
+                // `Seed`-world frame never hits them — frame goldens stay
+                // byte-identical).
+                Tile::ScreenLink(_) => (b'=' as u16, PAL_SCREENLINK),
+                Tile::Hole => (b'V' as u16, PAL_HOLE),
+                Tile::ShutDoor => (b'+' as u16, PAL_SHUTDOOR),
             };
             let c = if g.vis[i] { scale(color, pct) } else { dim(color) };
             put(cells, x as usize, y as usize, ch, c);

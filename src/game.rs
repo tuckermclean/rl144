@@ -17,7 +17,7 @@
 // all looked up by index, never spelled out here.
 
 use crate::content::theme_for;
-use crate::gamedef::{CarryEvent, ItemEffect, PickupBehavior, UseEffect};
+use crate::gamedef::{BumpResponse, CarryEvent, ItemEffect, PickupBehavior, UseEffect};
 use crate::games::GAME;
 use crate::render::Facing;
 use crate::rng::{Rng, channel, h64};
@@ -124,6 +124,36 @@ pub(crate) enum Tile {
     /// (absorbed, never pushable again) and this tile becomes ordinary
     /// `Tile::Floor` — see `Game::try_push`.
     Goal,
+    /// A deterministic screen-to-screen link (batch 9 T1, story §9-J prep,
+    /// dump/render glyph `=`) — distinct from `Tile::Portal`'s randomly-
+    /// rolled destination: crossing one is instant walk-onto (like
+    /// `Tile::Stairs`, never like `Tile::Portal`'s describe-then-wait), and
+    /// its destination is always the OTHER of the overworld's two
+    /// neighboring screens, never rolled/cached. The `bool` is the
+    /// direction, derived once at parse time (`Game::instantiate_overworld_
+    /// screen`) from which edge column the `=` glyph sits on: `true` = an
+    /// east-edge link (to `depth + 1`), `false` = a west-edge link (to
+    /// `depth - 1`) — see `Game::cross_screen_link`. Walkable, presentation
+    /// like `Portal`; never appears in a dungeon map.
+    ScreenLink(bool),
+    /// The overworld's one true engine-plumbing tile (batch 9 T1, dump/
+    /// render glyph `V`): walking onto it transits from `WorldId::Overworld`
+    /// into the root dungeon (`WorldId::Seed(self.seed)`) — see
+    /// `Game::cross_into_dungeon`. Walkable; instant walk-onto, same
+    /// convention as `Tile::Stairs`/`ScreenLink`. Never appears in a
+    /// dungeon map.
+    Hole,
+    /// A shut door (batch 9 T1, story §9-J prep, dump/render glyph `+`):
+    /// impassable — `Game::try_move_player` refuses a bump against it with
+    /// a themed message (`StringsDef::shut_door_refuse`), no turn, mirroring
+    /// `Tile::Pit`'s player-refusal. ALWAYS shut this batch, regardless of
+    /// `Game::has_objective` — SPACES-DRAFT-v0 flags this tile as
+    /// eventually doubling as the story §3.6 mantel/ending transition once
+    /// the objective is held, but that state-dependent branch (and the
+    /// scripted final encounter behind it, §9-I) is explicitly deferred;
+    /// shipping it dumb now rather than half-building the smart version.
+    /// Never appears in a dungeon map.
+    ShutDoor,
 }
 
 /// Push-chain cap (batch 6 T2, sokoban — ported from golem/topdown-puzzle's
@@ -158,6 +188,14 @@ enum PushResolution {
 pub(crate) enum WorldId {
     Seed(u64),
     Floor(u8),
+    /// The fixed 3-screen overworld (batch 9 T1, story §9-J prep, SIGN-OFF
+    /// ASK #1) — a unit variant since there's only ever one (it isn't
+    /// keyed by seed or index the way `Seed`/`Floor` are); `Game::depth`
+    /// reused as the current screen 1..=3 is what varies, exactly the way
+    /// a `Floor` world already pins `depth` to 1 (see `Game::world_seed`'s
+    /// doc comment on the shared "borrow the root seed for incidental
+    /// flavor" convention both non-`Seed` variants use).
+    Overworld,
 }
 
 /// A portal's destination, rolled once at generation time and cached (see
@@ -514,8 +552,19 @@ pub(crate) fn in_map(x: i32, y: i32) -> bool {
 }
 
 impl Game {
-    pub(crate) fn new(seed: u64) -> Self {
-        let mut g = Game {
+    /// Shared field-init tail for `Game::new`/`Game::new_overworld` (batch 9
+    /// T1, SIGN-OFF ASK #3): every field both constructors need identically
+    /// (RNG channels, starting stats, every presentation-only default) lives
+    /// here, factored verbatim out of the pre-batch-9 inline struct literal
+    /// — so `Game::new`'s own behavior stays byte-identical (solve/sim/dump/
+    /// goldens/xhash/every pre-batch-9 test still calls it and depends on
+    /// exactly this shape). The two constructors diverge only in `world`
+    /// (passed in here) and what each does AFTER this returns (`Game::new`
+    /// calls `gen_level` + logs the intro; `Game::new_overworld` re-sizes
+    /// `saved` to 3 and calls `instantiate_overworld_screen(1)` — neither
+    /// tail lives here).
+    fn base(seed: u64, world: WorldId) -> Self {
+        Game {
             map: vec![Tile::Wall; COLS * MAP_H],
             seen: vec![false; COLS * MAP_H],
             vis: vec![false; COLS * MAP_H],
@@ -548,7 +597,7 @@ impl Game {
             from: None,
             portal: None,
             blocks: Vec::new(),
-            world: WorldId::Seed(seed),
+            world,
             msgs: Vec::new(),
             seed,
             combat_rng: channel(seed, &["combat"]),
@@ -557,9 +606,36 @@ impl Game {
             parley_rng: channel(seed, &["parley"]),
             dead: false,
             won: false,
-        };
+        }
+    }
+
+    pub(crate) fn new(seed: u64) -> Self {
+        let mut g = Self::base(seed, WorldId::Seed(seed));
         g.gen_level();
         g.log(String::from(GAME.strings.intro));
+        g
+    }
+
+    /// The overworld front door (batch 9 T1, story §9-J prep, SIGN-OFF ASK
+    /// #3/#4): a fresh attempt begins in the fixed 3-screen overworld
+    /// rather than directly in the root dungeon. `Game::new` above is
+    /// UNCHANGED — it stays the frozen entry point `solve_seed`/`sim_seed`/
+    /// `dump`/the goldens/every pre-batch-9 test depends on (see
+    /// `Self::base`'s doc comment for why the refactor is byte-identical).
+    /// Nothing in T1 calls `new_overworld` except new tests and
+    /// `--dump-overworld`: wiring it into the REAL interactive front door
+    /// and `save::replay` is T3's job (batch-9 brief Design §4.1-4.2) — this
+    /// constructor existing now, additively, is what makes that later swap
+    /// a one-line change instead of a redesign.
+    pub(crate) fn new_overworld(seed: u64) -> Self {
+        let mut g = Self::base(seed, WorldId::Overworld);
+        // Three screens, one stash slot each (batch-9 brief Design §1) —
+        // `Game::stash_level`/`restore_level*` already index unconditionally
+        // by `self.depth`, so this is the only overworld-specific sizing
+        // needed; `Self::base`'s default (`GAME.win.max_depth`-sized, the
+        // dungeon's 5) would be the wrong length for this world.
+        g.saved = vec![None, None, None];
+        g.instantiate_overworld_screen(1);
         g
     }
 
@@ -581,6 +657,12 @@ impl Game {
         match self.world {
             WorldId::Seed(s) => s,
             WorldId::Floor(_) => self.seed,
+            // batch 9 T1: the overworld has no worldgen/theme of its own
+            // either (see `WorldId::Overworld`'s doc comment) — same
+            // borrowed-root-seed convention `Floor` already established,
+            // needed because talk lines against the trainer/donkey still
+            // call `self.mob_name()` -> `self.theme()` -> `world_seed()`.
+            WorldId::Overworld => self.seed,
         }
     }
 
@@ -1051,6 +1133,15 @@ impl Game {
     /// golem-style. Returns false if the player died.
     fn spend_turn(&mut self, extra: i32) -> bool {
         self.turns += 1;
+        // batch 9 T1 (story §9-J prep): the overworld has no torch clock —
+        // the turn still counts (hashed, run-defining) but nothing burns
+        // and the dark-death check never runs there. Early return, before
+        // any light math, keeps this a one-line, clearly-scoped exemption
+        // rather than threading a world-kind branch through the burn/tier-
+        // warning logic below.
+        if self.world == WorldId::Overworld {
+            return true;
+        }
         let before = fov_radius(self.light);
         let base = if self.has_objective { GAME.win.carry_burn } else { GAME.balance.base_burn };
         self.light -= base + extra;
@@ -1147,13 +1238,27 @@ impl Game {
         self.vis = vec![false; COLS * MAP_H];
         self.px = pos.0;
         self.py = pos.1;
+        self.shove_monster_off(pos);
+        self.compute_fov();
+    }
+
+    /// Shove aside any monster occupying `pos` (the player's arrival tile),
+    /// searching its four orthogonal neighbors for a legal landing spot and
+    /// removing the monster outright if none exists. Shared by
+    /// `apply_restored_level` (the restore-from-stash arrival path) and
+    /// `cross_screen_link`'s fresh-instantiate arrival path (batch 9 T1
+    /// review fix — the fresh-instantiate branch used to hand-roll its own
+    /// copy of this check that was missing the `Tile::Pit`/`Game::blocks`
+    /// exclusions below, a latent divergence from this one; factoring both
+    /// call sites through one function makes that divergence impossible to
+    /// reintroduce). "Legal landing spot" mirrors `monsters_act`'s own
+    /// neighbor-step legality: not a wall, not a pit, not another monster's
+    /// tile, not a sokoban block's tile.
+    fn shove_monster_off(&mut self, pos: (i32, i32)) {
         if let Some(mi) = self.monsters.iter().position(|m| (m.x, m.y) == pos) {
             let (mx, my) = (self.monsters[mi].x, self.monsters[mi].y);
             let spot = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().find_map(|&(dx, dy)| {
                 let (tx, ty) = (mx + dx, my + dy);
-                // batch 6 T2: a shoved monster must not land on a pit or a
-                // block's tile either — same "not a legal step" set
-                // monsters_act's own neighbor check uses.
                 let free = in_map(tx, ty)
                     && self.map[idx(tx, ty)] != Tile::Wall
                     && self.map[idx(tx, ty)] != Tile::Pit
@@ -1171,7 +1276,6 @@ impl Game {
                 }
             }
         }
-        self.compute_fov();
     }
 
     /// Leave the current world for storage in `Game::worlds` (batch 6 T1):
@@ -1235,6 +1339,12 @@ impl Game {
                 self.saved = match wid {
                     WorldId::Seed(_) => (0..GAME.win.max_depth as usize).map(|_| None).collect(),
                     WorldId::Floor(_) => vec![None],
+                    // batch 9 T1: defensive only — nothing in this batch
+                    // ever forward-transits INTO the overworld (only OUT of
+                    // it, via `Game::cross_into_dungeon`); a future batch
+                    // that adds a way back would want this same 3-slot
+                    // sizing `Game::new_overworld` already uses.
+                    WorldId::Overworld => vec![None, None, None],
                 };
                 self.regen_current_world(wid);
             }
@@ -1272,6 +1382,9 @@ impl Game {
         match wid {
             WorldId::Seed(_) => self.gen_level(),
             WorldId::Floor(i) => self.instantiate_floor(i),
+            // batch 9 T1: defensive only, see the sizing match right above
+            // this method's own doc comment — never reached in this batch.
+            WorldId::Overworld => self.instantiate_overworld_screen(self.depth as usize),
         }
     }
 
@@ -1334,6 +1447,171 @@ impl Game {
         self.compute_fov();
         self.log(GAME.strings.floor_arrive.replace("{}", spec.name));
         self.log(String::from(spec.describe));
+    }
+
+    /// Instantiate one of the overworld's 3 fixed screens (batch 9 T1,
+    /// story §9-J prep, SIGN-OFF ASK #1): parses `GAME.overworld.
+    /// screens[i-1]`'s const ASCII directly into `map`/`items`/`monsters` —
+    /// zero RNG draws, same convention as `Game::instantiate_floor` (see
+    /// that method's doc comment), extended with three overworld-only tile
+    /// glyphs: `=` (`Tile::ScreenLink`, direction derived from which edge
+    /// column it sits on: `col == 0` is the west/prev edge, `col == fw-1`
+    /// is the east/next edge — see that variant's doc comment), `V`
+    /// (`Tile::Hole`), `+` (`Tile::ShutDoor`).
+    ///
+    /// Sets a DEFAULT player position (the first `Tile::Floor` tile found
+    /// scanning row-major) and logs a fixed arrival line
+    /// (`StringsDef::overworld_enter` + the screen's own `describe`,
+    /// mirroring `instantiate_floor`'s name+describe pair). For
+    /// `Game::new_overworld` (screen 1, run start) this default placement
+    /// IS the real one. For `Game::cross_screen_link` calling this on a
+    /// never-before-visited screen, both the position and this method's own
+    /// log are immediately followed by that caller's own placement/log —
+    /// two stacked log lines on a first visit, same established pattern as
+    /// `Game::transit`'s own arrival log stacking under a portal
+    /// destination's fresh-generation log (see that method's doc comment).
+    pub(crate) fn instantiate_overworld_screen(&mut self, i: usize) {
+        self.map = vec![Tile::Wall; COLS * MAP_H];
+        self.seen = vec![false; COLS * MAP_H];
+        self.vis = vec![false; COLS * MAP_H];
+        self.monsters.clear();
+        self.items.clear();
+        self.portal = None;
+        self.blocks.clear();
+
+        let screen = &GAME.overworld.screens[i - 1];
+        let rows: Vec<&str> = screen.map.lines().collect();
+        let (fw, fh) = (rows[0].len() as i32, rows.len() as i32);
+        let ox = (COLS as i32 - fw) / 2;
+        let oy = (MAP_H as i32 - fh) / 2;
+        let mut start = (ox, oy);
+        let mut start_found = false;
+        for (j, row) in rows.iter().enumerate() {
+            for (col, c) in row.bytes().enumerate() {
+                let (tx, ty) = (ox + col as i32, oy + j as i32);
+                match c {
+                    b'#' => self.map[idx(tx, ty)] = Tile::Wall,
+                    b'.' => self.map[idx(tx, ty)] = Tile::Floor,
+                    b'=' => self.map[idx(tx, ty)] = Tile::ScreenLink(col as i32 == fw - 1),
+                    b'V' => self.map[idx(tx, ty)] = Tile::Hole,
+                    b'+' => self.map[idx(tx, ty)] = Tile::ShutDoor,
+                    _ => {
+                        if let Some(ii) = GAME.items.iter().position(|it| it.glyph == c) {
+                            self.map[idx(tx, ty)] = Tile::Floor;
+                            self.items.push(Item { x: tx, y: ty, kind: ii as IKind });
+                        } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
+                            self.map[idx(tx, ty)] = Tile::Floor;
+                            let hp = GAME.monsters[ki].hp;
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false });
+                        }
+                        // else: well-formedness (main.rs) guards the legal-
+                        // char set; an unrecognized byte leaves the default
+                        // Wall tile untouched.
+                    }
+                }
+                // batch 9 T1 fix: the default start must be a genuinely
+                // empty floor tile, not merely "whatever `self.map` ended up
+                // holding" — an item/monster glyph also stamps
+                // `Tile::Floor` onto its own tile (see the `_` arm above), so
+                // checking the map value post-hoc could pick a tile that's
+                // occupied by a monster or item (confirmed: OVERWORLD_1's
+                // row-major-first floor-like tile is the DONKEY's own `D`
+                // glyph, which made the player spawn on top of it and hide
+                // it from every render/dump). Matching the literal `.` byte
+                // instead guarantees the candidate tile has no authored
+                // content on it at all.
+                if !start_found && c == b'.' {
+                    start = (tx, ty);
+                    start_found = true;
+                }
+            }
+        }
+        self.px = start.0;
+        self.py = start.1;
+        self.rooms = vec![(ox, oy, fw, fh)];
+        self.room_meta = vec![(0, 0)];
+        self.room_visited = vec![true];
+        self.compute_fov();
+        self.log(GAME.strings.overworld_enter.replace("{}", screen.name));
+        self.log(String::from(screen.describe));
+    }
+
+    /// Cross a `Tile::ScreenLink` (batch 9 T1, story §9-J prep, SIGN-OFF
+    /// ASKS #1/#2): a new sibling of `descend`/`ascend`, modeled closely on
+    /// their shape (stash the current level, move to the target screen
+    /// index, restore its stash or instantiate it fresh, log an arrival
+    /// line) but crossing between the overworld's 3 fixed screens instead
+    /// of dungeon depths. `east` is `Tile::ScreenLink`'s own bool (`true` =
+    /// the link stood on links to the NEXT screen/east edge, `false` = to
+    /// the PREVIOUS screen/west edge). Confirmed instant edge-walk, no
+    /// confirming input (SIGN-OFF ASK #2) — called directly from
+    /// `Game::land_on_tile`'s `Tile::ScreenLink` arm on walk-onto, exactly
+    /// like `Tile::Stairs`/`Tile::UpStairs`.
+    ///
+    /// The player lands on the SAME `row` they crossed at, one tile in from
+    /// the OPPOSITE edge of the destination screen (so they never spawn
+    /// exactly on another link tile) — `arrive_x` is pure geometry over
+    /// `GAME.overworld`'s own screen width, computed once here and reused
+    /// whether the destination is freshly instantiated or restored from a
+    /// stash (`Game::restore_level_at` already places at an exact `(x, y)`,
+    /// same mechanism `return_to_source` uses for a portal's exact return
+    /// tile).
+    fn cross_screen_link(&mut self, row: i32, east: bool) {
+        self.stash_level();
+        self.depth = if east { self.depth + 1 } else { self.depth - 1 };
+        let d = self.depth as usize - 1;
+        let screen = &GAME.overworld.screens[d];
+        let fw = screen.map.lines().next().map(|r| r.len()).unwrap_or(0) as i32;
+        let ox = (COLS as i32 - fw) / 2;
+        let arrive_x = if east { ox + 1 } else { ox + fw - 2 };
+        match self.saved[d].take() {
+            Some(ls) => self.restore_level_at(ls, arrive_x, row),
+            None => {
+                self.instantiate_overworld_screen(self.depth as usize);
+                // Override the default placement with the exact arrival
+                // tile, shoving aside a monster that happens to already
+                // occupy it via the SAME `shove_monster_off` helper
+                // `apply_restored_level` uses for the restore branch above
+                // (batch 9 T1 review fix — this branch used to hand-roll its
+                // own copy of the check, missing the `Tile::Pit`/
+                // `Game::blocks` exclusions the shared helper has; only ever
+                // fires here if a future content pass places a monster
+                // directly on a link's counterpart tile — none of this
+                // batch's placeholder screens do).
+                self.px = arrive_x;
+                self.py = row;
+                self.shove_monster_off((arrive_x, row));
+                self.compute_fov();
+            }
+        }
+        self.log(GAME.strings.overworld_cross.replace("{}", screen.name));
+    }
+
+    /// Cross a `Tile::Hole` (batch 9 T1, story §9-J prep): the overworld's
+    /// one true engine-plumbing tile, transiting from `WorldId::Overworld`
+    /// into the root dungeon (`WorldId::Seed(self.seed)`) via the SAME
+    /// forward-transit machinery a portal uses (`Game::transit`), just
+    /// without a rolled/cached destination — the destination is always
+    /// `self.seed`'s own root dungeon, known statically rather than drawn
+    /// from `Game::portal`. Entering `WorldId::Seed(self.seed)` makes
+    /// `self.world == WorldId::Seed(self.seed)` true exactly as it always
+    /// has been for a `Game::new`-started run (see `WorldId`'s doc comment
+    /// on why "root" is a comparison, not a stored flag) — the existing
+    /// win/lose machinery in `Game::land_on_tile`'s `Tile::UpStairs` arm
+    /// needs ZERO changes to keep working once this fires (batch-9 brief
+    /// Design §1, the strongest evidence for reusing the existing
+    /// world-transition machinery rather than inventing a parallel one).
+    fn cross_into_dungeon(&mut self) {
+        let (vx, vy) = (self.px, self.py);
+        let src = self.world;
+        let seed = self.seed;
+        self.leave_current_world();
+        self.enter_world_forward(WorldId::Seed(seed), (src, vx, vy));
+        // Reuses the same reminder `Game::new` logs on a direct dungeon
+        // start — entering the dungeon for the first time via the hole is
+        // functionally the same moment a fresh `Game::new` run used to
+        // start at.
+        self.log(String::from(GAME.strings.intro));
     }
 
     /// Portal transit out of the current world (batch 6 T1,
@@ -1493,16 +1771,48 @@ impl Game {
         }
         if let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) {
             self.facing = Facing::from_delta(dx, dy);
-            if self.monsters[mi].calm {
+            let bump = Monster::stats(self.monsters[mi].kind).bump;
+            if self.monsters[mi].calm || bump == BumpResponse::Yield {
                 // Mercy's second economy lever (batch 5, DECISION.md item
                 // 3): bumping a becalmed monster SWAPS positions instead
                 // of attacking — it yields. Costs a turn like any move, no
-                // violence tax, no damage. Only `calm == true` swaps; a
-                // monster mid-being-persuaded (regard > 0 but not yet
-                // calm) still gets attacked below, unchanged.
+                // violence tax, no damage. Only `calm == true` swaps for a
+                // pre-batch-9 kind (a monster mid-being-persuaded, regard >
+                // 0 but not yet calm, still gets attacked below,
+                // unchanged); batch 9 T1's `BumpResponse::Yield` (the
+                // TRAINER's shape) takes this SAME path unconditionally,
+                // regardless of `calm` — un-killable by construction, no
+                // new `invincible` flag needed.
                 let (ox, oy) = (self.px, self.py);
                 self.monsters[mi].x = ox;
                 self.monsters[mi].y = oy;
+                self.px = nx;
+                self.py = ny;
+                self.land_on_tile(nx, ny, None);
+                return;
+            }
+            if bump == BumpResponse::Shove {
+                // batch 9 T1 (story §9-J prep, SIGN-OFF ASK #6): the
+                // DONKEY's shape — push one tile in the bump direction if
+                // the destination is plain walkable floor (single-step
+                // version of the sokoban push destination-legality
+                // convention), else plant and refuse; never damages the
+                // target either way. A successful shove also advances the
+                // player into the vacated tile, same turn, mirroring
+                // `Game::try_push`'s own player-follows-the-block
+                // convention.
+                let (tx, ty) = (self.monsters[mi].x + dx, self.monsters[mi].y + dy);
+                let free = in_map(tx, ty)
+                    && self.map[idx(tx, ty)] == Tile::Floor
+                    && !self.monsters.iter().any(|m| (m.x, m.y) == (tx, ty))
+                    && !self.blocks.iter().any(|&b| b == (tx, ty));
+                if !free {
+                    let name = self.mob_name(self.monsters[mi].kind);
+                    self.log(GAME.strings.shove_refuse.replace("{}", name));
+                    return; // stubborn: no move, no damage, no turn
+                }
+                self.monsters[mi].x = tx;
+                self.monsters[mi].y = ty;
                 self.px = nx;
                 self.py = ny;
                 self.land_on_tile(nx, ny, None);
@@ -1541,6 +1851,13 @@ impl Game {
             // Sokoban (batch 6 T2): a pit refuses the player exactly like a
             // wall bump — no turn, grounded message, no mutation.
             self.log(String::from(GAME.strings.pit_refuse));
+            return;
+        } else if self.map[idx(nx, ny)] == Tile::ShutDoor {
+            // batch 9 T1 (story §9-J prep): always shut this batch,
+            // regardless of `has_objective` — see `Tile::ShutDoor`'s doc
+            // comment. Refuses exactly like a pit bump: no turn, no
+            // mutation.
+            self.log(String::from(GAME.strings.shut_door_refuse));
             return;
         } else if self.map[idx(nx, ny)] != Tile::Wall {
             self.facing = Facing::from_delta(dx, dy);
@@ -2026,6 +2343,17 @@ impl Game {
                     self.log(self.portal_describe(dest));
                 }
             }
+            Tile::ScreenLink(east) => {
+                // batch 9 T1 (SIGN-OFF ASK #2): instant walk-onto, exactly
+                // like Stairs/UpStairs above — never a describe-then-wait
+                // like Portal.
+                self.cross_screen_link(ny, east);
+                return; // fresh screen: monsters don't get a free hit
+            }
+            Tile::Hole => {
+                self.cross_into_dungeon();
+                return; // fresh world: monsters don't get a free hit
+            }
             _ => {}
         }
         self.monsters_act(stayed);
@@ -2191,11 +2519,15 @@ impl Game {
         let (px, py) = (self.px, self.py);
         let mut attacks: Vec<(MKind, i32)> = Vec::new();
         for i in 0..self.monsters.len() {
-            if self.monsters[i].calm {
+            if self.monsters[i].calm || Monster::stats(self.monsters[i].kind).passive {
                 // Becalmed (batch 5): never attacks, never chases — the
                 // simplest deterministic option per the batch-5 plan's
                 // Design (decided) section is to stand. Skipped every
-                // turn, forever, once calm.
+                // turn, forever, once calm. batch 9 T1: a `passive` kind
+                // (the TRAINER/DONKEY) gets the identical skip from spawn,
+                // unconditionally — never chases, never attacks, regardless
+                // of `regard`/`calm` (see `MonsterDef::passive`'s doc
+                // comment).
                 continue;
             }
             let (mx, my) = (self.monsters[i].x, self.monsters[i].y);

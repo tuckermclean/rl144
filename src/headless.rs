@@ -29,6 +29,11 @@ pub(crate) fn level_dump(g: &Game) -> String {
                 Tile::Portal => '*',
                 Tile::Pit => '^',
                 Tile::Goal => 'x',
+                // batch 9 T1, story §9-J prep: never appear in a dungeon
+                // map, so this is purely additive to the dump legend.
+                Tile::ScreenLink(_) => '=',
+                Tile::Hole => 'V',
+                Tile::ShutDoor => '+',
             };
             for it in &g.items {
                 if (it.x, it.y) == (x, y) {
@@ -656,6 +661,29 @@ pub(crate) fn dump(seed: u64) -> String {
         g.gen_level();
         let t = theme_for(seed, d);
         out.push_str(&format!("-- depth {} : {} --\n", d, t.label));
+        out.push_str(&level_dump(&g));
+    }
+    out
+}
+
+/// `--dump-overworld` (batch 9 T1, story §9-J prep): prints the overworld's
+/// 3 fixed screens the same way `dump` prints a seed's 5 dungeon depths —
+/// seed-independent (the screens are fixed authored ASCII, zero RNG, unlike
+/// `gen_level`), so no `--seed` argument is read or needed. Reuses
+/// `Game::instantiate_overworld_screen` directly (the same parse `Game::
+/// new_overworld`/`Game::cross_screen_link` use) rather than re-deriving
+/// screen content here, mirroring `dump`'s own `g.depth = d; g.gen_level();`
+/// loop shape. This is T1's own new headless observability surface for the
+/// overworld (CLAUDE.md's "any new system should be observable via --dump
+/// or a new headless flag" rule); wiring it into `make check`'s gate with
+/// its own golden fixture is T3's job.
+pub(crate) fn dump_overworld() -> String {
+    let mut g = Game::new_overworld(0);
+    let mut out = String::new();
+    for i in 1..=3usize {
+        g.depth = i as u32;
+        g.instantiate_overworld_screen(i);
+        out.push_str(&format!("-- screen {} : {} --\n", i, GAME.overworld.screens[i - 1].name));
         out.push_str(&level_dump(&g));
     }
     out

@@ -13,8 +13,9 @@
 // engine code — it's all data, so it stays fully replaceable.
 
 use crate::gamedef::{
-    AuthoredFloorDef, BalanceDef, CarryEvent, GameDef, GiveRule, ItemDef, ItemEffect, MonsterDef,
-    PickupBehavior, StringsDef, ThemeDef, UseEffect, WinDef,
+    AuthoredFloorDef, BalanceDef, BumpResponse, CarryEvent, GameDef, GiveRule, ItemDef, ItemEffect,
+    MonsterDef, OverworldDef, OverworldScreenDef, PickupBehavior, StringsDef, ThemeDef, UseEffect,
+    WinDef,
 };
 
 // ---------- Monster/item kind indices ----------
@@ -26,6 +27,20 @@ use crate::gamedef::{
 pub(crate) const RAT: crate::game::MKind = 0;
 pub(crate) const GOBLIN: crate::game::MKind = 1;
 pub(crate) const OGRE: crate::game::MKind = 2;
+/* batch 9 T1 (story §9-J prep, SIGN-OFF ASK #6): the minimal overworld
+   cast — TRAINER (`passive: true, bump: Yield`) and DONKEY (`passive: true,
+   bump: Shove`). Both are ordinary `MonsterDef` rows, placed by
+   `Game::instantiate_overworld_screen` from the `Y`/`D` glyphs exactly the
+   way `Game::instantiate_floor` already places monsters from an
+   `AuthoredFloorDef`'s ASCII — no Tile enum change, no new entity-kind
+   engine surface. Like COAT/TOWEL above, neither has a non-test production
+   reference yet (they're placed by glyph in `Game::instantiate_overworld_
+   screen`, never referenced by index in engine code) — `#[allow(dead_code)]`
+   for the same reason. */
+#[allow(dead_code)]
+pub(crate) const TRAINER: crate::game::MKind = 3;
+#[allow(dead_code)]
+pub(crate) const DONKEY: crate::game::MKind = 4;
 
 pub(crate) const POTION: crate::game::IKind = 0;
 pub(crate) const SWORD: crate::game::IKind = 1;
@@ -128,7 +143,53 @@ const OGRE_TALK: [[&str; 2]; 4] = [
     ],
 ];
 
-const MONSTERS: [MonsterDef; 3] = [
+/* batch 9 T1 (story §9-J prep): placeholder talk-line tables for the two new
+   passive cast members — T2's own content-authoring task replaces these
+   (per the batch-9 brief: "provide MINIMAL VALID PLACEHOLDER screens...
+   sufficient to compile/test/dump; T2 replaces them with the real SPACES-
+   DRAFT content"). Grounded per the existing rule (restate only what the
+   engine did/can prove), 4-stage x 2-variant shape identical to every other
+   kind's table. `passive`/`bump` (below) don't change how talk/regard work
+   at all — the dialogue ladder climbs exactly the same way for these two as
+   for rat/goblin/ogre. */
+const TRAINER_TALK: [[&str; 2]; 4] = [
+    [
+        "The {M} nods, unsurprised to see you on your feet.",
+        "The {M} watches you find your balance, patient about it.",
+    ],
+    [
+        "The {M} keeps watching, offering nothing more yet.",
+        "The {M} waits, letting you find your own rhythm.",
+    ],
+    [
+        "The {M} seems satisfied. There is nothing left to teach here.",
+        "The {M} settles, done teaching you, for now.",
+    ],
+    [
+        "The {M} shrugs, unmoved by whatever you just said.",
+        "The {M} keeps its own counsel, unconvinced.",
+    ],
+];
+const DONKEY_TALK: [[&str; 2]; 4] = [
+    [
+        "The {M} flicks an ear at you and says nothing.",
+        "The {M} regards you sideways, chewing on nothing in particular.",
+    ],
+    [
+        "The {M} still won't be hurried by talk alone.",
+        "The {M} shifts its weight, unconvinced so far.",
+    ],
+    [
+        "The {M} leans into you, as settled as it gets.",
+        "The {M} stops fidgeting. That is as warm as it gets.",
+    ],
+    [
+        "The {M} plants its feet and will not be talked anywhere.",
+        "The {M} looks away, entirely unmoved.",
+    ],
+];
+
+const MONSTERS: [MonsterDef; 5] = [
     MonsterDef {
         hp: 3,
         atk: 1,
@@ -137,6 +198,8 @@ const MONSTERS: [MonsterDef; 3] = [
         talk_threshold: 2,
         receptivity_base: 55,
         talk_lines: RAT_TALK,
+        passive: false,
+        bump: BumpResponse::Fight,
     },
     MonsterDef {
         hp: 6,
@@ -146,6 +209,8 @@ const MONSTERS: [MonsterDef; 3] = [
         talk_threshold: 3,
         receptivity_base: 35,
         talk_lines: GOBLIN_TALK,
+        passive: false,
+        bump: BumpResponse::Fight,
     },
     MonsterDef {
         hp: 13,
@@ -155,6 +220,43 @@ const MONSTERS: [MonsterDef; 3] = [
         talk_threshold: 4,
         receptivity_base: 20,
         talk_lines: OGRE_TALK,
+        passive: false,
+        bump: BumpResponse::Fight,
+    },
+    // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
+    // construction — `passive` keeps it out of `monsters_act` entirely, and
+    // `bump: Yield` means a bump swaps position (never an attack) whether or
+    // not it's ever been talked to. `hp`/`atk` are inert (never read by
+    // combat once bump can't route to Fight) but kept sane rather than
+    // zeroed.
+    MonsterDef {
+        hp: 10,
+        atk: 0,
+        glyph: b'Y',
+        color: 0xC0A050,
+        talk_threshold: 2,
+        receptivity_base: 90,
+        talk_lines: TRAINER_TALK,
+        passive: true,
+        bump: BumpResponse::Yield,
+    },
+    // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
+    // `bump: Shove` pushes it one tile if the destination is plain floor,
+    // else it plants; never damaged, never dies, "your own resurrection
+    // point." `talk_threshold`/`receptivity_base` and `DONKEY_TALK` are
+    // placeholders; T2 fits the story's "~5 regard stages" content into
+    // this same 4-stage x 2-variant shape (see `gamedef::MonsterDef::
+    // talk_lines`'s doc comment on why "~5 lines" doesn't mean 5 states).
+    MonsterDef {
+        hp: 12,
+        atk: 0,
+        glyph: b'D',
+        color: 0x8A6A4A,
+        talk_threshold: 4,
+        receptivity_base: 30,
+        talk_lines: DONKEY_TALK,
+        passive: true,
+        bump: BumpResponse::Shove,
     },
 ];
 
@@ -312,7 +414,11 @@ const THEMES: [ThemeDef; 4] = [
     ThemeDef {
         label: "the drowned monastery",
         objective_name: "the Quiet Bell",
-        mobs: &["cloister rat", "drowned acolyte", "bell-warden"],
+        // batch 9 T1: indices 3/4 (trainer/donkey) are constant across every
+        // theme, unlike rat/goblin/ogre's per-theme reskins — they're two
+        // specific recurring characters, not a monster-kind archetype that
+        // gets a new name per dungeon.
+        mobs: &["cloister rat", "drowned acolyte", "bell-warden", "trainer", "donkey"],
         adjs: ["water-stained", "hushed", "candle-blackened", "weeping"],
         lore: [
             "The Order raised these halls over the spring, {A}.",
@@ -326,7 +432,7 @@ const THEMES: [ThemeDef; 4] = [
     ThemeDef {
         label: "the salt counting-house",
         objective_name: "the Final Ledger",
-        mobs: &["salt rat", "clerk-thing", "debt-golem"],
+        mobs: &["salt rat", "clerk-thing", "debt-golem", "trainer", "donkey"],
         adjs: ["dust-dry", "ink-stained", "ledger-lined", "airless"],
         lore: [
             "The vaults run deep to keep the salt-debts cool, {A}.",
@@ -340,7 +446,7 @@ const THEMES: [ThemeDef; 4] = [
     ThemeDef {
         label: "the deep mine",
         objective_name: "the First Lode",
-        mobs: &["blind rat", "ember wisp", "pit foreman"],
+        mobs: &["blind rat", "ember wisp", "pit foreman", "trainer", "donkey"],
         adjs: ["soot-caked", "cold", "narrow", "groaning"],
         lore: [
             "They followed the seam past the marked depth, {A}.",
@@ -354,7 +460,7 @@ const THEMES: [ThemeDef; 4] = [
     ThemeDef {
         label: "the hollow library",
         objective_name: "the Last Index",
-        mobs: &["paper rat", "ink haunt", "shelf-warden"],
+        mobs: &["paper rat", "ink haunt", "shelf-warden", "trainer", "donkey"],
         adjs: ["dog-eared", "mould-spotted", "whispering", "unshelved"],
         lore: [
             "The stacks were carved downward when shelves ran out, {A}.",
@@ -718,7 +824,60 @@ const STRINGS: StringsDef = StringsDef {
     put_down_ok: "You set your burden down.",
     put_down_occupied: "There is no room here.",
     put_down_nothing_carried: "You are carrying nothing to set down.",
+    // batch 9 T1 (story §9-J prep): the shut door is dumb this batch,
+    // always this line regardless of `has_objective` (POS_003, per the
+    // batch-9 brief's own citation) — the smarter version is deferred
+    // future work, see `Tile::ShutDoor`'s doc comment.
+    shut_door_refuse: "Not until it's in hand.",
+    shove_refuse: "The {} plants its feet and will not budge.",
+    overworld_enter: "You arrive at {}.",
+    overworld_cross: "You cross into {}.",
 };
+
+/* The overworld's 3 fixed screens (batch 9 T1, story §9-J prep, SIGN-OFF
+   ASK #1): MINIMAL VALID PLACEHOLDER content only (bordered, legal legend
+   chars, correctly linked edges) — sufficient to compile/test/dump; T2
+   replaces name/describe/map with the real content drafted in
+   `docs/story/SPACES-DRAFT-v0.md`. Legend, on top of the AuthoredFloorDef-
+   style base ('#' wall, '.' floor, plus item/monster glyphs): '=' a
+   deterministic screen-link (direction derived from which edge column it
+   sits on — see `Tile::ScreenLink`'s doc comment), 'V' the hole down into
+   the dungeon, '+' a dumb, always-shut door, 'Y'/'D' the TRAINER/DONKEY
+   cast. All 3 screens share the same 11x5 footprint for this placeholder;
+   nothing about the engine requires that (T2's real screens need not
+   match). */
+const OVERWORLD_1: OverworldScreenDef = OverworldScreenDef {
+    // T2: placeholder
+    name: "the waking field",
+    describe: "Placeholder ground. The real overworld lands in batch 9 T2.",
+    map: "###########\n\
+          #D...Y....=\n\
+          #....V....#\n\
+          #.........#\n\
+          ###########",
+};
+const OVERWORLD_2: OverworldScreenDef = OverworldScreenDef {
+    // T2: placeholder
+    name: "the long walk",
+    describe: "Placeholder ground. The real overworld lands in batch 9 T2.",
+    map: "###########\n\
+          =.........=\n\
+          #.........#\n\
+          #.........#\n\
+          ###########",
+};
+const OVERWORLD_3: OverworldScreenDef = OverworldScreenDef {
+    // T2: placeholder
+    name: "the shut gate",
+    describe: "Placeholder ground. The real overworld lands in batch 9 T2.",
+    map: "###########\n\
+          =....+....#\n\
+          #.........#\n\
+          #.........#\n\
+          ###########",
+};
+
+const OVERWORLD: OverworldDef = OverworldDef { screens: [OVERWORLD_1, OVERWORLD_2, OVERWORLD_3] };
 
 pub(crate) const GAME: GameDef = GameDef {
     monsters: &MONSTERS,
@@ -735,4 +894,5 @@ pub(crate) const GAME: GameDef = GameDef {
     give_table: &GIVE_TABLE,
     carried_lines: &CARRIED_LINES,
     carried_preamble: &CARRIED_PREAMBLE,
+    overworld: OVERWORLD,
 };
