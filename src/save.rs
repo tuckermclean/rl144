@@ -27,8 +27,8 @@ use crate::rng::{fnv_bytes, h64};
    yet), so it replays byte-identical under v5 parsing either way (see the
    `v1_save_replays_under_v5_parsing`/`v2_save_replays_under_v5_parsing`/
    `v3_save_replays_under_v5_parsing`/`v4_save_replays_under_v5_parsing`
-   tests in main.rs, and `make xhash`, whose fixture is a v1 blob). This is
-   a version bump rather than a silent superset precisely so an OLD binary
+   tests in main.rs). This is a version bump rather than a silent superset,
+   precisely so an OLD binary
    (whose own `parse_save` only ever accepted up to v4) REJECTS a v5 save
    cleanly instead of silently ignoring the put-down byte and diverging
    from what was actually played — same discipline the v3->v4 give/use
@@ -37,10 +37,12 @@ const SAVE_MAGIC: &[u8; 4] = b"RL14";
 const SAVE_VERSION: u8 = 5;
 pub(crate) const INPUT_RESTART: u8 = 5;
 /// Save v2 (batch 4 task 2, DECISION.md sign-off item 2): reconstruct
-/// `Game::new(g.seed)` — same world, next attempt — instead of rerolling
-/// like INPUT_RESTART. Handled in `replay()` exactly where INPUT_RESTART is
-/// handled: it's a reconstruction byte, not an `apply_input` byte (that
-/// match's `_ => {}` arm still ignores everything >= 5).
+/// `Game::new_overworld(g.seed)` (batch 9 T3 — see `replay`'s doc comment)
+/// — same world, next attempt, "wake up beside the donkey" — instead of
+/// rerolling like INPUT_RESTART. Handled in `replay()` exactly where
+/// INPUT_RESTART is handled: it's a reconstruction byte, not an
+/// `apply_input` byte (that match's `_ => {}` arm still ignores everything
+/// >= 5).
 pub(crate) const INPUT_RETRY: u8 = 6;
 
 pub(crate) fn save_bytes(seed0: u64, inputs: &[u8]) -> Vec<u8> {
@@ -75,18 +77,32 @@ pub(crate) fn save_filename(whash: u64) -> String {
 /// only if it actually ended dead (a retry logged after a win or mid-run,
 /// which shouldn't happen from either backend's UI but is defensively
 /// handled the same way for a hand-built/replayed log, leaves `echo` at its
-/// `Game::new` default of `None`).
+/// `Game::new_overworld` default of `None`).
+///
+/// Batch 9 T3 (story §9-J prep, SIGN-OFF ASKS #3/#4): all three
+/// reconstruction points call `Game::new_overworld`, not `Game::new` — this
+/// is the one place in the crate where the front-door decision actually
+/// takes effect. A real player's session always begins at the overworld
+/// (`main.rs`'s fresh-game dispatch mirrors this same call), so replaying a
+/// real save/ghost/`--replay` file must reconstruct that same starting
+/// point, not the frozen dungeon-direct constructor `--dump`/`--solve`/
+/// `--sim`/`--render-frame` still use unconditionally (`Game::new` itself is
+/// UNCHANGED — see its own doc comment — this function is the only caller
+/// that switched which sibling it calls). `tests/fixtures/ref.sav` was
+/// regenerated for this switch (see its own note in the status log): its old
+/// bytes, recorded pre-overworld as direct dungeon moves, would replay as a
+/// meaningless overworld wander under this new entry point.
 pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
-    let mut g = Game::new(seed0);
+    let mut g = Game::new_overworld(seed0);
     for &b in inputs {
         match b {
             INPUT_RESTART => {
-                g = Game::new(h64(g.seed, &["restart"]));
+                g = Game::new_overworld(h64(g.seed, &["restart"]));
             }
             INPUT_RETRY => {
                 let echo = if g.dead { Some((g.px, g.py, g.depth)) } else { None };
                 let seed = g.seed;
-                g = Game::new(seed);
+                g = Game::new_overworld(seed);
                 g.echo = echo;
             }
             _ => g.apply_input(b),
@@ -126,9 +142,11 @@ fn hash_world_id(h: u64, w: WorldId) -> u64 {
         // batch 9 T1: a THIRD, append-only discriminant tag (never 0/1,
         // never renumbering the two above) so a `Seed`/`Floor`-only replay
         // (every pre-batch-9 gate: solve/sim/dump never touch a Game via
-        // `state_hash` at all, and `make xhash`'s `ref.sav` replays through
-        // `Game::new` — a `Seed` world — until T3 switches the front door)
-        // hashes exactly as it always has.
+        // `state_hash` at all, and call `Game::new` directly — a `Seed`
+        // world) hashes exactly as it always has. Batch 9 T3 switched
+        // `replay()`'s front door to `Game::new_overworld`, so `ref.sav`
+        // (used by `make xhash`) now starts in `WorldId::Overworld` and
+        // exercises this third tag directly — see `replay`'s doc comment.
         WorldId::Overworld => fnv_bytes(h, &[2]),
     }
 }

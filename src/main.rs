@@ -172,7 +172,11 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        None => (seed, Vec::new(), Game::new(seed), false),
+        // Batch 9 T3 (SIGN-OFF ASKS #3/#4): a fresh interactive session
+        // starts in the overworld, not directly in the dungeon — `Game::new`
+        // itself is unchanged and stays the frozen constructor every
+        // headless verification surface (dump/solve/sim/render-frame) uses.
+        None => (seed, Vec::new(), Game::new_overworld(seed), false),
     };
     if daily && input_log.is_empty() {
         game.log(format!("Daily dungeon #{}. Everyone gets this one today.", day));
@@ -1633,7 +1637,10 @@ mod tests {
     #[test]
     fn save_replay_roundtrip() {
         let seed0 = 99;
-        let mut live = Game::new(seed0);
+        // Batch 9 T3: `live` must start the same way `replay()` does now
+        // (the overworld front door) so applying the identical script
+        // directly reproduces exactly what save->parse->replay reconstructs.
+        let mut live = Game::new_overworld(seed0);
         let mut log: Vec<u8> = Vec::new();
         let mut script = channel(seed0, &["test", "script"]);
         for _ in 0..500 {
@@ -1869,16 +1876,34 @@ mod tests {
     /// Echo (batch 4 task 2, save v2 substrate): after replaying a log
     /// whose retry byte (6) followed a death, `echo` equals the death
     /// position/depth, and — proving `echo` is presentation-only and NOT
-    /// hashed — a fresh `Game::new(seed)` with `echo` set by hand to the
-    /// same value hashes identically to the retried game.
+    /// hashed — a fresh `Game::new_overworld(seed)` with `echo` set by hand
+    /// to the same value hashes identically to the retried game.
+    ///
+    /// Batch 9 T3 update: the front door is now the overworld, and the
+    /// overworld's own torch-clock exemption (`Game::spend_turn`) means
+    /// waiting there can never kill you — so this test must actually walk
+    /// into the dungeon (the same short, seed-independent screen-1
+    /// crossing `tests/fixtures/ref.sav` uses: S then E,E,E onto the hole,
+    /// see that fixture's regeneration note) before the wait-to-death loop
+    /// can do its job. `live` and `fresh` both start via
+    /// `Game::new_overworld` to match `replay()`'s own front door.
     #[test]
     fn echo_records_death_position_after_retry_byte() {
         let seed0 = 33u64;
-        let mut live = Game::new(seed0);
+        let mut live = Game::new_overworld(seed0);
         let mut log: Vec<u8> = Vec::new();
+        // Screen 1's fixed, seed-independent path from spawn onto the hole
+        // (`V`): one step south, then three east — see
+        // `instantiate_overworld_screen`'s doc comment on the default start
+        // tile and `OVERWORLD_1`'s map in contractor.rs.
+        for &b in &[1u8, 3, 3, 3] {
+            log.push(b);
+            live.apply_input(b);
+        }
+        assert_eq!(live.world, WorldId::Seed(seed0), "fixture: must have crossed into the root dungeon");
         // Wait repeatedly until the run ends (dark or combat — either way
         // it's a dead ending since the player never moves off the
-        // entrance); START_LIGHT (2000) bounds this loop.
+        // dungeon entrance); START_LIGHT (2000) bounds this loop.
         while !live.dead && !live.won {
             log.push(4);
             live.apply_input(4);
@@ -1891,7 +1916,7 @@ mod tests {
         assert_eq!(replayed.echo, Some((dx, dy, dd)));
         assert_eq!(replayed.seed, seed0, "retry must not reroll the seed");
 
-        let mut fresh = Game::new(seed0);
+        let mut fresh = Game::new_overworld(seed0);
         fresh.echo = Some((dx, dy, dd));
         assert_eq!(
             state_hash(&replayed),

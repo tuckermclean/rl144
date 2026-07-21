@@ -435,7 +435,10 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     input_log.push(INPUT_RETRY);
                     attempt_log.clear();
                     let s = game.seed;
-                    game = Game::new(s);
+                    // Batch 9 T3: retry reconstructs the overworld front
+                    // door, same as `save::replay`'s INPUT_RETRY arm — "wake
+                    // up beside the donkey" falls out of this for free.
+                    game = Game::new_overworld(s);
                     game.echo = echo;
                     window.set_title(&title(s));
                     confirm_armed = false;
@@ -454,7 +457,8 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     input_log.push(INPUT_RESTART);
                     attempt_log.clear();
                     let s = h64(game.seed, &["restart"]);
-                    game = Game::new(s);
+                    // Batch 9 T3: same front-door switch as retry above.
+                    game = Game::new_overworld(s);
                     whash = world_hash(s);
                     window.set_title(&title(s));
                     confirm_armed = false;
