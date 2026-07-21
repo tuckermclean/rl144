@@ -13,8 +13,8 @@
 // engine code — it's all data, so it stays fully replaceable.
 
 use crate::gamedef::{
-    AuthoredFloorDef, BalanceDef, GameDef, GiveRule, ItemDef, ItemEffect, MonsterDef, PickupBehavior,
-    StringsDef, ThemeDef, UseEffect, WinDef,
+    AuthoredFloorDef, BalanceDef, CarryEvent, GameDef, GiveRule, ItemDef, ItemEffect, MonsterDef,
+    PickupBehavior, StringsDef, ThemeDef, UseEffect, WinDef,
 };
 
 // ---------- Monster/item kind indices ----------
@@ -566,21 +566,108 @@ const WIN: WinDef = WinDef {
     carry_line_rate_limit: 6,
 };
 
-/* batch 8 T1 (story §9-B/C/D, "the McGuffin's voice"): the engine hooks
-   (`gamedef::CarryEvent`, `Game::carry_event`, byte 16 put-down) land this
-   batch, but the actual FLAVOR-DRAFT-v0 MCG_/NAR_ lines do NOT — this table
-   ships EMPTY so `Game::carry_event` is a provable no-op (no RNG draw, no
-   log line) at every one of its wired call sites, which is what keeps
-   goldens/solve/sim/xhash byte-identical to the pre-batch-8 baseline
-   despite the dispatch being live. T2 fills this in. */
-const CARRIED_LINES: [(crate::gamedef::CarryEvent, &[&str]); 0] = [];
+/* batch 8 T2 (story §9-B/C/D, "the McGuffin's voice"): FLAVOR-DRAFT-v0's
+   MCG_ lines, wired verbatim by stable ID except for one across-the-board
+   ASCII normalization — `render.rs`'s `put_str` maps each BYTE of a log
+   string to one grid cell, so a multi-byte UTF-8 char (the draft's em-dash)
+   would render as garbage cells and break the 78-char row budget measured
+   in bytes. Every em-dash (`--` below) is FLAVOR-DRAFT's own "--" character,
+   two ASCII hyphens, standing in for the same cut-off-mid-word beat; no
+   other text, spacing, or capitalization changed. This is a same-ID text
+   conform, permitted by that file's own header ("replace any line's text
+   without touching its ID and nothing downstream breaks").
 
-/* batch 8 T1 fix-round (story §9-C, the pickup register): the fixed,
-   always-fires preamble shown once at the FIRST objective pickup, printed
-   in order before the kill/spare-keyed `PickedUpBloody`/`PickedUpMerciful`
-   dispatch. Ships EMPTY this batch, same rationale as `CARRIED_LINES` above
-   — T2 fills it with the story's register-opening lines. */
-const CARRIED_PREAMBLE: [&str; 0] = [];
+   Held out of this batch (not wired anywhere): MCG_063 (asserts a spared
+   "one with the coat" — the coat-as-monster doesn't exist yet, only the
+   coat-as-item does; see status log/DECISION.md item 4) and MCG_062 (reads
+   as promising the §9-E mood-to-light free-step effect, not implemented
+   this batch — reviewer's call to hold per the T2 wiring spec). NAR_050-054
+   are held entirely: all five hardcode "the amulet," which is true in none
+   of this cartridge's four themes (`objective_name` is "the Quiet Bell" /
+   "the Final Ledger" / "the First Lode" / "the Last Index"), and
+   `Game::carry_event` does no template substitution to fix that at
+   dispatch time. `MonsterAdjacent`/`TierCrossed`/`Idle` ship with no row at
+   all — no authored lines exist for any of the three yet (future-content
+   gap, not an oversight). */
+const MCG_PICKED_UP_BLOODY: [&str; 4] = [
+    "Unhand-- no. Hand. Keep handing. We'll workshop the rescue.", // MCG_010
+    "Seized by a brute! It's exactly like the books. The good ones.", // MCG_011
+    "The rats told me about you. Well. The survivors did.", // MCG_012
+    "I shall resist you by growing fond of you. It's chapter four.", // MCG_013
+];
+const MCG_PICKED_UP_MERCIFUL: [&str; 4] = [
+    "You came. I sensed a gentleness. The rats speak highly of you.", // MCG_020
+    "Fated. Foretold. Foreshadowed, at minimum.", // MCG_021
+    "Four hundred years, and my hero walks in mid-monologue. Poetic.", // MCG_022
+    "Don't speak. Or do. One of us should, and I have material.", // MCG_023
+];
+const MCG_PICKED_BACK_UP: [&str; 2] = [
+    "You're back. I knew it. I rehearsed knowing it.", // MCG_074
+    "While you were gone, nothing happened. I narrated it anyway.", // MCG_075
+];
+// `StairsUp` is indexed by `Game::speech_attempts` (the climb re-entry
+// ladder), NOT drawn at random — `Game::carry_event` clamps the index to
+// `pool.len() - 1`, so order here is load-bearing: this is the one true
+// sequence, not a shuffleable pool. Rungs 0-3 are the short "ladder" (each
+// attempt gets ~one word further into the same opening line); rungs 4-9
+// are the "running commentary" lines folded into the SAME pool per the T2
+// wiring spec (a second `(StairsUp, ...)` row would never be reached —
+// `carried_lines` is looked up by first match). Climb 10+ repeats rung 9
+// forever (MCG_045 reads fine as a steady-state line).
+const MCG_STAIRS_UP: [&str; 10] = [
+    "As I was saying--", // MCG_030
+    "From the top, then: In the--", // MCG_031
+    "Where was I. The beginning. In the beginning, there--", // MCG_032
+    "I'll just hold my place. I'm good at holding a place.", // MCG_033
+    "And here the hero bears me up the-- stairs. Yes. As rehearsed.", // MCG_040
+    "Note the walls. I've had four centuries with these walls. Skippable.", // MCG_041
+    "Is that a rat you know? You know a rat. My legs know a rat.", // MCG_042
+    "This part wasn't in the drafts. Improvising. I'm thriving.", // MCG_043
+    "Slower on the stairs. Not for me. For the drama. Fine, for me.", // MCG_044
+    "You breathe loudly for a legendary figure. It's humanizing. Keep it.", // MCG_045
+];
+const MCG_KILL_WITNESSED: [&str; 4] = [
+    "I saw that.", // MCG_050
+    "The light seems heavier tonight. Unrelated, I'm sure.", // MCG_051
+    "In the ballads, the sword is a last resort. This is a lot of resorts.", // MCG_052
+    "It had a face, is all. I knew the face. Carry on.", // MCG_053
+];
+// MCG_060 ("There. A little of mine...") held on the grounding review
+// (batch 8 T2): it reads as bestowing the §9-E mood->light gift, which is
+// not wired this batch — revive it verbatim once §9-E lands. MCG_062
+// ("Take the next step on me.") held for the same reason; MCG_063 (the
+// coat-monster claim) held because that monster does not exist yet.
+const MCG_SPARE_WITNESSED: [&str; 1] = [
+    "I've decided your footsteps have a rhythm. I've named it.", // MCG_061
+];
+const MCG_PUT_DOWN: [&str; 4] = [
+    "Setting me down. Bold. Dramatic, even. I'll allow it.", // MCG_070
+    "A pause in the narrative. Very modern. Hurry back.", // MCG_071
+    "Hello? Legs? ...Anyone with legs?", // MCG_072
+    "(to the floor) He'll return. He's the returning type. I cast him.", // MCG_073
+];
+
+const CARRIED_LINES: [(CarryEvent, &[&str]); 7] = [
+    (CarryEvent::PickedUpBloody, &MCG_PICKED_UP_BLOODY),
+    (CarryEvent::PickedUpMerciful, &MCG_PICKED_UP_MERCIFUL),
+    (CarryEvent::PickedBackUp, &MCG_PICKED_BACK_UP),
+    (CarryEvent::StairsUp, &MCG_STAIRS_UP),
+    (CarryEvent::KillWitnessed, &MCG_KILL_WITNESSED),
+    (CarryEvent::SpareWitnessed, &MCG_SPARE_WITNESSED),
+    (CarryEvent::PutDown, &MCG_PUT_DOWN),
+];
+
+/* batch 8 T2 (story §9-C, the pickup register): the fixed, always-fires
+   preamble shown once at the FIRST objective pickup, printed in order
+   before the kill/spare-keyed `PickedUpBloody`/`PickedUpMerciful` dispatch.
+   MCG_001-004 verbatim (ASCII-normalized em-dash in MCG_001, see the block
+   comment above `CARRIED_LINES`). */
+const CARRIED_PREAMBLE: [&str; 4] = [
+    "IN THE BEGINNING, THERE WAS ME--", // MCG_001
+    "...You could have knocked.", // MCG_002
+    "No matter. No matter! We'll call that the cold open.", // MCG_003
+    "Onward, legs. Destiny dislikes a dawdler. I read that. I wrote that.", // MCG_004
+];
 
 const STRINGS: StringsDef = StringsDef {
     intro: "Fetch the Amulet from depth 5 and climb back before dark!",

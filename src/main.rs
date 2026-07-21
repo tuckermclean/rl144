@@ -638,6 +638,48 @@ mod tests {
         }
     }
 
+    /// Every McGuffin voice line (batch 8 T2: `GAME.carried_preamble` +
+    /// every pool in `GAME.carried_lines`) must be pure ASCII — `render.rs`'s
+    /// `put_str` maps each BYTE of a log string to one grid cell, so a
+    /// stray multi-byte UTF-8 char (the source draft's em-dash, ASCII-
+    /// normalized to `--` when this table was wired) would render as
+    /// garbage cells and desync the 78-char row budget, which is itself
+    /// measured in bytes, not chars. Same discipline as `talk_lines_fit_log_row`
+    /// / `give_use_strings_fit_log_row` above, extended with an explicit
+    /// ASCII check since these lines came from a prose draft, not a
+    /// hand-typed template.
+    #[test]
+    fn mcguffin_lines_ascii_and_fit_log_row() {
+        for line in GAME.carried_preamble {
+            assert!(line.is_ascii(), "non-ASCII McGuffin preamble line: {}", line);
+            assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
+        }
+        for (_, pool) in GAME.carried_lines {
+            for line in *pool {
+                assert!(line.is_ascii(), "non-ASCII McGuffin line: {}", line);
+                assert!(line.len() <= 78, "too long ({}): {}", line.len(), line);
+            }
+        }
+    }
+
+    /// `CarryEvent::StairsUp`'s pool is indexed by `Game::speech_attempts`
+    /// (the climb re-entry ladder), NOT drawn at random — order is
+    /// load-bearing content, not an incidental array layout. Guard against a
+    /// future accidental reorder: at least 4 entries (the short ladder),
+    /// and the first/last rungs match the documented sequence (MCG_030
+    /// "As I was saying--" opens it, MCG_045's steady-state closer is last).
+    #[test]
+    fn stairs_up_pool_is_in_documented_order() {
+        let (_, pool) = GAME
+            .carried_lines
+            .iter()
+            .find(|(e, _)| *e == crate::gamedef::CarryEvent::StairsUp)
+            .expect("StairsUp pool must exist");
+        assert!(pool.len() >= 4, "StairsUp pool too short: {}", pool.len());
+        assert_eq!(pool[0], "As I was saying--");
+        assert_eq!(*pool.last().unwrap(), "You breathe loudly for a legendary figure. It's humanizing. Keep it.");
+    }
+
     /// A turn burns 1 light, 2 while carrying the amulet; walls burn nothing.
     #[test]
     fn light_burn_rates() {
@@ -1373,21 +1415,23 @@ mod tests {
         assert_eq!(g.items.len(), before_len + 1);
     }
 
-    /// The load-bearing T1 invariant: with the active cartridge's
-    /// `carried_lines` table EMPTY (T2's job to fill), `Game::carry_event`
-    /// must be a provable no-op at every one of its wired call sites — no
-    /// RNG draw (`flavor_rng` untouched), no log line, regardless of which
-    /// `CarryEvent` fires or in what order. This is what keeps
-    /// goldens/solve/sim/xhash byte-identical to the pre-batch-8 baseline
-    /// despite every dispatch point being wired live this batch.
+    /// batch 8 T2: with the active cartridge's `carried_lines` table now
+    /// FILLED (story content wired), `Game::carry_event` must (a) log
+    /// exactly one line and draw exactly one `flavor_rng` value for every
+    /// event that HAS a populated pool, and (b) remain a provable no-op —
+    /// no RNG draw, no log line — for the three events this batch still
+    /// ships with no row at all (`MonsterAdjacent`/`TierCrossed`/`Idle`,
+    /// future-content gaps). Either way, `combat_rng`/`ai_rng`/`parley_rng`
+    /// must never move: the McGuffin's voice only ever touches the log and
+    /// `flavor_rng`, never a channel that feeds combat/movement/death/
+    /// kill/spare/stuck — this is what keeps goldens/solve/sim/xhash
+    /// byte-identical to the pre-batch-8 baseline despite real content now
+    /// being spoken in play.
     #[test]
-    fn carry_event_is_pure_noop_with_empty_carried_lines_table() {
-        assert!(GAME.carried_lines.is_empty(), "T1 ships an empty table; T2 fills it with story content");
-        assert!(GAME.carried_preamble.is_empty(), "fix-round: the pickup preamble also ships empty until T2");
-        let mut g = blank_room(1);
-        g.has_objective = true;
-        let before_flavor = g.flavor_rng.0;
-        let before_msgs = g.msgs.len();
+    fn carry_event_only_touches_flavor_rng_and_the_log() {
+        assert!(!GAME.carried_lines.is_empty(), "T2 fills carried_lines with story content");
+        assert!(!GAME.carried_preamble.is_empty(), "T2 fills carried_preamble with story content");
+        let populated: Vec<CarryEvent> = GAME.carried_lines.iter().map(|(e, _)| *e).collect();
         for ev in [
             CarryEvent::PickedUpBloody,
             CarryEvent::PickedUpMerciful,
@@ -1400,32 +1444,55 @@ mod tests {
             CarryEvent::TierCrossed,
             CarryEvent::Idle,
         ] {
+            let mut g = blank_room(1);
+            g.has_objective = true;
+            let before_combat = g.combat_rng.0;
+            let before_ai = g.ai_rng.0;
+            let before_parley = g.parley_rng.0;
+            let before_msgs = g.msgs.len();
             g.carry_event(ev);
+            assert_eq!(g.combat_rng.0, before_combat, "carry_event must never draw combat_rng ({:?})", ev);
+            assert_eq!(g.ai_rng.0, before_ai, "carry_event must never draw ai_rng ({:?})", ev);
+            assert_eq!(g.parley_rng.0, before_parley, "carry_event must never draw parley_rng ({:?})", ev);
+            if populated.contains(&ev) {
+                assert_eq!(g.msgs.len(), before_msgs + 1, "a populated pool must log exactly one line ({:?})", ev);
+            } else {
+                assert_eq!(g.msgs.len(), before_msgs, "an event with no row must log nothing ({:?})", ev);
+            }
         }
-        assert_eq!(g.flavor_rng.0, before_flavor, "an empty carried_lines table must draw no RNG");
-        assert_eq!(g.msgs.len(), before_msgs, "an empty carried_lines table must log nothing");
     }
 
-    /// Fix-round (§9-C): a real FIRST walk-over pickup of the win-condition
-    /// item must still be byte-identical-safe with both `carried_preamble`
-    /// and `carried_lines` empty — the preamble loop logs nothing (empty
-    /// slice) and the register dispatch (`PickedUpBloody`/`PickedUpMerciful`)
-    /// hits `carry_event`'s no-row-matches early return, same as every other
-    /// event above, drawing no RNG. The pre-existing, unconditional
-    /// `pickup_objective` line still appears, unchanged.
+    /// batch 8 T2: a real FIRST walk-over pickup of the win-condition item
+    /// logs the fixed `carried_preamble` (in order, unconditionally), then
+    /// exactly one `PickedUpBloody`/`PickedUpMerciful` line chosen by
+    /// `flavor_rng`, alongside the pre-existing `pickup_objective` line —
+    /// and none of it touches `combat_rng`/`ai_rng`/`parley_rng`.
     #[test]
-    fn first_objective_pickup_draws_no_rng_beyond_ordinary_lines_with_empty_tables() {
-        assert!(GAME.carried_preamble.is_empty());
-        assert!(GAME.carried_lines.is_empty());
+    fn first_objective_pickup_speaks_preamble_and_register_line() {
+        assert!(!GAME.carried_preamble.is_empty());
+        assert!(!GAME.carried_lines.is_empty());
         let mut g = blank_room(1);
         g.items.push(Item { x: g.px + 1, y: g.py, kind: GAME.win.objective_item });
-        let before_flavor = g.flavor_rng.0;
+        let before_combat = g.combat_rng.0;
+        let before_ai = g.ai_rng.0;
+        let before_parley = g.parley_rng.0;
         g.try_move_player(1, 0);
         assert!(g.has_objective, "walking onto the objective item must pick it up");
-        assert_eq!(g.flavor_rng.0, before_flavor, "empty preamble/register tables must draw no RNG on pickup");
+        assert_eq!(g.combat_rng.0, before_combat, "pickup must never draw combat_rng");
+        assert_eq!(g.ai_rng.0, before_ai, "pickup must never draw ai_rng");
+        assert_eq!(g.parley_rng.0, before_parley, "pickup must never draw parley_rng");
         assert!(
             g.msgs.iter().any(|m| m.contains("heavy")),
             "the pre-existing pickup_objective line must still appear verbatim"
+        );
+        for line in GAME.carried_preamble {
+            assert!(g.msgs.iter().any(|m| m == line), "preamble line must be logged verbatim: {}", line);
+        }
+        let bloody = GAME.carried_lines.iter().find(|(e, _)| *e == CarryEvent::PickedUpBloody).unwrap().1;
+        let merciful = GAME.carried_lines.iter().find(|(e, _)| *e == CarryEvent::PickedUpMerciful).unwrap().1;
+        assert!(
+            g.msgs.iter().any(|m| bloody.contains(&m.as_str()) || merciful.contains(&m.as_str())),
+            "exactly one register line (bloody or merciful) must be logged"
         );
     }
 
