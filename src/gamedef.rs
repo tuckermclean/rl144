@@ -52,6 +52,72 @@ pub(crate) struct GameDef {
     /// (item kind, target monster kind — `None` matches any kind), consulted
     /// by `Game::try_give_player`. See `GiveRule`'s doc comment.
     pub(crate) give_table: &'static [GiveRule],
+    /// The McGuffin's voice (batch 8 T1, story §9-B/C/D): each `CarryEvent`
+    /// maps to a pool of flavor lines, consulted ONLY while `Game::
+    /// has_objective` is true (`Game::carry_event`). No row for a given
+    /// event, or an empty pool, is a graceful, RNG-free, mutation-free
+    /// no-op — see that method's doc comment for why this is the whole
+    /// mechanism that keeps T1 byte-identical to every pre-batch-8 gate
+    /// (this cartridge ships the table EMPTY; T2 fills it with the
+    /// FLAVOR-DRAFT-v0 MCG_/NAR_ lines). Line selection is `flavor_rng`
+    /// (replay-safe), except `CarryEvent::StairsUp`, which indexes its pool
+    /// by `Game::speech_attempts` (the climb re-entry ladder) instead of a
+    /// random draw.
+    pub(crate) carried_lines: &'static [(CarryEvent, &'static [&'static str])],
+    /// The McGuffin pickup register (batch 8 T1 fix-round, story §9-C): a
+    /// fixed, always-fires, printed-IN-ORDER preamble shown once at the
+    /// FIRST objective pickup (`Game::pickup`'s `ItemEffect::Objective`
+    /// arm), BEFORE `CarryEvent::PickedUpBloody`/`PickedUpMerciful` is
+    /// dispatched. NOT a random pool — every line here logs verbatim, in
+    /// array order, no RNG, no rate-limit — the same fixed-string
+    /// precedent as `StringsDef::pickup_objective`, just multi-line. A
+    /// re-pickup after `put_down` (`CarryEvent::PickedBackUp`) never
+    /// replays this preamble. This cartridge ships it EMPTY (`&[]`); T2
+    /// fills it with the story's register-opening lines.
+    pub(crate) carried_preamble: &'static [&'static str],
+}
+
+/// The McGuffin's voice (batch 8 T1, story §9-B/C/D): a generic engine
+/// concept — no game noun appears in this enum — describing every point in
+/// a turn where the carried objective might have something to say.
+/// `Game::carry_event` is the one place that interprets it, dispatching
+/// against `GameDef::carried_lines`. `PickedUpBloody`/`PickedUpMerciful`/
+/// `PickedBackUp` fire from `Game::pickup`; `PutDown` fires from `Game::
+/// put_down`; `StairsUp` fires from `Game::ascend` while carrying;
+/// `MonsterAdjacent`/`KillWitnessed`/`SpareWitnessed` fire from the existing
+/// adjacency/kill/spare bookkeeping in `Game::monsters_act`/`Game::
+/// try_move_player`/`Game::try_talk_player`/`Game::try_give_player`;
+/// `TierCrossed` fires from `Game::spend_turn`'s existing torch-tier warning
+/// branch; `Idle` fires from a plain `Game::wait_turn` (not a portal
+/// transit).
+///
+/// `PickedUpBloody`/`PickedUpMerciful` (batch 8 T1 fix-round, story §9-C):
+/// split from a single flat `PickedUp` so the McGuffin's reaction to being
+/// picked up can be keyed to the carrier's kill/spare record — `Game::
+/// pickup` dispatches `PickedUpBloody` when `self.kills > self.spared` and
+/// `PickedUpMerciful` otherwise (a tie reads merciful). Both fire only on a
+/// FIRST pickup (not a re-pickup, which is `PickedBackUp`) and both bypass
+/// the rate limit exactly as the old unified `PickedUp` did — see `Game::
+/// carry_event`'s `always_speaks` match arm.
+///
+/// Scope note (batch 8 T1): the brief sketches an `Idle(n)` variant
+/// carrying an escalation count. T1 ships a unit `Idle` instead — no
+/// cartridge data exists yet to consume a count (this cartridge's
+/// `carried_lines` is empty), so adding the parameter now would be
+/// speculative. Promote it to `Idle(u32)` (or similar) in the batch that
+/// actually wires an escalating idle-line pool, not before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CarryEvent {
+    PickedUpBloody,
+    PickedUpMerciful,
+    PutDown,
+    PickedBackUp,
+    StairsUp,
+    MonsterAdjacent,
+    KillWitnessed,
+    SpareWitnessed,
+    TierCrossed,
+    Idle,
 }
 
 /// One monster kind's complete definition. `glyph` doubles as both the
@@ -297,6 +363,15 @@ pub(crate) struct WinDef {
     /// Light burned per turn while carrying the objective (replaces the
     /// base burn, doesn't add to it — see `Game::spend_turn`).
     pub(crate) carry_burn: i32,
+    /// batch 8 T1 (story §9-B/C/D): minimum turns between two McGuffin
+    /// lines (`Game::carry_event`'s rate limit), except `CarryEvent::
+    /// PickedUpBloody`/`PickedUpMerciful`/`PutDown`, which always speak
+    /// regardless — "the amulet is loud, not spammy," per the batch-8 brief
+    /// [TUNE 6]. Only exercised
+    /// once `GameDef::carried_lines` is non-empty (T2); this cartridge sets
+    /// it to 6 now so the constant exists ahead of the data that will use
+    /// it.
+    pub(crate) carry_line_rate_limit: u32,
 }
 
 /// Every player-facing message template that lives in the engine's turn
@@ -371,4 +446,13 @@ pub(crate) struct StringsDef {
     /// code never hardcodes a game-specific resource name — a future
     /// cartridge might call this "Battery" or "O2" instead of "Torch".
     pub(crate) resource_label: &'static str,
+    /// batch 8 T1 (PUT DOWN, byte 16, story §9-D): a landed put-down.
+    pub(crate) put_down_ok: &'static str,
+    /// batch 8 T1: put-down attempted while something (any item) already
+    /// sits on the player's own tile — refused, no stacking. No-op, no
+    /// turn.
+    pub(crate) put_down_occupied: &'static str,
+    /// batch 8 T1: put-down attempted while not carrying the objective.
+    /// No-op, no turn.
+    pub(crate) put_down_nothing_carried: &'static str,
 }

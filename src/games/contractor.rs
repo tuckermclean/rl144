@@ -558,7 +558,29 @@ const BALANCE: BalanceDef = BalanceDef {
     receptivity_clamp: (5, 95),
 };
 
-const WIN: WinDef = WinDef { objective_item: OBJECTIVE, max_depth: 5, return_depth: 1, carry_burn: 2 };
+const WIN: WinDef = WinDef {
+    objective_item: OBJECTIVE,
+    max_depth: 5,
+    return_depth: 1,
+    carry_burn: 2,
+    carry_line_rate_limit: 6,
+};
+
+/* batch 8 T1 (story §9-B/C/D, "the McGuffin's voice"): the engine hooks
+   (`gamedef::CarryEvent`, `Game::carry_event`, byte 16 put-down) land this
+   batch, but the actual FLAVOR-DRAFT-v0 MCG_/NAR_ lines do NOT — this table
+   ships EMPTY so `Game::carry_event` is a provable no-op (no RNG draw, no
+   log line) at every one of its wired call sites, which is what keeps
+   goldens/solve/sim/xhash byte-identical to the pre-batch-8 baseline
+   despite the dispatch being live. T2 fills this in. */
+const CARRIED_LINES: [(crate::gamedef::CarryEvent, &[&str]); 0] = [];
+
+/* batch 8 T1 fix-round (story §9-C, the pickup register): the fixed,
+   always-fires preamble shown once at the FIRST objective pickup, printed
+   in order before the kill/spare-keyed `PickedUpBloody`/`PickedUpMerciful`
+   dispatch. Ships EMPTY this batch, same rationale as `CARRIED_LINES` above
+   — T2 fills it with the story's register-opening lines. */
+const CARRIED_PREAMBLE: [&str; 0] = [];
 
 const STRINGS: StringsDef = StringsDef {
     intro: "Fetch the Amulet from depth 5 and climb back before dark!",
@@ -602,6 +624,13 @@ const STRINGS: StringsDef = StringsDef {
     use_empty_hands: "Your hands are empty.",
     use_no_effect: "That isn't something you can use like that.",
     resource_label: "Torch",
+    // batch 8 T1 (PUT DOWN, byte 16, story §9-D): new-authored, not a
+    // FLAVOR-DRAFT-v0 ID (the draft's own D-section lines are T2's job, via
+    // `CarryEvent::PutDown`'s pool in `CARRIED_LINES` — this is the plain
+    // mechanical feedback line, distinct from the McGuffin's own voice).
+    put_down_ok: "You set your burden down.",
+    put_down_occupied: "There is no room here.",
+    put_down_nothing_carried: "You are carrying nothing to set down.",
 };
 
 pub(crate) const GAME: GameDef = GameDef {
@@ -617,4 +646,6 @@ pub(crate) const GAME: GameDef = GameDef {
     win: WIN,
     strings: STRINGS,
     give_table: &GIVE_TABLE,
+    carried_lines: &CARRIED_LINES,
+    carried_preamble: &CARRIED_PREAMBLE,
 };

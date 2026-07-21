@@ -17,7 +17,7 @@
 // all looked up by index, never spelled out here.
 
 use crate::content::theme_for;
-use crate::gamedef::{ItemEffect, PickupBehavior, UseEffect};
+use crate::gamedef::{CarryEvent, ItemEffect, PickupBehavior, UseEffect};
 use crate::games::GAME;
 use crate::render::Facing;
 use crate::rng::{Rng, channel, h64};
@@ -375,6 +375,16 @@ pub(crate) struct Game {
     /// deliberately doesn't (see the note near `backend_term::frame_bytes`).
     /// Presentation-only, same exclusion list as `facing` above.
     pub(crate) fx_hit: Option<(i32, i32)>,
+    /// batch 8 T1 (story §9-B/C/D): the turn number (`Game::turns`) of the
+    /// last McGuffin line actually spoken (`Game::carry_event`), used only
+    /// to rate-limit chatter to at most one line per `WinDef::
+    /// carry_line_rate_limit` turns. Fully determined by the deterministic
+    /// turn/event sequence and gates flavor text only — it doesn't change
+    /// anything a replay must reproduce beyond which line gets logged, so
+    /// it joins the presentation-only exclusion set (`killer`/`echo`/
+    /// `facing`/`fx_hit` — see `save::state_hash`'s doc comment) rather
+    /// than being hashed.
+    pub(crate) mcguffin_last_line_turn: Option<u32>,
     /// Whether the player currently holds the run's win-condition item
     /// (`ItemEffect::Objective` — see `Game::pickup`). Doubles the per-turn
     /// light burn (`WinDef::carry_burn`, it is heavy) and is the second of
@@ -390,6 +400,28 @@ pub(crate) struct Game {
     /// item is held, and in what order, is run-defining, same rationale as
     /// `monster.regard`/`Game::blocks`).
     pub(crate) held: Vec<u8>,
+    /// batch 8 T1 (story §9-B/C/D, the McGuffin's voice): count of
+    /// `CarryEvent::StairsUp` events fired so far while carrying the
+    /// objective BEFORE the current one (`Game::ascend` fires
+    /// `CarryEvent::StairsUp` first, reading the pre-increment count, THEN
+    /// increments — fix-round correction: incrementing first would skip
+    /// index 0, so index 0 = the first carried ascent, index 1 = the
+    /// second, etc.) — the climb re-entry ladder's index into that event's
+    /// line pool (`Game::carry_event`, `GameDef::carried_lines`). Hashed by
+    /// `save::state_hash`: it changes which line a future ascent draws,
+    /// which is run-defining once the pool is non-empty (T2), not merely
+    /// presentational — same rationale as `held`/`Monster::regard`.
+    pub(crate) speech_attempts: u8,
+    /// batch 8 T1 (story §9-D, put-down/pick-back-up): true while the
+    /// win-condition item is sitting on a floor tile after a put-down
+    /// (`Game::put_down`) rather than actually held; false once re-picked-up
+    /// (`Game::pickup`'s `ItemEffect::Objective` arm). Distinguishes a
+    /// FIRST pickup (`CarryEvent::PickedUpBloody`/`PickedUpMerciful`) from a
+    /// re-pickup after abandoning it (`CarryEvent::PickedBackUp`). Hashed: whether the
+    /// objective is currently sitting dropped somewhere is run-defining
+    /// state (it changes which `CarryEvent` a future pickup fires), not
+    /// presentation.
+    pub(crate) objective_dropped: bool,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
@@ -501,8 +533,11 @@ impl Game {
             echo: None,
             facing: Facing::S,
             fx_hit: None,
+            mcguffin_last_line_turn: None,
             has_objective: false,
             held: Vec::new(),
+            speech_attempts: 0,
+            objective_dropped: false,
             monsters: Vec::new(),
             items: Vec::new(),
             rooms: Vec::new(),
@@ -1042,6 +1077,9 @@ impl Game {
             };
             let a = self.adj();
             self.log(GAME.strings.tier_warnings[ti].replace("{}", a));
+            // batch 8 T1: the McGuffin may have its own opinion of the
+            // failing torch, on top of the engine's own tier warning.
+            self.carry_event(CarryEvent::TierCrossed);
         }
         true
     }
@@ -1408,6 +1446,19 @@ impl Game {
             None => self.gen_level(), // unreachable in play; belt and braces
         }
         self.log(GAME.strings.ascend.replace("{}", &self.depth.to_string()));
+        // batch 8 T1 (story §9-B/C/D): the climb re-entry ladder — each
+        // ascent made WHILE carrying the objective counts toward
+        // `speech_attempts`, which indexes `CarryEvent::StairsUp`'s line
+        // pool (`Game::carry_event`) instead of a random draw. Fix-round
+        // correction: fire BEFORE incrementing, so the pool is read at the
+        // PRE-increment count — the first carried ascent reads index 0 (not
+        // 1), the second reads index 1, etc. The final per-run count of
+        // `speech_attempts` is unchanged either way (still exactly one
+        // increment per carried ascent).
+        if self.has_objective {
+            self.carry_event(CarryEvent::StairsUp);
+            self.speech_attempts = self.speech_attempts.saturating_add(1);
+        }
     }
 
     /// First step into a room surfaces its tone line, once per level visit.
@@ -1465,6 +1516,7 @@ impl Game {
                 self.monsters.remove(mi);
                 self.kills += 1;
                 self.log(GAME.strings.slay.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
+                self.carry_event(CarryEvent::KillWitnessed);
             } else {
                 self.log(GAME.strings.hit.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
             }
@@ -1706,6 +1758,7 @@ impl Game {
             if became_calm {
                 self.monsters[mi].calm = true;
                 self.spared += 1;
+                self.carry_event(CarryEvent::SpareWitnessed);
             }
             let v = self.flavor_rng.range(0, 2) as usize;
             let line = GAME.monsters[kind as usize].talk_lines[stage][v].replace("{M}", name);
@@ -1785,6 +1838,7 @@ impl Game {
         if !self.monsters[mi].calm && regard >= Monster::talk_threshold(kind) {
             self.monsters[mi].calm = true;
             self.spared += 1;
+            self.carry_event(CarryEvent::SpareWitnessed);
         }
         let line = match rule.line {
             Some(t) => String::from(t),
@@ -1845,6 +1899,53 @@ impl Game {
         self.compute_fov();
     }
 
+    /// PUT DOWN: byte 16 (batch 8 T1, story §9-D). Sets the carried
+    /// objective on the player's own tile if held (`has_objective`) and the
+    /// tile has no item already sitting on it (no stacking): the objective
+    /// re-enters `self.items` at `(self.px, self.py)`, `has_objective`
+    /// flips false — which automatically reverts the per-turn light burn to
+    /// `BalanceDef::base_burn` (`Game::spend_turn` already branches on
+    /// `has_objective`, so no separate code is needed for the burn-rate
+    /// flip in either direction) — and `objective_dropped` flips true (so a
+    /// later walk-over re-pickup fires `CarryEvent::PickedBackUp`, not
+    /// `PickedUpBloody`/`PickedUpMerciful` — see `Game::pickup`). Put-down is legal anywhere the
+    /// tile is otherwise empty of items; a run that abandons the objective
+    /// and never returns for it simply cannot win (the win check already
+    /// requires `has_objective` — see `Game::land_on_tile`'s `Tile::
+    /// UpStairs` arm). Not carrying, or a tile that already has an item on
+    /// it, is a graceful no-op: one feedback line, no turn.
+    ///
+    /// `CarryEvent::PutDown` fires BEFORE `has_objective` flips to false —
+    /// symmetric with `Game::pickup`'s `ItemEffect::Objective` arm, which
+    /// sets `has_objective` true BEFORE calling `carry_event` for the same
+    /// reason: `Game::carry_event`'s own guard requires `has_objective` to
+    /// currently be true, and at the instant of a put-down the player is,
+    /// until this call, still carrying it.
+    pub(crate) fn put_down(&mut self) {
+        self.fx_hit = None;
+        if self.dead || self.won {
+            return;
+        }
+        if !self.has_objective {
+            self.log(String::from(GAME.strings.put_down_nothing_carried));
+            return; // nothing to set down: no-op, no turn
+        }
+        if self.items.iter().any(|it| it.x == self.px && it.y == self.py) {
+            self.log(String::from(GAME.strings.put_down_occupied));
+            return; // no stacking: no-op, no turn
+        }
+        self.carry_event(CarryEvent::PutDown);
+        self.items.push(Item { x: self.px, y: self.py, kind: GAME.win.objective_item });
+        self.has_objective = false;
+        self.objective_dropped = true;
+        self.log(String::from(GAME.strings.put_down_ok));
+        if !self.spend_turn(0) {
+            return; // died in the dark on a put-down turn: lose beats anything else
+        }
+        self.monsters_act(None);
+        self.compute_fov();
+    }
+
     /// Waiting (byte 4) is also how a portal transits (batch 6 T1): a
     /// deliberate reuse of the existing wait byte rather than a new input
     /// byte, so the input vocabulary stays unchanged and neither sim bot
@@ -1869,6 +1970,9 @@ impl Game {
             self.transit();
             return; // arriving world: monsters don't get a free hit, same courtesy as stairs
         }
+        // batch 8 T1: a plain wait (not a portal transit) while carrying is
+        // the McGuffin's chance to comment on standing still.
+        self.carry_event(CarryEvent::Idle);
         self.monsters_act(None);
         self.compute_fov();
     }
@@ -1928,12 +2032,93 @@ impl Game {
         self.compute_fov();
     }
 
+    /// The McGuffin's voice (batch 8 T1, story §9-B/C/D): dispatch one
+    /// `CarryEvent` against `GAME.carried_lines`. Semantics, in this exact
+    /// order (the ordering is what keeps this a provable no-op when the
+    /// active cartridge's table is empty, as it is in this batch):
+    ///   1. Not currently carrying the objective (`!self.has_objective`):
+    ///      return immediately. Events only speak while the objective is
+    ///      carried.
+    ///   2. No row in `GAME.carried_lines` matches `ev`, or its pool is
+    ///      empty: return immediately — BEFORE the rate-limit check, BEFORE
+    ///      touching `flavor_rng`, BEFORE mutating any field. This is the
+    ///      load-bearing step: this cartridge ships `carried_lines: &[]`
+    ///      (T2 fills it), so with today's data EVERY call below returns
+    ///      here, drawing no RNG and mutating nothing — the reason
+    ///      `--solve`/`--sim`/goldens/frames/xhash all stay byte-identical
+    ///      to the pre-batch-8 baseline despite every call site being wired
+    ///      live.
+    ///   3. Rate limit: except `CarryEvent::PickedUpBloody`/
+    ///      `PickedUpMerciful`/`PutDown` (which always speak — picking up or
+    ///      setting down the objective is always news), suppress if fewer
+    ///      than `WinDef::carry_line_rate_limit` turns have passed since the
+    ///      last McGuffin line actually spoken (`self.mcguffin_last_line_turn`;
+    ///      `self.turns` is already current at every call site below, since
+    ///      each one fires after that turn's own `spend_turn` already ran).
+    ///   4. Pick a line: `CarryEvent::StairsUp` indexes the pool by
+    ///      `self.speech_attempts` (the climb re-entry ladder), clamped to
+    ///      the pool's length; every other event picks via `self.
+    ///      flavor_rng` (replay-safe — the same channel the tier-warning/
+    ///      adjective picks already use, never combat/ai/parley/worldgen).
+    ///   5. Log the chosen line and record this turn as the last one
+    ///      spoken.
+    pub(crate) fn carry_event(&mut self, ev: CarryEvent) {
+        if !self.has_objective {
+            return;
+        }
+        let Some((_, pool)) = GAME.carried_lines.iter().find(|(e, _)| *e == ev) else {
+            return;
+        };
+        if pool.is_empty() {
+            return;
+        }
+        let always_speaks = matches!(
+            ev,
+            CarryEvent::PickedUpBloody | CarryEvent::PickedUpMerciful | CarryEvent::PutDown
+        );
+        if !always_speaks {
+            if let Some(last) = self.mcguffin_last_line_turn {
+                if self.turns.saturating_sub(last) < GAME.win.carry_line_rate_limit {
+                    return;
+                }
+            }
+        }
+        let i = if ev == CarryEvent::StairsUp {
+            (self.speech_attempts as usize).min(pool.len() - 1)
+        } else {
+            self.flavor_rng.range(0, pool.len() as i32) as usize
+        };
+        let line = String::from(pool[i]);
+        self.log(line);
+        self.mcguffin_last_line_turn = Some(self.turns);
+    }
+
     /// batch 7 T2 (story §9-A's minimal inventory): a `Hold`-behavior item
     /// (`ItemDef::on_pickup`) is pushed onto `self.held` and its
     /// `pickup_line` is logged verbatim — no `ItemEffect` is applied at
     /// walk-over time; that waits for a later GIVE (`Game::try_give_player`)
     /// or USE (`Game::use_item`). A `Consume` item keeps the original v0/v1
     /// walk-over behavior unchanged.
+    ///
+    /// batch 8 T1 fix-round (story §9-C): a FIRST pickup of the win-
+    /// condition item (`ItemEffect::Objective`, `!was_dropped`) additionally
+    /// logs `GAME.carried_preamble` verbatim in order, then dispatches
+    /// `CarryEvent::PickedUpBloody` or `PickedUpMerciful` depending on
+    /// whether `self.kills > self.spared` — the pickup register keyed to
+    /// the carrier's kill/spare record. A re-pickup after `put_down` never
+    /// repeats the preamble or the register (`PickedBackUp` only).
+    ///
+    /// `pub(crate)` and pulled out as a pure, no-`self`, no-RNG predicate
+    /// (batch 8 T1 fix-round) specifically so its selection logic is
+    /// unit-testable on its own — `Game::carry_event`'s dispatch is a
+    /// provable no-op while `GAME.carried_lines` is empty (this cartridge,
+    /// T2 fills it), so a black-box test driving a real pickup can't yet
+    /// observe which variant was chosen; this predicate can be checked
+    /// directly regardless.
+    pub(crate) fn pickup_register_event(kills: u32, spared: u32) -> CarryEvent {
+        if kills > spared { CarryEvent::PickedUpBloody } else { CarryEvent::PickedUpMerciful }
+    }
+
     fn pickup(&mut self) {
         if let Some(i) = self.items.iter().position(|i| i.x == self.px && i.y == self.py) {
             let kind = self.items[i].kind;
@@ -1951,9 +2136,31 @@ impl Game {
                     self.log(GAME.strings.atk_item.replacen("{}", a, 1).replacen("{}", &n.to_string(), 1));
                 }
                 ItemEffect::Objective => {
+                    // batch 8 T1: `objective_dropped` is only ever true
+                    // after a prior `Game::put_down` — a re-pickup fires
+                    // `PickedBackUp` instead of the FIRST-pickup register.
+                    // `has_objective` is set BEFORE `carry_event` is called
+                    // (below) so its is-currently-carried guard passes.
+                    let was_dropped = self.objective_dropped;
                     self.has_objective = true;
+                    self.objective_dropped = false;
                     let name = self.theme().objective_name;
                     self.log(GAME.strings.pickup_objective.replace("{}", name));
+                    if was_dropped {
+                        self.carry_event(CarryEvent::PickedBackUp);
+                    } else {
+                        // batch 8 T1 fix-round (story §9-C, the pickup
+                        // register): the FIRST objective pickup logs the
+                        // fixed `carried_preamble` verbatim, in order, no
+                        // RNG, no rate-limit — same fixed-string precedent
+                        // as `pickup_objective` above, just multi-line —
+                        // THEN dispatches the kill/spare-keyed register
+                        // event (see `pickup_register_event`'s doc comment).
+                        for line in GAME.carried_preamble {
+                            self.log(String::from(*line));
+                        }
+                        self.carry_event(Self::pickup_register_event(self.kills, self.spared));
+                    }
                 }
                 ItemEffect::Lore(tier) => {
                     let line = self.lore_line(tier as usize);
@@ -1995,6 +2202,11 @@ impl Game {
             let dist = (px - mx).abs().max((py - my).abs());
             let sees = self.monster_sees_player(&self.monsters[i]);
             if dist == 1 && sees {
+                // batch 8 T1: the McGuffin may react to a monster now
+                // standing right next to you, win-or-lose-of-this-turn
+                // aside — fired once per adjacent-and-seeing monster this
+                // pass, same as the attack/stay decision right below it.
+                self.carry_event(CarryEvent::MonsterAdjacent);
                 if stayed == Some(i) {
                     // Stayed swing (batch 5): listening this turn, no
                     // attack — falls through to the movement code below
@@ -2053,18 +2265,19 @@ impl Game {
 }
 
 impl Game {
-    /// Input-byte vocabulary, 0-15 (save v4, batch 7 T2): 0-4 move/wait (see
+    /// Input-byte vocabulary, 0-16 (save v5, batch 8 T1): 0-4 move/wait (see
     /// below), 5-6 are frontend/reconstruction-layer only (restart/retry —
     /// handled in `save::replay`, never reach here), 7-10 = talk-N/S/W/E,
-    /// 11-14 = give-N/S/W/E, 15 = use — every directional pair's order
-    /// mirrors the move bytes' 0-3 direction order exactly (see
-    /// `Game::try_give_player`'s doc comment; the brief's original "11-12"
-    /// numbering is revised to 11-14 give + 15 use so give stays a 4-byte
-    /// directional block just like move/talk, rather than colliding one
-    /// value short of that shape). Any other byte is silently ignored
-    /// (`_ => {}`) — this is the one place old logs (v1/v2/v3, no bytes
-    /// 7-15) and any future build's own reserved bytes both fall through
-    /// harmlessly.
+    /// 11-14 = give-N/S/W/E, 15 = use, 16 = put-down — every directional
+    /// pair's order mirrors the move bytes' 0-3 direction order exactly
+    /// (see `Game::try_give_player`'s doc comment; the brief's original
+    /// "11-12" numbering is revised to 11-14 give + 15 use so give stays a
+    /// 4-byte directional block just like move/talk, rather than colliding
+    /// one value short of that shape). 16 (put-down, batch 8 T1, story
+    /// §9-D) is self-apply like 15, no direction — see `Game::put_down`.
+    /// Any other byte is silently ignored (`_ => {}`) — this is the one
+    /// place old logs (v1-v4, no byte 16) and any future build's own
+    /// reserved bytes both fall through harmlessly.
     pub(crate) fn apply_input(&mut self, b: u8) {
         match b {
             0 => self.try_move_player(0, -1),
@@ -2081,6 +2294,7 @@ impl Game {
             13 => self.try_give_player(-1, 0),
             14 => self.try_give_player(1, 0),
             15 => self.use_item(),
+            16 => self.put_down(),
             _ => {}
         }
     }

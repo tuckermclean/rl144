@@ -13,26 +13,28 @@ use crate::rng::{fnv_bytes, h64};
 // ---------- Save / replay: state is deltas (seed + input log) ----------
 /* A save is the original seed plus one byte per input; the world is
    reconstructed by replaying. Byte format, no serde:
-     "RL14" | version u8 (=1, 2, 3, or 4) | seed u64 LE | input bytes...
+     "RL14" | version u8 (=1, 2, 3, 4, or 5) | seed u64 LE | input bytes...
    Inputs: 0=N 1=S 2=W 3=E 4=wait 5=restart(reroll to a new seed)
    6=retry(same seed, save v2 — see INPUT_RETRY) 7=talk-N 8=talk-S 9=talk-W
    10=talk-E (save v3, batch 5, DECISION.md item 3 — the Henson ruling;
    direction order mirrors move bytes 0-3 exactly) 11=give-N 12=give-S
    13=give-W 14=give-E 15=use (save v4, batch 7 T2, story §5/§9-A; give's
    direction order mirrors talk's/move's exactly, see
-   `game::Game::apply_input`). Tens of bytes per save. `save_bytes` always
-   writes v4; `parse_save` accepts v1, v2, v3, or v4 — a v1/v2/v3 log never
-   contains bytes 11-15 (give/use didn't exist yet), so it replays byte-
-   identical under v4 parsing either way (see the
-   `v1_save_replays_under_v4_parsing`/`v2_save_replays_under_v4_parsing`/
-   `v3_save_replays_under_v4_parsing` tests in main.rs, and `make xhash`,
-   whose fixture is a v1 blob). This is a version bump rather than a silent
-   superset precisely so an OLD binary (whose own `parse_save` only ever
-   accepted up to v3) REJECTS a v4 save cleanly instead of silently
-   ignoring give/use bytes and diverging from what was actually played —
-   same discipline the v2->v3 talk bump established. */
+   `game::Game::apply_input`) 16=put-down (save v5, batch 8 T1, story
+   §9-D — self-apply like use, no direction). Tens of bytes per save.
+   `save_bytes` always writes v5; `parse_save` accepts v1, v2, v3, v4, or
+   v5 — a v1/v2/v3/v4 log never contains byte 16 (put-down didn't exist
+   yet), so it replays byte-identical under v5 parsing either way (see the
+   `v1_save_replays_under_v5_parsing`/`v2_save_replays_under_v5_parsing`/
+   `v3_save_replays_under_v5_parsing`/`v4_save_replays_under_v5_parsing`
+   tests in main.rs, and `make xhash`, whose fixture is a v1 blob). This is
+   a version bump rather than a silent superset precisely so an OLD binary
+   (whose own `parse_save` only ever accepted up to v4) REJECTS a v5 save
+   cleanly instead of silently ignoring the put-down byte and diverging
+   from what was actually played — same discipline the v3->v4 give/use
+   bump established. */
 const SAVE_MAGIC: &[u8; 4] = b"RL14";
-const SAVE_VERSION: u8 = 4;
+const SAVE_VERSION: u8 = 5;
 pub(crate) const INPUT_RESTART: u8 = 5;
 /// Save v2 (batch 4 task 2, DECISION.md sign-off item 2): reconstruct
 /// `Game::new(g.seed)` — same world, next attempt — instead of rerolling
@@ -51,7 +53,7 @@ pub(crate) fn save_bytes(seed0: u64, inputs: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn parse_save(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
-    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=4).contains(&bytes[4]) {
+    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=5).contains(&bytes[4]) {
         return None;
     }
     let mut s = [0u8; 8];
@@ -98,15 +100,22 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// level. If two replays of one save ever hash differently, channel
 /// discipline broke somewhere.
 ///
-/// `g.killer`, `g.echo`, `g.facing`, and `g.fx_hit` are all deliberately
-/// NOT hashed: every one of them is presentation-only (the End screen's
-/// cause-of-death line; the retry-echo tile; the player sprite's facing;
-/// the screen-feel flash/squash tile, respectively), none affects anything
-/// replay needs to reproduce, and each is fully determined by state that
-/// IS hashed anyway (the same move/attack/death sequence that produces
-/// `dead`/`px`/`py`/the monster-hp deltas). See each field's own doc
-/// comment in `game.rs` for the field-specific rationale; this is the one
-/// place that enumerates them together as a set.
+/// `g.killer`, `g.echo`, `g.facing`, `g.fx_hit`, and (batch 8 T1) `g.
+/// mcguffin_last_line_turn` are all deliberately NOT hashed: every one of
+/// them is presentation-only (the End screen's cause-of-death line; the
+/// retry-echo tile; the player sprite's facing; the screen-feel
+/// flash/squash tile; the McGuffin-chatter rate-limit tracker,
+/// respectively), none affects anything replay needs to reproduce, and
+/// each is fully determined by state that IS hashed anyway (the same
+/// move/attack/death/turn sequence that produces `dead`/`px`/`py`/the
+/// monster-hp deltas/`turns` itself). See each field's own doc comment in
+/// `game.rs` for the field-specific rationale; this is the one place that
+/// enumerates them together as a set.
+///
+/// `g.speech_attempts` and `g.objective_dropped` (batch 8 T1) are, by
+/// contrast, hashed below alongside `held`/`spared`/etc — both are
+/// run-defining (they change what a future carry-event/pickup does), not
+/// presentation, despite being new in the same batch as the field above.
 /// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
 /// in (batch 6 T1): current world, provenance, and every stored
 /// `WorldState`'s own id.
@@ -177,6 +186,11 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         g.dead as u64,
         g.won as u64,
         g.spared as u64,
+        // batch 8 T1: both run-defining (see this function's doc comment
+        // above for why these two, unlike `mcguffin_last_line_turn`, are
+        // hashed rather than excluded).
+        g.speech_attempts as u64,
+        g.objective_dropped as u64,
         g.combat_rng.0,
         g.ai_rng.0,
         g.flavor_rng.0,

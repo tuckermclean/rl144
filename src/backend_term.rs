@@ -172,6 +172,9 @@ enum Input {
     Give(u8),
     /// USE (batch 7 T2): byte 15, no chord — a single key.
     Use,
+    /// PUT DOWN (batch 8 T1, story §9-D): byte 16, no chord — a single key,
+    /// same convention as `Use`.
+    PutDown,
     Wait,
     Restart,
     NewWorld,
@@ -232,7 +235,8 @@ fn read_escape_seq() -> Input {
 /// before returning. wasd/hjkl/arrows move, '.' waits, 'r' requests a retry
 /// (same seed) and 'n' a new world (reroll) — both are only acted on by the
 /// End screen, matching the minifb backend's R/N keys — 'q'/lone-ESC/Ctrl-C
-/// quit, 't' begins the talk chord (batch 5, see `read_talk_chord`). Unknown
+/// quit, 't' begins the talk chord (batch 5, see `read_talk_chord`), 'g'
+/// begins the give chord, 'u' is USE, 'p' is PUT DOWN (batch 8 T1). Unknown
 /// bytes are ignored.
 fn read_input(raw: Termios) -> Input {
     let Some(b) = raw_read_byte() else { return Input::Quit }; // EOF (stdin closed)
@@ -257,6 +261,9 @@ fn read_input(raw: Termios) -> Input {
         // exactly — see `read_give_chord`); `u` is USE, no chord needed.
         b'g' => read_give_chord(raw),
         b'u' => Input::Use,
+        // batch 8 T1: `p` is PUT DOWN (byte 16, story §9-D), no chord
+        // needed, same convention as `u`.
+        b'p' => Input::PutDown,
         _ => Input::Ignore,
     }
 }
@@ -608,6 +615,16 @@ pub(crate) fn run(
                         input_log.push(15);
                         attempt_log.push(15);
                         game.apply_input(15);
+                        confirm_armed = false;
+                    }
+                    // PUT DOWN (batch 8 T1, story §9-D): byte 16, no chord,
+                    // same discipline as Use. NEEDS INTERACTIVE PLAYTEST:
+                    // key feel/timing can only be compile-checked headlessly
+                    // in this environment.
+                    Input::PutDown => {
+                        input_log.push(16);
+                        attempt_log.push(16);
+                        game.apply_input(16);
                         confirm_armed = false;
                     }
                     Input::Wait => {

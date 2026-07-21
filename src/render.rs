@@ -529,7 +529,7 @@ fn render_title(g: &Game, cells: &mut [Cell]) {
     row += 2;
     put_centered(cells, row, "Move: arrows / wasd / hjkl    Wait: .    Talk: t+dir", PAL_STATUS);
     row += 1;
-    put_centered(cells, row, "Give: g+dir    Use: u", PAL_STATUS);
+    put_centered(cells, row, "Give: g+dir    Use: u    Put down: p", PAL_STATUS);
     row += 1;
     put_centered(cells, row, "Save: F5    World info: F1    Quit: q", PAL_STATUS);
     row += 2;
@@ -818,7 +818,7 @@ mod tests {
     fn title_legend_fits_78_cols() {
         let lines = [
             "Move: arrows / wasd / hjkl    Wait: .    Talk: t+dir",
-            "Give: g+dir    Use: u",
+            "Give: g+dir    Use: u    Put down: p",
             "Save: F5    World info: F1    Quit: q",
             "[R] retry this world  [N] new world  [Q] quit",
         ];

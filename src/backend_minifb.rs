@@ -363,6 +363,18 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     talk_armed = false;
                     give_armed = false;
                 }
+                // `p`: PUT DOWN (byte 16, batch 8 T1, story §9-D) —
+                // self-apply, no chord, same convention as `u`. NEEDS
+                // INTERACTIVE PLAYTEST: key feel/timing can only be
+                // compile-checked headlessly in this environment.
+                if window.is_key_pressed(Key::P, KeyRepeat::No) {
+                    input_log.push(16);
+                    attempt_log.push(16);
+                    game.apply_input(16);
+                    confirm_armed = false;
+                    talk_armed = false;
+                    give_armed = false;
+                }
                 if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
                     input_log.push(4);
                     attempt_log.push(4);
