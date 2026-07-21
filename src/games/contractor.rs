@@ -143,49 +143,94 @@ const OGRE_TALK: [[&str; 2]; 4] = [
     ],
 ];
 
-/* batch 9 T1 (story §9-J prep): placeholder talk-line tables for the two new
-   passive cast members — T2's own content-authoring task replaces these
-   (per the batch-9 brief: "provide MINIMAL VALID PLACEHOLDER screens...
-   sufficient to compile/test/dump; T2 replaces them with the real SPACES-
-   DRAFT content"). Grounded per the existing rule (restate only what the
-   engine did/can prove), 4-stage x 2-variant shape identical to every other
-   kind's table. `passive`/`bump` (below) don't change how talk/regard work
-   at all — the dialogue ladder climbs exactly the same way for these two as
-   for rat/goblin/ogre. */
+/* batch 9 T2 (story §9-J, SIGN-OFF ASK #8): the trainer/donkey talk-line
+   content, replacing T1's placeholders. Same 4-stage x 2-variant shape and
+   dispatch as every other kind (`try_talk_player`'s `stage` computation is
+   unchanged by `passive`/`bump` — the dialogue ladder climbs exactly the
+   same way for these two as for rat/goblin/ogre): 0 = first landed talk,
+   1 = a later landed talk still below threshold, 2 = the landed talk that
+   crosses `talk_threshold` (also reused forever once calm), 3 = a failed
+   roll. Neither table uses `{M}` — the trainer and the donkey are named,
+   singular NPCs (unlike the generic per-theme `RAT`/`GOBLIN`/`OGRE`), so
+   their lines are direct, unsubstituted text; `try_talk_player`'s
+   `.replace("{M}", name)` is a harmless no-op on a line with no `{M}` in it,
+   same mechanism `talk_lines_fit_log_row` already exercises across every
+   theme (the fill is a no-op there too, so the test still covers these
+   lines' raw length).
+
+   DONKEY_TALK wires `DON_001`-`DON_005` (FLAVOR-DRAFT-v0.md, "donkey regard
+   stages") in verbatim, same same-ID-text-conform discipline as every prior
+   content batch — no em-dashes in the source, so no ASCII normalization was
+   needed this time. `DON_001` ("The donkey regards you.") is the pun: the
+   line names the `regard` mechanic firing on a first landed talk. Fit:
+   DON_001 -> stage 0 (first landed) paired with a new grounded variant;
+   DON_002/DON_003 -> stage 1 (mid-landed, both read as "still warming up");
+   DON_004/DON_005 -> stage 2 (crosses threshold / already calm forever, both
+   already describe the settled state). No canon line covers a FAILED talk,
+   so stage 3 is new-authored, grounded in the donkey's established
+   stubbornness (its own `BumpResponse::Shove` characterization above) and
+   nothing else. This spends all 5 of the story's "~5 regard stages" lines
+   across the engine's real 4-stage x 2-variant shape per the brief's own
+   framing: content-fit, not a table-shape change.
+
+   TRAINER_TALK wires `TRA_001`-`TRA_004` (the rule-one/cheese/depth-two/
+   talk-skepticism lines) as the four canon variant-0 slots, one per stage,
+   in escalating-conversation order; `TRA_005`-`TRA_008` are NOT reused here
+   — they're anchored to other triggers (sparing/talking to a training rat,
+   resurrection, repeat deaths), not to "the player landed a talk with the
+   trainer himself," so folding them into this stage table would misattribute
+   what fired them; they're held out for whatever future hook actually
+   fires on those events (same "held out, not dropped" treatment batch 8 T2
+   gave NAR_050-054/060/062/063). New grounded variant-1 lines pair each
+   canon line in the trainer's same terse, dry-coach register.
+
+   Fix round: `TRAINER`'s `talk_threshold` was T1's placeholder value of 2,
+   which made stage 1 ("mid-landed") mechanically unreachable in play — a
+   first landed talk brings `regard` to 1, so the very next landed talk
+   would cross the threshold straight to stage 2, never landing on stage 1,
+   which meant TRA_002 (the canon cheese line, stage 1's variant-0 slot)
+   could never actually display. Bumped `talk_threshold` to 3 (see the
+   `TRAINER` `MonsterDef` row below) so all four authored stages are
+   reachable: stage 0 at regard 0->1, stage 1 at regard 1->2, stage 2 at
+   regard 2->3 (crosses threshold, becalms), same rung-by-rung climb every
+   other kind's table gets. `receptivity_base: 90` was already high enough
+   that this costs at most one extra landed talk in practice — the trainer
+   is a passive, un-killable, unlimited-attempts NPC, so there's no failure
+   cost to a slower ladder, unlike a hostile monster's threshold tuning. */
 const TRAINER_TALK: [[&str; 2]; 4] = [
     [
-        "The {M} nods, unsurprised to see you on your feet.",
-        "The {M} watches you find your balance, patient about it.",
+        "Rule one: kill five rats. Warms up the sword arm. Everyone does it.",
+        "You're in the yard now. Ask away. Opinions are free; rats aren't.",
     ],
     [
-        "The {M} keeps watching, offering nothing more yet.",
-        "The {M} waits, letting you find your own rhythm.",
+        "Bring cheese. Rats love cheese. I've been down there. Twice.",
+        "Still talking. Fine. The rats aren't going anywhere either.",
     ],
     [
-        "The {M} seems satisfied. There is nothing left to teach here.",
-        "The {M} settles, done teaching you, for now.",
+        "Depth two, both careers. You don't forget your first depth two.",
+        "Nothing left to teach. You'll figure the rest out down there.",
     ],
     [
-        "The {M} shrugs, unmoved by whatever you just said.",
-        "The {M} keeps its own counsel, unconvinced.",
+        "Talking to monsters. Heard of it. Never saw the percentage in it.",
+        "Save the conversation. The dark doesn't listen either.",
     ],
 ];
 const DONKEY_TALK: [[&str; 2]; 4] = [
     [
-        "The {M} flicks an ear at you and says nothing.",
-        "The {M} regards you sideways, chewing on nothing in particular.",
+        "The donkey regards you.",
+        "The donkey's ears swivel toward you. That much, at least, is new.",
     ],
     [
-        "The {M} still won't be hurried by talk alone.",
-        "The {M} shifts its weight, unconvinced so far.",
+        "The donkey permits an ear scratch. Your half or theirs. Unclear.",
+        "The donkey shifts its weight toward you. Diplomatically.",
     ],
     [
-        "The {M} leans into you, as settled as it gets.",
-        "The {M} stops fidgeting. That is as warm as it gets.",
+        "The donkey has becalmed. It was never not calm. Still: official.",
+        "The donkey stands beside you now. On purpose.",
     ],
     [
-        "The {M} plants its feet and will not be talked anywhere.",
-        "The {M} looks away, entirely unmoved.",
+        "The donkey does not look up. Whatever that was, it wasn't enough.",
+        "The donkey stays put, chewing, unmoved by any of it.",
     ],
 ];
 
@@ -234,7 +279,7 @@ const MONSTERS: [MonsterDef; 5] = [
         atk: 0,
         glyph: b'Y',
         color: 0xC0A050,
-        talk_threshold: 2,
+        talk_threshold: 3,
         receptivity_base: 90,
         talk_lines: TRAINER_TALK,
         passive: true,
