@@ -2027,6 +2027,38 @@ mod tests {
         assert!(tactical >= greedy, "tactical {tactical} should win >= greedy {greedy} over 300 seeds");
     }
 
+    /// batch 10: the tactical-diplomat never attacks (kills stay 0) and is
+    /// deterministic.
+    #[test]
+    fn tactical_pacifist_never_attacks_and_deterministic() {
+        use headless::{sim_seed, Policy};
+        for seed in [1u64, 7, 42, 100, 1337] {
+            let (a, _) = sim_seed(seed, Policy::TacticalPacifist);
+            let (b, _) = sim_seed(seed, Policy::TacticalPacifist);
+            assert_eq!(a.kills, 0, "tactical-diplomat must never kill, seed {seed}");
+            assert_eq!(
+                (a.won, a.turns, a.light_left, a.spared),
+                (b.won, b.turns, b.light_left, b.spared),
+                "tactical-diplomat must be deterministic, seed {seed}"
+            );
+            assert!(!a.stuck, "must not get stuck, seed {seed}");
+        }
+    }
+
+    /// A diplomat who routes around fights and only talks when forced wins at least
+    /// as often as the blunt pacifist that talks its way through everything.
+    #[test]
+    fn tactical_pacifist_wins_at_least_as_often_as_pacifist() {
+        use headless::{sim_seed, Policy};
+        let mut base = 0u32;
+        let mut tac = 0u32;
+        for seed in 0u64..300 {
+            if sim_seed(seed, Policy::Pacifist).0.won { base += 1; }
+            if sim_seed(seed, Policy::TacticalPacifist).0.won { tac += 1; }
+        }
+        assert!(tac >= base, "tactical-diplomat {tac} should win >= pacifist {base} over 300 seeds");
+    }
+
     /// Batch 6 T1: neither sim policy ever emits the wait byte (4) — the
     /// only input that can transit a portal (`game::Game::wait_turn`'s doc
     /// comment) — so a bot run must never leave the root world, regardless

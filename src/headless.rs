@@ -621,22 +621,24 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         };
         match step {
             Some(b) => {
-                // Pacifist (batch 5 T2): if the tile this step lands on
-                // holds a non-calm monster, talk instead of swing — talk
-                // bytes mirror the move bytes' direction order exactly
-                // (7-10 = N/S/W/E, see apply_input), so `7 + b` is always
-                // the correctly-directed talk. A calm monster on that tile
-                // is not a blocker (the engine swaps on the move byte), so
-                // it falls through to the normal move below unchanged.
-                // `cornered_talk` (batch 10 T2 fix round) extends this same
-                // `7 + b` mapping to the "engage when cornered" override
-                // above, so `TacticalPacifist` talks instead of attacking in
-                // that path too.
+                // Pacifist (batch 5 T2), extended to TacticalPacifist (batch
+                // 10 T3): if the tile this step lands on holds a non-calm
+                // monster, talk instead of swing — talk bytes mirror the
+                // move bytes' direction order exactly (7-10 = N/S/W/E, see
+                // apply_input), so `7 + b` is always the correctly-directed
+                // talk. A calm monster on that tile is not a blocker (the
+                // engine swaps on the move byte), so it falls through to the
+                // normal move below unchanged. `cornered_talk` (batch 10 T2
+                // fix round) extends this same `7 + b` mapping to the
+                // "engage when cornered" override above, so `TacticalPacifist`
+                // talks instead of attacking in that path too — combined with
+                // this normal-step `talks` gate, the diplomat now never
+                // attacks at all.
                 let (dx, dy) = SIM_DIRS[b as usize];
                 let (nx, ny) = (g.px + dx, g.py + dy);
+                let talks = matches!(policy, Policy::Pacifist | Policy::TacticalPacifist);
                 let blocked = cornered_talk
-                    || (policy == Policy::Pacifist
-                        && g.monsters.iter().any(|m| m.x == nx && m.y == ny && !m.calm));
+                    || (talks && g.monsters.iter().any(|m| m.x == nx && m.y == ny && !m.calm));
                 g.apply_input(if blocked { 7 + b } else { b });
                 turns += 1;
             }
