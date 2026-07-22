@@ -1062,6 +1062,37 @@ mod tests {
         assert_eq!(g.kills, 0, "standing tall is not violence — no kill");
     }
 
+    /// batch 11 T3: the tactical-diplomat's ANSWER to an ogre is its existing
+    /// cornered-talk — talk is a no-move action, so talking at an adjacent ogre
+    /// holds ground and endures its hit exactly like a bare `wait`, and awes it
+    /// into a becalm within `awe_threshold` turns regardless of the (low-odds
+    /// for an ogre) talk roll. This is why T3 needed NO new bot branch: an
+    /// explicit "wait to stand tall" would be redundant with talk AND worse (a
+    /// bare wait risks portal-transit, the invariant batch 10 guarded). Proves
+    /// the composition: talk-adjacent == stand tall.
+    #[test]
+    fn talking_at_an_ogre_stands_tall_and_awes() {
+        let mut g = Game::new(11);
+        let (ox, oy) = (g.px + 1, g.py); // ogre to the East
+        g.monsters.clear();
+        g.monsters.push(crate::game::Monster {
+            kind: OGRE,
+            x: ox,
+            y: oy,
+            hp: 99,
+            ..crate::game::Monster::spawn(OGRE, ox, oy)
+        });
+        let thr = crate::game::Monster::stats(OGRE).awe_threshold as usize;
+        for _ in 0..thr {
+            g.apply_input(10); // talk East = 7 + dir(E=3): a no-move hold, not a swing
+        }
+        assert!(
+            g.monsters.iter().any(|m| m.x == ox && m.y == oy && m.calm),
+            "talking at an ogre (holding adjacent) should awe it into calm"
+        );
+        assert_eq!(g.kills, 0, "the diplomat never kills — awe is not violence");
+    }
+
     /// batch 11 T2: stepping away from an awe-in-progress ogre resets
     /// `Monster.awe` to 0 (fleeing breaks the stare) — a monster that isn't
     /// cardinally adjacent this turn never becalms via awe regardless of
