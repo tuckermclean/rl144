@@ -246,6 +246,7 @@ const MONSTERS: [MonsterDef; 5] = [
         passive: false,
         bump: BumpResponse::Fight,
         retaliation: 0,
+        awe_threshold: 0,
     },
     MonsterDef {
         hp: 6,
@@ -258,6 +259,7 @@ const MONSTERS: [MonsterDef; 5] = [
         passive: false,
         bump: BumpResponse::Fight,
         retaliation: 0,
+        awe_threshold: 0,
     },
     MonsterDef {
         hp: 13,
@@ -272,6 +274,9 @@ const MONSTERS: [MonsterDef; 5] = [
         // [TUNE] batch 11: guaranteed retaliation — bump-attacking an ogre
         // always costs 3 HP, even on a killing blow (task 5 tunes this).
         retaliation: 3,
+        // [TUNE] batch 11 T2: 3 cardinal-adjacent turns of not swinging
+        // becalms it via awe — the diplomat's ogre answer.
+        awe_threshold: 3,
     },
     // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
     // construction — `passive` keeps it out of `monsters_act` entirely, and
@@ -290,6 +295,7 @@ const MONSTERS: [MonsterDef; 5] = [
         passive: true,
         bump: BumpResponse::Yield,
         retaliation: 0,
+        awe_threshold: 0,
     },
     // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
     // `bump: Shove` pushes it one tile if the destination is plain floor,
@@ -309,6 +315,7 @@ const MONSTERS: [MonsterDef; 5] = [
         passive: true,
         bump: BumpResponse::Shove,
         retaliation: 0,
+        awe_threshold: 0,
     },
 ];
 

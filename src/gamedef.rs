@@ -194,6 +194,14 @@ pub(crate) struct MonsterDef {
     /// value is the batch-11 tuning knob. Distinct from the monster's ordinary
     /// `monsters_act` turn (which still happens if it survives).
     pub(crate) retaliation: i32,
+    /// batch 11 T2: cardinal-adjacent turns needed to build enough awe
+    /// (`Monster::awe`) to becalm this kind WITHOUT ever talking to or
+    /// giving to it — "standing tall": end your turn beside it, don't
+    /// swing, endure whatever it does back. `0` = not awe-able at all (a
+    /// per-kind constant, not run state — contrast `Monster::awe`, which IS
+    /// hashed run state). `3` for the ogre ([TUNE] batch 11), `0` for every
+    /// other kind this batch.
+    pub(crate) awe_threshold: u8,
 }
 
 /// A monster's reaction to a player's bump-into (batch 9 T1, SIGN-OFF ASK

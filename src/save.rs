@@ -132,6 +132,10 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// contrast, hashed below alongside `held`/`spared`/etc — both are
 /// run-defining (they change what a future carry-event/pickup does), not
 /// presentation, despite being new in the same batch as the field above.
+/// Same contrast for `Monster.awe` (batch 11 T2): hashed per-monster right
+/// beside `regard`/`calm` — it changes whether a future turn becalms the
+/// monster, exactly like `regard` does, so it's run-defining, not
+/// presentation.
 /// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
 /// in (batch 6 T1): current world, provenance, and every stored
 /// `WorldState`'s own id.
@@ -265,12 +269,13 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
             h = fnv_bytes(h, &[tile_hash_byte(*t)]);
         }
         for m in monsters {
-            // regard/calm (batch 5, DECISION.md item 3) are hashed — mercy
-            // is run-defining state, not presentation-only like the
+            // regard/calm (batch 5, DECISION.md item 3) and awe (batch 11
+            // T2, the stand-tall becalm) are all hashed — mercy is
+            // run-defining state, not presentation-only like the
             // killer/echo/facing/fx_hit exclusion set below.
             h = fnv_bytes(
                 h,
-                &[m.x as u8, m.y as u8, m.kind as u8, m.hp as u8, m.regard, m.calm as u8],
+                &[m.x as u8, m.y as u8, m.kind as u8, m.hp as u8, m.regard, m.calm as u8, m.awe],
             );
         }
         for it in items {

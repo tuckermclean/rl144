@@ -347,7 +347,7 @@ mod tests {
     fn push_into_monster_refuses() {
         let mut g = blank_room(1);
         g.blocks.push((11, 10));
-        g.monsters.push(Monster { x: 12, y: 10, kind: RAT, hp: 3, regard: 0, calm: false });
+        g.monsters.push(Monster { x: 12, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
         g.try_move_player(1, 0);
         assert!(g.blocks.contains(&(11, 10)), "block must not move");
         assert_eq!((g.px, g.py), (10, 10));
@@ -733,6 +733,7 @@ mod tests {
             hp: 999,
             regard: 0,
             calm: false,
+            awe: 0,
         });
         g.try_move_player(dx, dy);
         assert_eq!(g.light, l1 - 2, "bump-attack should burn 1 turn + 1 violence tax = 2 light");
@@ -760,6 +761,7 @@ mod tests {
             hp: 1, // guaranteed 1-hit kill
             regard: 0,
             calm: false,
+            awe: 0,
         });
         g.light = 2; // 1 (turn) + 1 (tax) lands exactly on 0
         g.try_move_player(dx, dy);
@@ -861,6 +863,7 @@ mod tests {
             hp: 1,
             regard: 0,
             calm: false,
+            awe: 0,
         });
         g.monsters.push(Monster {
             x: px + bdx,
@@ -869,6 +872,7 @@ mod tests {
             hp: 6,
             regard: 0,
             calm: false,
+            awe: 0,
         });
         let hp0 = g.hp;
         talk_until_landed(&mut g, adx, ady, RAT); // regard 0->1, threshold 2, not yet calm
@@ -905,6 +909,7 @@ mod tests {
             hp: 1, // near its kind max wound term — keeps receptivity high
             regard: 0,
             calm: false,
+            awe: 0,
         });
         let spared0 = g.spared;
 
@@ -938,14 +943,14 @@ mod tests {
         let mut g = Game::new(1);
         g.monsters.clear();
         g.atk = 3; // Game::new's default; +6*(atk-3) term is 0
-        let fresh_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false };
+        let fresh_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0 };
         assert_eq!(receptivity(&fresh_ogre, &g), 20, "a fresh ogre should sit at exactly its BASE");
 
         // Wounded (1 of 13 hp -> wound term 40*(13-1)/13 = 36) plus a
         // strong player (atk 9 -> +6*(9-3) = 36) pushes well past 70:
         // 20 + 0 + 36 + 36 - 0 = 92.
         g.atk = 9;
-        let wounded_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 1, regard: 0, calm: false };
+        let wounded_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0 };
         let r = receptivity(&wounded_ogre, &g);
         assert!(r >= 70, "wounded ogre + high atk should land >= 70-ish, got {}", r);
         assert_eq!(r, 92, "and the exact integer math should hold");
@@ -956,7 +961,7 @@ mod tests {
         // (20 + 0 + 0 - 18 - 10 = -8); receptivity must still floor at 5.
         g.atk = 0;
         g.light = 1;
-        let floor_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false };
+        let floor_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0 };
         assert_eq!(receptivity(&floor_ogre, &g), 5, "receptivity must clamp at the floor of 5");
 
         // Clamp ceiling: a high-regard, badly wounded rat with a very
@@ -964,7 +969,7 @@ mod tests {
         // at 95.
         g.atk = 20;
         g.light = game::start_light();
-        let capped_rat = Monster { x: 0, y: 0, kind: RAT, hp: 1, regard: 10, calm: false };
+        let capped_rat = Monster { x: 0, y: 0, kind: RAT, hp: 1, regard: 10, calm: false, awe: 0 };
         assert_eq!(receptivity(&capped_rat, &g), 95, "receptivity must clamp at the ceiling of 95");
     }
 
@@ -979,7 +984,7 @@ mod tests {
         // in the way
         let (ox, oy) = (g.px + 1, g.py);
         g.monsters.clear();
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 1, regard: 0, calm: false });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0 });
         let hp_before = g.hp;
         g.apply_input(3); // move/bump East onto the ogre
         assert!(
@@ -1006,7 +1011,7 @@ mod tests {
         // retaliation (`OGRE`'s `retaliation` in the contractor cartridge).
         let (ox, oy) = (g.px + 1, g.py);
         g.monsters.clear();
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 100, regard: 0, calm: false });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 100, regard: 0, calm: false, awe: 0 });
         g.hp = 2;
         let ogre_name = g.theme().mobs[OGRE as usize];
         let turns_before = g.turns;
@@ -1028,24 +1033,110 @@ mod tests {
         );
     }
 
+    /// batch 11 T2: "standing tall" — waiting cardinally adjacent to an
+    /// ogre for `awe_threshold` turns, WITHOUT ever attacking it, builds
+    /// enough `Monster.awe` to becalm it via `Game::resolve_awe`, exactly
+    /// like a landed talk would (`calm = true`, `Game::spared += 1`) — no
+    /// violence involved, so `kills` stays 0.
+    #[test]
+    fn standing_tall_awes_an_ogre_into_calm() {
+        let mut g = Game::new(11);
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.clear();
+        g.monsters.push(crate::game::Monster {
+            kind: OGRE,
+            x: ox,
+            y: oy,
+            hp: 99,
+            ..crate::game::Monster::spawn(OGRE, ox, oy)
+        });
+        let thr = crate::game::Monster::stats(OGRE).awe_threshold as usize;
+        assert!(thr > 0, "ogre must be awe-able");
+        for _ in 0..thr {
+            g.apply_input(4); // WAIT adjacent = stand tall
+        }
+        assert!(
+            g.monsters.iter().any(|m| m.x == ox && m.y == oy && m.calm),
+            "ogre should becalm via awe"
+        );
+        assert_eq!(g.kills, 0, "standing tall is not violence — no kill");
+    }
+
+    /// batch 11 T2: stepping away from an awe-in-progress ogre resets
+    /// `Monster.awe` to 0 (fleeing breaks the stare) — a monster that isn't
+    /// cardinally adjacent this turn never becalms via awe regardless of
+    /// how much awe it had built up before.
+    #[test]
+    fn fleeing_resets_ogre_awe() {
+        let mut g = Game::new(11);
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.clear();
+        g.monsters.push(crate::game::Monster {
+            kind: OGRE,
+            x: ox,
+            y: oy,
+            hp: 99,
+            ..crate::game::Monster::spawn(OGRE, ox, oy)
+        });
+        let thr = crate::game::Monster::stats(OGRE).awe_threshold as usize;
+        assert!(thr > 1, "test needs room to step away before the threshold is reached");
+        // Build awe part-way (thr - 1 turns), staying adjacent throughout.
+        for _ in 0..(thr - 1) {
+            g.apply_input(4);
+        }
+        let ogre = g.monsters.iter().find(|m| m.x == ox && m.y == oy).expect("ogre still present");
+        assert!(ogre.awe > 0, "awe should have built up while standing tall");
+        assert!(!ogre.calm, "should not yet be calm — one turn short of threshold");
+        // Step away one turn (west, back toward where the player started —
+        // any direction off the ogre's tile breaks adjacency).
+        let (dx, dy) = [(0, 1), (0, -1), (-1, 0)]
+            .into_iter()
+            .find(|&(dx, dy)| {
+                let (nx, ny) = (g.px + dx, g.py + dy);
+                in_map(nx, ny) && g.map[idx(nx, ny)] != Tile::Wall && (nx, ny) != (ox, oy)
+            })
+            .expect("fixture: at least one non-wall, non-ogre neighbor must exist");
+        g.apply_input(match (dx, dy) {
+            (0, -1) => 0,
+            (0, 1) => 1,
+            (-1, 0) => 2,
+            (1, 0) => 3,
+            _ => unreachable!(),
+        });
+        let ogre = g.monsters.iter().find(|m| m.kind == OGRE).expect("ogre still present");
+        assert_eq!(ogre.awe, 0, "stepping away should reset awe to 0");
+        assert!(!ogre.calm, "should not have becalmed");
+    }
+
     /// Landed-vs-failed determinism (batch 5 addendum): two independent
-    /// live games from the same seed, talked at the same fresh ogre the
+    /// live games from the same seed, talked at the same fresh goblin the
     /// same number of times, produce an identical `state_hash` — whether
     /// each individual roll happened to land or fail. `parley_rng` has no
     /// external entropy, so the exact sequence of landed/failed outcomes
     /// must repeat exactly. Also confirms the scenario actually exercises
-    /// both outcomes (an ogre's low BASE receptivity makes at least one
+    /// both outcomes (this kind's BASE receptivity makes at least one
     /// failure near-certain within the attempt cap; regard climbing toward
     /// `Monster::talk_threshold` makes at least one landing certain too).
+    ///
+    /// batch 11 T2: switched from OGRE to GOBLIN. The ogre is now
+    /// awe-able (`MonsterDef::awe_threshold` 3) — repeatedly talking to an
+    /// adjacent, non-attacked monster ALSO builds `Monster.awe`
+    /// (`Game::resolve_awe` doesn't distinguish "why" the player didn't
+    /// attack this turn), so a loop of pure talk against a fresh ogre now
+    /// always becalms it via awe by the 3rd attempt regardless of any
+    /// talk landing — talk_threshold 4 can never be reached first. The
+    /// goblin (awe_threshold 0) isn't awe-able at all, so it isolates the
+    /// parley-determinism property this test is actually about from the
+    /// new stand-tall mechanic.
     #[test]
     fn parley_landed_vs_failed_deterministic() {
         let run = |seed: u64| -> (u64, bool, bool) {
             let mut g = Game::new(seed);
             g.monsters.clear();
-            // Headroom: a fresh ogre's failed rolls attack for real damage
+            // Headroom: a fresh goblin's failed rolls attack for real damage
             // (it is never stayed on a failed roll — that's the property
-            // under test), and this ogre's low BASE receptivity means
-            // several fails are likely before the first landing.
+            // under test), and this kind's BASE receptivity means several
+            // fails are likely before the first landing.
             g.hp = 5000;
             g.maxhp = 5000;
             let (px, py) = (g.px, g.py);
@@ -1058,10 +1149,11 @@ mod tests {
             g.monsters.push(Monster {
                 x: px + dx,
                 y: py + dy,
-                kind: OGRE,
-                hp: 13,
+                kind: GOBLIN,
+                hp: 6,
                 regard: 0,
                 calm: false,
+                awe: 0,
             });
             let (mut saw_landed, mut saw_failed) = (false, false);
             for _ in 0..50 {
@@ -1113,6 +1205,7 @@ mod tests {
             hp: 13,
             regard: 0,
             calm: false,
+            awe: 0,
         });
         let mut found = false;
         for _ in 0..200 {
@@ -1164,6 +1257,7 @@ mod tests {
                 hp: 999,
                 regard: 0,
                 calm: false,
+                awe: 0,
             });
             for _ in 0..10 {
                 g.try_move_player(dx, dy);
@@ -1288,7 +1382,7 @@ mod tests {
     #[test]
     fn give_with_empty_hands_is_noop() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
         let before_turns = g.turns;
         assert!(g.held.is_empty(), "fixture: nothing held");
         g.apply_input(11); // give-N
@@ -1301,7 +1395,7 @@ mod tests {
     #[test]
     fn give_declined_when_no_matching_rule() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
         g.held = vec![COAT];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -1316,7 +1410,7 @@ mod tests {
     #[test]
     fn cheese_to_rat_is_a_regard_penalty() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 1, calm: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 1, calm: false, awe: 0 });
         g.held = vec![CHEESE];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -1330,7 +1424,7 @@ mod tests {
     #[test]
     fn potion_given_heals_full_and_raises_regard() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false, awe: 0 });
         g.held = vec![POTION];
         g.apply_input(11); // give-N
         let maxhp = Monster::stats(RAT).hp;
@@ -2053,8 +2147,20 @@ mod tests {
         assert!(total_spared > 0, "expected at least one becalmed monster over seeds 0..200");
     }
 
-    /// batch 10: the tactical-violent bot is deterministic (two runs identical)
-    /// and never talks (it's a violence policy — spared stays 0).
+    /// batch 10: the tactical-violent bot is deterministic (two runs
+    /// identical). It never EMITS a talk byte — `sim_seed`'s `talks` gate is
+    /// only ever set for `Policy::Pacifist`/`TacticalPacifist`, never plain
+    /// `Tactical` — so it never spares via the talk/give path.
+    ///
+    /// batch 11 T2 note: `spared` is no longer proof of that by itself.
+    /// "Standing tall" (`Game::resolve_awe`) can now becalm an awe-able
+    /// monster (the ogre) purely from ending several turns cardinally
+    /// adjacent without attacking it — which can happen incidentally to a
+    /// violent bot too, e.g. while its BFS route runs alongside a stationary
+    /// ogre it hasn't targeted yet. That's a real, intended side effect of
+    /// the new mechanic (any player/bot who merely doesn't swing at an ogre
+    /// it's beside earns the same mercy a talker would), not a bug in this
+    /// policy — so this test no longer asserts `spared == 0`.
     #[test]
     fn tactical_bot_deterministic_and_never_talks() {
         use headless::{sim_seed, Policy};
@@ -2066,7 +2172,6 @@ mod tests {
                 (b.won, b.dead_dark, b.dead_combat, b.stuck, b.turns, b.light_left, b.kills, b.spared),
                 "tactical sim must be deterministic for seed {seed}"
             );
-            assert_eq!(a.spared, 0, "tactical (violent) policy must never talk, seed {seed}");
             assert!(!a.stuck, "tactical bot must not get stuck, seed {seed}");
         }
     }
@@ -2726,7 +2831,7 @@ mod tests {
     #[test]
     fn passive_monster_never_chases_or_attacks() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 12, y: 11, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false });
+        g.monsters.push(Monster { x: 12, y: 11, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0 });
         let hp_before = g.hp;
         for _ in 0..20 {
             g.wait_turn();
@@ -2743,7 +2848,7 @@ mod tests {
     #[test]
     fn bump_fight_kind_attacks_unchanged() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
         g.try_move_player(1, 0);
         assert_eq!((g.px, g.py), (10, 10), "attacking doesn't move the player");
         assert!(g.monsters.is_empty() || g.monsters[0].hp < 3, "the rat takes damage or dies");
@@ -2756,7 +2861,7 @@ mod tests {
     fn bump_yield_kind_swaps_without_damage() {
         let mut g = blank_room(1);
         let full_hp = GAME.monsters[TRAINER as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0 });
         g.try_move_player(1, 0);
         assert_eq!((g.px, g.py), (11, 10), "player swaps into the trainer's tile");
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (10, 10), "trainer swaps back to the player's old tile");
@@ -2769,7 +2874,7 @@ mod tests {
     fn bump_shove_kind_pushes_onto_floor() {
         let mut g = blank_room(1);
         let full_hp = GAME.monsters[DONKEY as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0 });
         g.try_move_player(1, 0);
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (12, 10), "donkey shoved one tile");
         assert_eq!((g.px, g.py), (11, 10), "player advances into the vacated tile");
@@ -2783,7 +2888,7 @@ mod tests {
         let mut g = blank_room(1);
         g.map[idx(12, 10)] = Tile::Wall;
         let full_hp = GAME.monsters[DONKEY as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0 });
         let before_turns = g.turns;
         g.try_move_player(1, 0);
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (11, 10), "donkey plants, does not move");

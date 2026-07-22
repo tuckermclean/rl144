@@ -253,6 +253,17 @@ pub(crate) struct Monster {
     /// stands). Bumping it swaps positions instead of attacking (see
     /// `Game::try_move_player`). Hashed, same rationale as `regard`.
     pub(crate) calm: bool,
+    /// Awe accumulated by "standing tall" (batch 11 T2 — the diplomat's
+    /// ogre answer): built by ending a turn cardinally adjacent to this
+    /// monster without bump-attacking it, per `Game::resolve_awe`. Resets
+    /// to 0 the instant the player either isn't adjacent or attacked it
+    /// this turn (fleeing or fighting breaks the stare). At
+    /// `>= Monster::stats(kind).awe_threshold` the monster becalms exactly
+    /// like a landed talk (`calm = true`, `Game::spared += 1`) — this is
+    /// run-defining mercy state, hashed in `save::state_hash` right beside
+    /// `regard`/`calm`, NOT the presentation-only exclusion set
+    /// (`killer`/`echo`/`facing`/`fx_hit`/`mcguffin_last_line_turn`).
+    pub(crate) awe: u8,
 }
 
 impl Monster {
@@ -270,6 +281,18 @@ impl Monster {
     /// alone).
     pub(crate) fn talk_threshold(kind: MKind) -> u8 {
         GAME.monsters[kind as usize].talk_threshold
+    }
+
+    /// Freshly spawned `Monster` of `kind` at `(x, y)`: full HP from the
+    /// cartridge's own table, zeroed `regard`/`awe`, not `calm` — the one
+    /// place every construction site's defaults live, so a new hashed
+    /// per-monster field only ever needs a single update here (plus
+    /// whatever explicit override a caller wants via struct-update `..`
+    /// syntax). Batch 11 T2, added because test fixtures had been hand
+    /// duplicating this field list at every call site.
+    #[allow(dead_code)] // exercised by tests only as of batch 11 T2
+    pub(crate) fn spawn(kind: MKind, x: i32, y: i32) -> Monster {
+        Monster { x, y, kind, hp: GAME.monsters[kind as usize].hp, regard: 0, calm: false, awe: 0 }
     }
 }
 
@@ -925,7 +948,7 @@ impl Game {
                     .map(|&(_, k)| k)
                     .unwrap_or(GAME.balance.monster_roll[GAME.balance.monster_roll.len() - 1].1);
                 let hp = GAME.monsters[kind as usize].hp;
-                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false });
+                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false, awe: 0 });
             }
         }
         /* items: deep floors are a war of attrition, so supply scales too —
@@ -1037,7 +1060,7 @@ impl Game {
                     self.items.push(Item { x: tx, y: ty, kind: ii as IKind });
                 } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                     let hp = GAME.monsters[ki].hp;
-                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false });
+                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0 });
                 }
             }
         }
@@ -1430,7 +1453,7 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false });
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0 });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -1502,7 +1525,7 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false });
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0 });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -1769,6 +1792,16 @@ impl Game {
         if !in_map(nx, ny) {
             return;
         }
+        // batch 11 T2: which monster (if any) the player bump-ATTACKED this
+        // turn, for `resolve_awe`'s exclusion — declared out here (rather
+        // than inside the `if let Some(mi)` block below) so it's still in
+        // scope at the fall-through attack-path tail past that block's
+        // close. Assigned exactly once, on the only path that ever reaches
+        // that tail (every other branch — yield/shove/push/pit/shut-door/
+        // plain-move/wall — returns before then; yield/shove/push/plain-
+        // move route through `land_on_tile`, which resolves its own
+        // `resolve_awe(None)` independently).
+        let attacked_idx: Option<usize>;
         if let Some(mi) = self.monsters.iter().position(|m| m.x == nx && m.y == ny) {
             self.facing = Facing::from_delta(dx, dy);
             let bump = Monster::stats(self.monsters[mi].kind).bump;
@@ -1826,7 +1859,8 @@ impl Game {
             let retal = Monster::stats(self.monsters[mi].kind).retaliation;
             self.monsters[mi].hp -= dmg;
             self.fx_hit = Some((nx, ny));
-            if self.monsters[mi].hp <= 0 {
+            let killed = self.monsters[mi].hp <= 0;
+            if killed {
                 self.monsters.remove(mi);
                 self.kills += 1;
                 self.log(GAME.strings.slay.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
@@ -1834,6 +1868,12 @@ impl Game {
             } else {
                 self.log(GAME.strings.hit.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
             }
+            // batch 11 T2: a killed monster no longer occupies index `mi`
+            // (removed above) — nothing to exclude from `resolve_awe`, so
+            // `None`. A surviving one WAS bump-attacked this turn, so it's
+            // excluded (attacking resets its awe, per the Design paragraph)
+            // regardless of whether it also lands a retaliation hit below.
+            attacked_idx = if killed { None } else { Some(mi) };
             // batch 11: the ogre (any kind with retaliation > 0) always lands
             // a hit back the instant you swing — even a killing blow costs
             // you. Separate from its ordinary `monsters_act` turn (which
@@ -1934,6 +1974,7 @@ impl Game {
             return;
         }
         self.monsters_act(None);
+        self.resolve_awe(attacked_idx);
         self.compute_fov();
     }
 
@@ -2151,6 +2192,10 @@ impl Game {
             return; // died in the dark on a talk turn: lose beats anything else
         }
         self.monsters_act(stayed);
+        // batch 11 T2: talking isn't bump-attacking, so `attacked = None`
+        // here — a talked-to (or stayed) monster can still build awe this
+        // same turn if it's cardinally adjacent, independent of `stayed`.
+        self.resolve_awe(None);
         self.compute_fov();
     }
 
@@ -2230,6 +2275,7 @@ impl Game {
             return; // died in the dark on a give turn: lose beats anything else
         }
         self.monsters_act(None);
+        self.resolve_awe(None); // giving isn't bump-attacking
         self.compute_fov();
     }
 
@@ -2271,6 +2317,7 @@ impl Game {
             return; // died in the dark on a use turn: lose beats anything else
         }
         self.monsters_act(None);
+        self.resolve_awe(None); // using an item on yourself isn't bump-attacking
         self.compute_fov();
     }
 
@@ -2318,6 +2365,7 @@ impl Game {
             return; // died in the dark on a put-down turn: lose beats anything else
         }
         self.monsters_act(None);
+        self.resolve_awe(None); // setting the objective down isn't bump-attacking
         self.compute_fov();
     }
 
@@ -2349,6 +2397,9 @@ impl Game {
         // the McGuffin's chance to comment on standing still.
         self.carry_event(CarryEvent::Idle);
         self.monsters_act(None);
+        // batch 11 T2: this is the standard "stand tall" turn — waiting
+        // adjacent to an awe-able monster without attacking it.
+        self.resolve_awe(None);
         self.compute_fov();
     }
 
@@ -2415,6 +2466,10 @@ impl Game {
             _ => {}
         }
         self.monsters_act(stayed);
+        // batch 11 T2: covers a plain move onto floor and a becalmed-yield
+        // swap (`Game::try_move_player`'s `BumpResponse::Yield`/`calm`
+        // branch) — neither is a bump-attack, so `None`.
+        self.resolve_awe(None);
         self.compute_fov();
     }
 
@@ -2650,6 +2705,71 @@ impl Game {
                 return;
             }
             self.log(GAME.strings.hit_by.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
+        }
+    }
+
+    /// Standing tall (batch 11 T2 — the diplomat's ogre answer): builds
+    /// `Monster.awe` for every awe-able monster (`MonsterDef::awe_threshold
+    /// > 0`) that's cardinally adjacent to the player and not already
+    /// `calm`, once per player action. Called alongside every
+    /// `monsters_act` call site; `attacked` carries the index of a monster
+    /// the player just bump-ATTACKED this turn (excluded from building
+    /// awe), or `None` from every other action — talk/give/use/put-down/
+    /// wait/a plain move/a becalmed-yield swap never attack, so they all
+    /// pass `None`.
+    ///
+    /// Implements the Design paragraph exactly:
+    ///   - cardinally adjacent (`|dx| + |dy| == 1` — a Manhattan distance
+    ///     of exactly 1 can never be a diagonal step), not calm, not
+    ///     attacked this turn: `awe += 1`; crossing `awe_threshold` becalms
+    ///     it exactly like a landed talk (`calm = true`, `Game::spared +=
+    ///     1`) — reusing the existing becalm state rather than a parallel
+    ///     mechanism, so every downstream mercy behavior (no chase/attack,
+    ///     yield-on-bump) works unchanged. The log line reuses the
+    ///     monster's own `talk_lines` stage-2 pool (the "crosses the
+    ///     threshold" stage already used by a landed talk/give) rather than
+    ///     inventing new grounded copy — both existing lines read fine
+    ///     without implying a conversation happened. `CarryEvent::
+    ///     SpareWitnessed` fires too, the same hook every other spare path
+    ///     (talk, give) already fires on becalming.
+    ///   - not adjacent, or attacked this turn: `awe` resets to 0 —
+    ///     fleeing or fighting breaks the stare.
+    ///
+    /// Ordering choice (call-site decision, documented here since the brief
+    /// left it open): called AFTER `monsters_act` at every site. The Design
+    /// paragraph's own framing — "you endure its `monsters_act` hit and
+    /// your nerve builds" — reads as building awe from the END of a turn
+    /// that included surviving whatever the monster's own turn did (an
+    /// ogre not yet calm still swings during `monsters_act`); calling here
+    /// also means every early-return path that already skips
+    /// `monsters_act` (dead/won guards, a wall/talk/give no-op, a stairs/
+    /// portal/screen-link/hole transition, a retaliation-killed player)
+    /// skips `resolve_awe` for the identical reason — no separate gating
+    /// logic needed.
+    fn resolve_awe(&mut self, attacked: Option<usize>) {
+        for i in 0..self.monsters.len() {
+            let kind = self.monsters[i].kind;
+            let threshold = Monster::stats(kind).awe_threshold;
+            if threshold == 0 || self.monsters[i].calm {
+                continue; // not awe-able, or already calmed some other way
+            }
+            let dx = (self.px - self.monsters[i].x).abs();
+            let dy = (self.py - self.monsters[i].y).abs();
+            let adjacent = dx + dy == 1;
+            if adjacent && attacked != Some(i) {
+                self.monsters[i].awe = self.monsters[i].awe.saturating_add(1);
+                if self.monsters[i].awe >= threshold {
+                    self.monsters[i].calm = true;
+                    self.spared += 1;
+                    let name = self.mob_name(kind);
+                    let v = self.flavor_rng.range(0, 2) as usize;
+                    let line = GAME.monsters[kind as usize].talk_lines[2][v].replace("{M}", name);
+                    self.log(line);
+                    self.carry_event(CarryEvent::SpareWitnessed);
+                }
+            } else {
+                self.monsters[i].awe = 0; // fleeing or fighting breaks the stare
+            }
         }
     }
 }
