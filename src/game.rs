@@ -1837,26 +1837,56 @@ impl Game {
             // batch 11: the ogre (any kind with retaliation > 0) always lands
             // a hit back the instant you swing — even a killing blow costs
             // you. Separate from its ordinary `monsters_act` turn (which
-            // only happens if it survives). Runs the same death path any
-            // other combat-kill does (see the `attacks` loop at the bottom
-            // of `monsters_act`) and, like `spend_turn`'s dark-death branch,
-            // computes FOV and returns immediately rather than falling
-            // through into this turn's `spend_turn`/`monsters_act` — the
-            // player is already dead, so burning light or letting other
-            // monsters act again would be redundant and could clobber this
-            // death's own log line with a stale dark-death message.
+            // only happens if it survives).
+            //
+            // batch 11 T1 fix round: a lethal retaliation must still
+            // advance `turns`/`light` for this turn exactly like every
+            // other death path does (`spend_turn`'s own dark-death branch
+            // increments `turns` and burns light before its early return;
+            // an ordinary combat death only ever happens from
+            // `monsters_act`, which runs AFTER `try_move_player` already
+            // called `spend_turn`). The original shape here early-returned
+            // BEFORE `spend_turn` ever ran, so an ogre-retaliation kill
+            // under-counted `turns` by one and left `light` unburned
+            // (neither the base burn nor the violence tax) relative to
+            // every other death this engine can produce — both fields are
+            // hashed (`state_hash`) and shown on the End screen, so this
+            // was a real inconsistency, not cosmetic.
+            //
+            // Fix: don't early-return here. Record whether the
+            // retaliation alone was lethal (`retal_killed`), set `killer`/
+            // log/`dead` for that cause now (so it can never be clobbered
+            // — `spend_turn`'s dark-death branch never touches `killer`),
+            // then fall through into the normal `spend_turn(violence_tax)`
+            // call below so `turns`/`light` advance like any other combat
+            // turn. If light ALSO hits 0 this same turn, HP-death wins the
+            // tie (the retaliation is what actually killed the player);
+            // `killer` staying `Some` is what encodes that, since
+            // `render_end` and the ghost-outcome backends both key off
+            // `killer.is_some()` rather than the log's last line.
+            let mut retal_killed = false;
             if retal > 0 {
                 self.hp -= retal;
                 if self.hp <= 0 {
                     self.hp = 0;
                     self.dead = true;
+                    retal_killed = true;
                     self.killer = Some(name);
                     self.log(GAME.strings.killed_by.replace("{}", name));
-                    self.compute_fov();
-                    return;
                 } else {
                     self.log(GAME.strings.hit_by.replacen("{}", name, 1).replacen("{}", &retal.to_string(), 1));
                 }
+            }
+            if retal_killed {
+                // Advance turns/light for this fatal turn exactly like an
+                // ordinary attack does, then stop — no further monster
+                // turns for an already-dead player. `spend_turn`'s own
+                // light<=0 branch may also fire here (both causes landing
+                // the same turn); it never touches `killer`, so the
+                // combat attribution set above stands regardless.
+                self.spend_turn(GAME.balance.violence_tax);
+                self.compute_fov();
+                return;
             }
         } else if self.blocks.contains(&(nx, ny)) {
             // Sokoban (batch 6 T2): walking into a block attempts to push

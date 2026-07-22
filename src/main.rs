@@ -989,6 +989,45 @@ mod tests {
         assert!(g.hp < hp_before, "killing an ogre must still cost the player HP (guaranteed retaliation)");
     }
 
+    /// batch 11 T1 fix round: a LETHAL ogre retaliation must advance
+    /// `turns`/`light` for that turn exactly like every other death path
+    /// does (`spend_turn`'s own dark-death branch increments `turns` and
+    /// burns light before its early return; an ordinary combat death only
+    /// ever happens from `monsters_act`, which runs after `spend_turn`
+    /// already did). The original shape early-returned before `spend_turn`
+    /// ever ran, so an ogre-retaliation kill under-counted `turns` by one
+    /// and left `light` unburned — both fields are hashed (`state_hash`)
+    /// and shown on the End screen.
+    #[test]
+    fn lethal_ogre_retaliation_advances_turns_and_light() {
+        let mut g = Game::new(7);
+        // A durable ogre (won't die to the player's hit) cardinally
+        // adjacent to a player too frail to survive its guaranteed 3-point
+        // retaliation (`OGRE`'s `retaliation` in the contractor cartridge).
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.clear();
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 100, regard: 0, calm: false });
+        g.hp = 2;
+        let ogre_name = g.theme().mobs[OGRE as usize];
+        let turns_before = g.turns;
+        let light_before = g.light;
+        g.apply_input(3); // move/bump East onto the ogre
+        assert!(g.dead, "the player should be dead from the guaranteed retaliation");
+        assert_eq!(g.hp, 0, "hp should floor at 0, not go negative");
+        assert_eq!(g.turns, turns_before + 1, "the fatal turn must still count like any other turn");
+        let expected_burn = GAME.balance.base_burn + GAME.balance.violence_tax;
+        assert_eq!(
+            g.light,
+            light_before - expected_burn,
+            "the fatal turn must still burn light (base + violence tax), same as any other bump-attack turn"
+        );
+        assert_eq!(
+            g.killer,
+            Some(ogre_name),
+            "a lethal retaliation is a combat death by the ogre, not a dark death"
+        );
+    }
+
     /// Landed-vs-failed determinism (batch 5 addendum): two independent
     /// live games from the same seed, talked at the same fresh ogre the
     /// same number of times, produce an identical `state_hash` — whether
