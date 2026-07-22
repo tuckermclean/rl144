@@ -415,6 +415,11 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         let objective = if g.has_objective {
             find_tile(&g.map, Tile::UpStairs)
         } else {
+            // batch 10 T2 review: deliberately monster-oblivious. A competent
+            // bot picks WHICH loot to grab by raw distance alone (`routing_map`
+            // here, not `tactical_routing_map`) and only routes to it
+            // monster-avoidantly afterward (`rmap`/`tactical_routing_map`
+            // above) — selection ignores monsters, path-taking does not.
             let dist_from_player = bfs_dist(&routing_map(&g), (g.px, g.py));
             let loot = g
                 .items
@@ -541,25 +546,42 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                 if ok { Some(b as u8) } else { None }
             })
         });
-        // Give up evasion once it plainly isn't working (batch 10 T2, found
-        // via TDD against `tactical_bot_wins_at_least_as_often_as_greedy`):
-        // `tactical_routing_map` only walls a monster's OWN tile, so the
-        // preferred-route step above can still land the player adjacent to
-        // (not ON) a live, seeing monster turn after turn — and
-        // `Game::monsters_act` attacks any adjacent, seeing, non-calm
-        // monster EVERY turn regardless of the player's move, while the
-        // player only ever deals damage back via an explicit bump-attack
-        // (walking onto its tile). Pure avoidance therefore degenerates
-        // into an unresolved chase: free chip damage forever, never a
-        // counter-swing — empirically 0/5000 wins before this fix. If a
-        // live, non-calm, seeing monster is cardinally adjacent (N/S/E/W —
-        // the only adjacency a bump-attack can resolve in one move) RIGHT
-        // NOW, and the chosen step would not actually put the player
-        // outside that monster's melee range, stop evading and bump-attack
-        // it directly instead: "fight only when forced" also means
-        // finishing a fight already forced on you, not enduring it
-        // indefinitely. A diagonally-adjacent monster is left to the
-        // ordinary step (no move byte can bump a diagonal tile).
+        // "Engage when cornered" (batch 10 T2, found via TDD against
+        // `tactical_bot_wins_at_least_as_often_as_greedy`): give up evasion
+        // once it plainly isn't working. `tactical_routing_map` only walls a
+        // monster's OWN tile, so the preferred-route step above can still
+        // land the player adjacent to (not ON) a live, seeing monster turn
+        // after turn — and `Game::monsters_act` attacks any adjacent,
+        // seeing, non-calm monster EVERY turn regardless of the player's
+        // move, while the player only ever deals damage back via an
+        // explicit bump-attack (walking onto its tile) or a talk byte. Pure
+        // avoidance therefore degenerates into an unresolved chase: free
+        // chip damage forever, never a counter — empirically 0/5000 wins
+        // before this rule existed. WHY this rule has to exist at all: a
+        // bot that only ever routes AROUND danger never commits to
+        // resolving it, so a competent bot must engage — attack, or talk
+        // for the diplomat — when it cannot step out of an adjacent live
+        // threat's reach this turn. If a live, non-calm, seeing monster is
+        // cardinally adjacent (N/S/E/W — the only adjacency a bump-attack
+        // or talk can resolve in one move) RIGHT NOW, and the chosen step
+        // would not actually put the player outside that monster's melee
+        // range, stop evading and act on it directly instead: "fight only
+        // when forced" also means finishing what's already forced on you,
+        // not enduring it indefinitely. A diagonally-adjacent monster is
+        // left to the ordinary step (no move byte can bump or talk to a
+        // diagonal tile). This override is policy-symmetric in WHEN it
+        // fires (both tactical policies engage rather than endure an
+        // unresolved chase) but not in WHAT it does: see `cornered_talk`
+        // below, which keeps `TacticalPacifist` from ever swinging here —
+        // review flagged that a shared forced-attack byte would have made
+        // the diplomat violent in exactly this one path.
+        //
+        // batch 10 T2 review, accepted limitation: only the FIRST
+        // cardinally-adjacent live monster is considered (`.find(...)`). A
+        // multi-monster cardinal pincer evaluates escape against only that
+        // one and can misjudge the others; rare in practice and not worth
+        // the extra complexity here.
+        let mut cornered_talk = false;
         let step = if tactical {
             let cardinal_threat = g.monsters.iter().find(|m| {
                 !m.calm
@@ -578,6 +600,17 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                     if escapes {
                         step
                     } else {
+                        // batch 10 T2 fix round: the diplomat (TacticalPacifist)
+                        // must talk, not swing, when cornered — same
+                        // never-kill invariant the ordinary pacifist `blocked`
+                        // branch below already enforces on a normal step.
+                        // `Policy::Pacifist` is included in the match for
+                        // symmetry with that branch, even though the
+                        // non-tactical greedy/pacifist bots never reach this
+                        // `tactical`-gated arm today.
+                        if matches!(policy, Policy::Pacifist | Policy::TacticalPacifist) {
+                            cornered_talk = true;
+                        }
                         SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| b as u8)
                     }
                 }
@@ -595,10 +628,15 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                 // the correctly-directed talk. A calm monster on that tile
                 // is not a blocker (the engine swaps on the move byte), so
                 // it falls through to the normal move below unchanged.
+                // `cornered_talk` (batch 10 T2 fix round) extends this same
+                // `7 + b` mapping to the "engage when cornered" override
+                // above, so `TacticalPacifist` talks instead of attacking in
+                // that path too.
                 let (dx, dy) = SIM_DIRS[b as usize];
                 let (nx, ny) = (g.px + dx, g.py + dy);
-                let blocked = policy == Policy::Pacifist
-                    && g.monsters.iter().any(|m| m.x == nx && m.y == ny && !m.calm);
+                let blocked = cornered_talk
+                    || (policy == Policy::Pacifist
+                        && g.monsters.iter().any(|m| m.x == nx && m.y == ny && !m.calm));
                 g.apply_input(if blocked { 7 + b } else { b });
                 turns += 1;
             }
