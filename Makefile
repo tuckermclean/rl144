@@ -128,6 +128,8 @@ solve: build
 sim: build
 	./$(BIN) --sim $(SIM_SEEDS)
 	./$(BIN) --sim $(SIM_SEEDS) --policy pacifist
+	./$(BIN) --sim $(SIM_SEEDS) --policy tactical
+	./$(BIN) --sim $(SIM_SEEDS) --policy tactical-pacifist
 
 # Pack a copy of the release binary (never target/) and enforce the floppy
 # budget. If $(UPX) isn't runnable, warn and fall back to reporting the
