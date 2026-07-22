@@ -221,11 +221,6 @@ pub(crate) fn routing_map(g: &Game) -> Vec<Tile> {
 /// `routing_map` and fights through. A `calm` monster is deliberately NOT
 /// stamped — you can walk onto it (the engine swaps, no fight), matching how the
 /// step logic already treats calm tiles.
-///
-/// `#[allow(dead_code)]`: this task (batch 10 task 1) lands the helper and its
-/// test only; the tactical bot policy that calls it is a later task in this
-/// batch — same substrate-ahead-of-consumer pattern as `save.rs`'s `Ghost`.
-#[allow(dead_code)]
 pub(crate) fn tactical_routing_map(g: &Game) -> Vec<Tile> {
     let mut m = routing_map(g);
     for mon in &g.monsters {
@@ -265,6 +260,8 @@ const SIM_DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 pub(crate) enum Policy {
     Greedy,
     Pacifist,
+    Tactical,
+    TacticalPacifist,
 }
 
 impl Policy {
@@ -272,6 +269,8 @@ impl Policy {
         match self {
             Policy::Greedy => "greedy",
             Policy::Pacifist => "pacifist",
+            Policy::Tactical => "tactical",
+            Policy::TacticalPacifist => "tactical-pacifist",
         }
     }
 }
@@ -382,7 +381,16 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // a bug, and never an infinite loop either way since every OTHER
         // held item this cartridge ships with a real `on_use` still spends
         // a real turn.
-        if 2 * g.hp <= g.maxhp && g.held.last() == Some(&GAME.balance.loot_potion_item) {
+        // batch 10: tactical policies top up earlier (<=2/3 HP) — a competent
+        // player heals before a fight, not after nearly dying. Greedy/pacifist
+        // keep the <=1/2 rule so their frozen bands don't move. The 2/3 value
+        // is the initial measured baseline (tune in batch 11), not a felt
+        // constant. Same potion-on-top guard, same USE byte.
+        let heal_now = match policy {
+            Policy::Tactical | Policy::TacticalPacifist => 3 * g.hp <= 2 * g.maxhp,
+            Policy::Greedy | Policy::Pacifist => 2 * g.hp <= g.maxhp,
+        };
+        if heal_now && g.held.last() == Some(&GAME.balance.loot_potion_item) {
             g.apply_input(15);
             turns += 1;
             continue;
@@ -399,11 +407,15 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // preference, never reachability proof. The genuine "must push to
         // progress" case is handled by the wander fallback below, not
         // here.
-        let rmap = routing_map(&g);
+        // batch 10: tactical policies PREFER a monster-free path (route around
+        // fights); if that view leaves the objective unreachable this turn, the
+        // `player_d < 0` fallback below re-runs on the ordinary `routing_map`.
+        let tactical = matches!(policy, Policy::Tactical | Policy::TacticalPacifist);
+        let rmap = if tactical { tactical_routing_map(&g) } else { routing_map(&g) };
         let objective = if g.has_objective {
             find_tile(&g.map, Tile::UpStairs)
         } else {
-            let dist_from_player = bfs_dist(&rmap, (g.px, g.py));
+            let dist_from_player = bfs_dist(&routing_map(&g), (g.px, g.py));
             let loot = g
                 .items
                 .iter()
@@ -424,6 +436,17 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         };
         let dist = bfs_dist(&rmap, objective);
         let player_d = dist[idx(g.px, g.py)];
+        // Tactical fallback: monsters walled off the objective in the preferred
+        // view. Re-route on the ordinary map (fight through) — never a false
+        // "stuck" over a corridor a fight would open. Rebind rmap/dist/player_d.
+        let (rmap, dist, player_d) = if tactical && player_d < 0 {
+            let rmap2 = routing_map(&g);
+            let dist2 = bfs_dist(&rmap2, objective);
+            let pd2 = dist2[idx(g.px, g.py)];
+            (rmap2, dist2, pd2)
+        } else {
+            (rmap, dist, player_d)
+        };
         // batch 6 T2 review fix: a block's tile is a WALL in `rmap`, so
         // `player_d < 0` here means "unreachable while avoiding every
         // block" — not necessarily "unreachable, full stop." Don't declare
@@ -518,6 +541,51 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                 if ok { Some(b as u8) } else { None }
             })
         });
+        // Give up evasion once it plainly isn't working (batch 10 T2, found
+        // via TDD against `tactical_bot_wins_at_least_as_often_as_greedy`):
+        // `tactical_routing_map` only walls a monster's OWN tile, so the
+        // preferred-route step above can still land the player adjacent to
+        // (not ON) a live, seeing monster turn after turn — and
+        // `Game::monsters_act` attacks any adjacent, seeing, non-calm
+        // monster EVERY turn regardless of the player's move, while the
+        // player only ever deals damage back via an explicit bump-attack
+        // (walking onto its tile). Pure avoidance therefore degenerates
+        // into an unresolved chase: free chip damage forever, never a
+        // counter-swing — empirically 0/5000 wins before this fix. If a
+        // live, non-calm, seeing monster is cardinally adjacent (N/S/E/W —
+        // the only adjacency a bump-attack can resolve in one move) RIGHT
+        // NOW, and the chosen step would not actually put the player
+        // outside that monster's melee range, stop evading and bump-attack
+        // it directly instead: "fight only when forced" also means
+        // finishing a fight already forced on you, not enduring it
+        // indefinitely. A diagonally-adjacent monster is left to the
+        // ordinary step (no move byte can bump a diagonal tile).
+        let step = if tactical {
+            let cardinal_threat = g.monsters.iter().find(|m| {
+                !m.calm
+                    && g.monster_sees_player(m)
+                    && ((m.x == g.px && (m.y - g.py).abs() == 1)
+                        || (m.y == g.py && (m.x - g.px).abs() == 1))
+            });
+            match cardinal_threat {
+                Some(m) => {
+                    let (tdx, tdy) = ((m.x - g.px).signum(), (m.y - g.py).signum());
+                    let escapes = step.is_some_and(|b| {
+                        let (dx, dy) = SIM_DIRS[b as usize];
+                        let (nx, ny) = (g.px + dx, g.py + dy);
+                        (nx - m.x).abs().max((ny - m.y).abs()) > 1
+                    });
+                    if escapes {
+                        step
+                    } else {
+                        SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| b as u8)
+                    }
+                }
+                None => step,
+            }
+        } else {
+            step
+        };
         match step {
             Some(b) => {
                 // Pacifist (batch 5 T2): if the tile this step lands on
@@ -624,15 +692,27 @@ pub(crate) fn sim_main(n: u64, report: bool, policy: Policy) {
         std::process::exit(1);
     }
     let win_pct = (wins * 100 / n.max(1)) as i32;
+    // batch 10 T2: Tactical/TacticalPacifist need a band-path arm to keep this
+    // match exhaustive now that the variants exist, but their band files
+    // (tests/tactical-band.json / tests/tactical-pacifist-band.json) are
+    // Task 4's job, not this task's — until Task 4 lands them, the
+    // `Err(_)` branch below prints a "not found; skipped" warning and exits
+    // 0, same as any other missing band file, so this doesn't gate anything
+    // prematurely. Paths match Task 4's plan exactly, so Task 4 needs no
+    // further edit here.
     let band_path = match policy {
         Policy::Greedy => "tests/sim-band.json",
         Policy::Pacifist => "tests/pacifist-band.json",
+        Policy::Tactical => "tests/tactical-band.json",
+        Policy::TacticalPacifist => "tests/tactical-pacifist-band.json",
     };
     match std::fs::read_to_string(band_path) {
         Ok(band) => {
             let checks: &[(&str, i32)] = match policy {
                 Policy::Greedy => &[("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)],
+                Policy::Tactical => &[("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)],
                 Policy::Pacifist => &[("win_pct", win_pct)],
+                Policy::TacticalPacifist => &[("win_pct", win_pct)],
             };
             for &(k, v) in checks {
                 if let Some((lo, hi)) = band_range(&band, k) {

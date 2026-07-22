@@ -106,13 +106,15 @@ fn main() {
     }
     if args.iter().any(|a| a == "--sim") {
         // Default policy is greedy (unchanged CLI surface); `--policy
-        // pacifist` selects the mercy bot (batch 5 T2). Any other value
+        // pacifist` selects the mercy bot (batch 5 T2), `--policy tactical`
+        // selects the route-around-fights bot (batch 10 T2). Any other value
         // (including a typo) falls back to greedy rather than silently
         // matching nothing, same tolerance as the rest of this arg parser.
-        let policy = if str_val("--policy").as_deref() == Some("pacifist") {
-            Policy::Pacifist
-        } else {
-            Policy::Greedy
+        let policy = match str_val("--policy").as_deref() {
+            Some("pacifist") => Policy::Pacifist,
+            Some("tactical") => Policy::Tactical,
+            Some("tactical-pacifist") => Policy::TacticalPacifist,
+            _ => Policy::Greedy,
         };
         sim_main(
             flag_val("--sim").unwrap_or(1000),
@@ -1989,6 +1991,40 @@ mod tests {
             total_spared += r.spared as u64;
         }
         assert!(total_spared > 0, "expected at least one becalmed monster over seeds 0..200");
+    }
+
+    /// batch 10: the tactical-violent bot is deterministic (two runs identical)
+    /// and never talks (it's a violence policy — spared stays 0).
+    #[test]
+    fn tactical_bot_deterministic_and_never_talks() {
+        use headless::{sim_seed, Policy};
+        for seed in [1u64, 7, 42, 100, 1337] {
+            let (a, _) = sim_seed(seed, Policy::Tactical);
+            let (b, _) = sim_seed(seed, Policy::Tactical);
+            assert_eq!(
+                (a.won, a.dead_dark, a.dead_combat, a.stuck, a.turns, a.light_left, a.kills, a.spared),
+                (b.won, b.dead_dark, b.dead_combat, b.stuck, b.turns, b.light_left, b.kills, b.spared),
+                "tactical sim must be deterministic for seed {seed}"
+            );
+            assert_eq!(a.spared, 0, "tactical (violent) policy must never talk, seed {seed}");
+            assert!(!a.stuck, "tactical bot must not get stuck, seed {seed}");
+        }
+    }
+
+    /// batch 10, the whole point: a competent violent bot wins MORE than greedy on
+    /// the same seeds — the current game is easy for a player who routes around
+    /// fights. (A weak inequality over a small sample; the full measured delta is
+    /// captured in the band file, not asserted here.)
+    #[test]
+    fn tactical_bot_wins_at_least_as_often_as_greedy() {
+        use headless::{sim_seed, Policy};
+        let mut greedy = 0u32;
+        let mut tactical = 0u32;
+        for seed in 0u64..300 {
+            if sim_seed(seed, Policy::Greedy).0.won { greedy += 1; }
+            if sim_seed(seed, Policy::Tactical).0.won { tactical += 1; }
+        }
+        assert!(tactical >= greedy, "tactical {tactical} should win >= greedy {greedy} over 300 seeds");
     }
 
     /// Batch 6 T1: neither sim policy ever emits the wait byte (4) — the
