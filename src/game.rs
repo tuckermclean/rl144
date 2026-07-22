@@ -1788,6 +1788,13 @@ impl Game {
         if self.dead || self.won {
             return;
         }
+        // batch 11 T2 fix round: the player's position BEFORE this turn's
+        // own move — `resolve_awe`'s hold-vs-flee decision needs this, since
+        // "did the player retreat" is measured against where they started
+        // the turn, not (as the pre-fix bug did) against post-chase
+        // positions. Captured once, here, before any of this function's
+        // branches can mutate `self.px`/`self.py`.
+        let prev_player = (self.px, self.py);
         let (nx, ny) = (self.px + dx, self.py + dy);
         if !in_map(nx, ny) {
             return;
@@ -1821,7 +1828,7 @@ impl Game {
                 self.monsters[mi].y = oy;
                 self.px = nx;
                 self.py = ny;
-                self.land_on_tile(nx, ny, None);
+                self.land_on_tile(nx, ny, None, prev_player);
                 return;
             }
             if bump == BumpResponse::Shove {
@@ -1848,7 +1855,7 @@ impl Game {
                 self.monsters[mi].y = ty;
                 self.px = nx;
                 self.py = ny;
-                self.land_on_tile(nx, ny, None);
+                self.land_on_tile(nx, ny, None, prev_player);
                 return;
             }
             let dmg = self.atk + self.combat_rng.range(0, 3);
@@ -1943,7 +1950,7 @@ impl Game {
             }
             self.px = nx;
             self.py = ny;
-            self.land_on_tile(nx, ny, None);
+            self.land_on_tile(nx, ny, None, prev_player);
             return;
         } else if self.map[idx(nx, ny)] == Tile::Pit {
             // Sokoban (batch 6 T2): a pit refuses the player exactly like a
@@ -1961,7 +1968,7 @@ impl Game {
             self.facing = Facing::from_delta(dx, dy);
             self.px = nx;
             self.py = ny;
-            self.land_on_tile(nx, ny, None);
+            self.land_on_tile(nx, ny, None, prev_player);
             return;
         } else {
             return; // bumped a wall: no turn passes
@@ -1973,9 +1980,7 @@ impl Game {
         if !self.spend_turn(GAME.balance.violence_tax) {
             return;
         }
-        self.monsters_act(None);
-        self.resolve_awe(attacked_idx);
-        self.compute_fov();
+        self.monsters_act_and_resolve_awe(None, attacked_idx, prev_player);
     }
 
     /// Attempt to push the block chain starting at `(bx, by)` in direction
@@ -2191,12 +2196,12 @@ impl Game {
         if !self.spend_turn(0) {
             return; // died in the dark on a talk turn: lose beats anything else
         }
-        self.monsters_act(stayed);
         // batch 11 T2: talking isn't bump-attacking, so `attacked = None`
         // here — a talked-to (or stayed) monster can still build awe this
         // same turn if it's cardinally adjacent, independent of `stayed`.
-        self.resolve_awe(None);
-        self.compute_fov();
+        // The player never moves during a talk, so `(self.px, self.py)` IS
+        // this turn's pre-move position (batch 11 T2 fix round).
+        self.monsters_act_and_resolve_awe(stayed, None, (self.px, self.py));
     }
 
     /// GIVE: the mercy verb's counterpart (batch 7 T2, story §5/§9-A).
@@ -2274,9 +2279,8 @@ impl Game {
         if !self.spend_turn(0) {
             return; // died in the dark on a give turn: lose beats anything else
         }
-        self.monsters_act(None);
-        self.resolve_awe(None); // giving isn't bump-attacking
-        self.compute_fov();
+        // The player never moves during a give; batch 11 T2 fix round.
+        self.monsters_act_and_resolve_awe(None, None, (self.px, self.py)); // giving isn't bump-attacking
     }
 
     /// USE: self-applies the top of `self.held` (batch 7 T2, story §5/§9-A's
@@ -2316,9 +2320,8 @@ impl Game {
         if !self.spend_turn(0) {
             return; // died in the dark on a use turn: lose beats anything else
         }
-        self.monsters_act(None);
-        self.resolve_awe(None); // using an item on yourself isn't bump-attacking
-        self.compute_fov();
+        // The player never moves during a use; batch 11 T2 fix round.
+        self.monsters_act_and_resolve_awe(None, None, (self.px, self.py)); // using an item on yourself isn't bump-attacking
     }
 
     /// PUT DOWN: byte 16 (batch 8 T1, story §9-D). Sets the carried
@@ -2364,9 +2367,8 @@ impl Game {
         if !self.spend_turn(0) {
             return; // died in the dark on a put-down turn: lose beats anything else
         }
-        self.monsters_act(None);
-        self.resolve_awe(None); // setting the objective down isn't bump-attacking
-        self.compute_fov();
+        // The player never moves during a put-down; batch 11 T2 fix round.
+        self.monsters_act_and_resolve_awe(None, None, (self.px, self.py)); // setting the objective down isn't bump-attacking
     }
 
     /// Waiting (byte 4) is also how a portal transits (batch 6 T1): a
@@ -2396,11 +2398,10 @@ impl Game {
         // batch 8 T1: a plain wait (not a portal transit) while carrying is
         // the McGuffin's chance to comment on standing still.
         self.carry_event(CarryEvent::Idle);
-        self.monsters_act(None);
         // batch 11 T2: this is the standard "stand tall" turn — waiting
-        // adjacent to an awe-able monster without attacking it.
-        self.resolve_awe(None);
-        self.compute_fov();
+        // adjacent to an awe-able monster without attacking it. The player
+        // never moves during a wait; batch 11 T2 fix round.
+        self.monsters_act_and_resolve_awe(None, None, (self.px, self.py));
     }
 
     /// Shared tail for any player action that LANDS the player on
@@ -2409,8 +2410,12 @@ impl Game {
     /// pickup/stairs-transition handling, then resume monster turns and
     /// refresh FOV. `stayed` is forwarded to `monsters_act` untouched (see
     /// its doc comment); both call sites here pass `None` since neither a
-    /// move nor a swap is a talk.
-    fn land_on_tile(&mut self, nx: i32, ny: i32, stayed: Option<usize>) {
+    /// move nor a swap is a talk. `prev_player` (batch 11 T2 fix round) is
+    /// the player's position BEFORE this turn's own move — forwarded
+    /// untouched to `resolve_awe` via `monsters_act_and_resolve_awe`, since
+    /// by the time this function runs `self.px`/`self.py` are already
+    /// `(nx, ny)`.
+    fn land_on_tile(&mut self, nx: i32, ny: i32, stayed: Option<usize>, prev_player: (i32, i32)) {
         if !self.spend_turn(0) {
             return; // died in the dark: lose beats anything this tile offered
         }
@@ -2465,12 +2470,10 @@ impl Game {
             }
             _ => {}
         }
-        self.monsters_act(stayed);
         // batch 11 T2: covers a plain move onto floor and a becalmed-yield
         // swap (`Game::try_move_player`'s `BumpResponse::Yield`/`calm`
         // branch) — neither is a bump-attack, so `None`.
-        self.resolve_awe(None);
-        self.compute_fov();
+        self.monsters_act_and_resolve_awe(stayed, None, prev_player);
     }
 
     /// The McGuffin's voice (batch 8 T1, story §9-B/C/D): dispatch one
@@ -2708,55 +2711,102 @@ impl Game {
         }
     }
 
+    /// Shared tail for every player action that runs monster turns: takes
+    /// the pre-chase monster-position snapshot `resolve_awe` needs (batch 11
+    /// T2 fix round), runs `monsters_act`, resolves awe from that snapshot,
+    /// then refreshes FOV. Every call site that used to pair
+    /// `self.monsters_act(..)` with `self.resolve_awe(..)` (plus the
+    /// trailing `self.compute_fov()` — all three always ran back-to-back)
+    /// now goes through here instead, so a future call site can't
+    /// accidentally read post-chase monster positions into the hold-vs-flee
+    /// decision the way the original bug did.
+    ///
+    /// `stayed`/`attacked` are forwarded to `monsters_act`/`resolve_awe`
+    /// untouched (see their own doc comments). `prev_player` is the
+    /// player's position at the START of this turn, i.e. before this
+    /// turn's own move (or unchanged from the current position, for any
+    /// action that doesn't move the player) — see `resolve_awe`'s doc
+    /// comment for why this must be captured before monster positions get
+    /// mutated below.
+    fn monsters_act_and_resolve_awe(&mut self, stayed: Option<usize>, attacked: Option<usize>, prev_player: (i32, i32)) {
+        // Snapshot every monster's position BEFORE `monsters_act` chases —
+        // this is "the ogre's position at the start of the turn" the
+        // Design paragraph measures retreat against. Indices stay aligned
+        // with `self.monsters` across the `monsters_act` call below:
+        // monsters are only ever removed by the player's own attack (which
+        // already happened, earlier in the same turn, before this snapshot
+        // is taken), never by `monsters_act` itself.
+        let pre_chase: Vec<(i32, i32)> = self.monsters.iter().map(|m| (m.x, m.y)).collect();
+        self.monsters_act(stayed);
+        self.resolve_awe(attacked, prev_player, &pre_chase);
+        self.compute_fov();
+    }
+
     /// Standing tall (batch 11 T2 — the diplomat's ogre answer): builds
     /// `Monster.awe` for every awe-able monster (`MonsterDef::awe_threshold
-    /// > 0`) that's cardinally adjacent to the player and not already
-    /// `calm`, once per player action. Called alongside every
-    /// `monsters_act` call site; `attacked` carries the index of a monster
-    /// the player just bump-ATTACKED this turn (excluded from building
-    /// awe), or `None` from every other action — talk/give/use/put-down/
-    /// wait/a plain move/a becalmed-yield swap never attack, so they all
-    /// pass `None`.
+    /// > 0`) that's not already `calm`, once per player action, gated on
+    /// the player having HELD GROUND this turn (see the fix-round note
+    /// below) — never called directly; always via
+    /// `monsters_act_and_resolve_awe`. `attacked` carries the index of a
+    /// monster the player just bump-ATTACKED this turn (excluded from
+    /// building awe), or `None` from every other action — talk/give/use/
+    /// put-down/wait/a plain move/a becalmed-yield swap never attack, so
+    /// they all pass `None`.
     ///
-    /// Implements the Design paragraph exactly:
-    ///   - cardinally adjacent (`|dx| + |dy| == 1` — a Manhattan distance
-    ///     of exactly 1 can never be a diagonal step), not calm, not
-    ///     attacked this turn: `awe += 1`; crossing `awe_threshold` becalms
-    ///     it exactly like a landed talk (`calm = true`, `Game::spared +=
-    ///     1`) — reusing the existing becalm state rather than a parallel
-    ///     mechanism, so every downstream mercy behavior (no chase/attack,
-    ///     yield-on-bump) works unchanged. The log line reuses the
-    ///     monster's own `talk_lines` stage-2 pool (the "crosses the
-    ///     threshold" stage already used by a landed talk/give) rather than
-    ///     inventing new grounded copy — both existing lines read fine
-    ///     without implying a conversation happened. `CarryEvent::
-    ///     SpareWitnessed` fires too, the same hook every other spare path
-    ///     (talk, give) already fires on becalming.
-    ///   - not adjacent, or attacked this turn: `awe` resets to 0 —
-    ///     fleeing or fighting breaks the stare.
+    /// **Batch 11 T2 fix round** (review-found bug): the original shape
+    /// measured "cardinally adjacent" using `self.monsters[i]`'s position
+    /// AT CALL TIME — i.e. AFTER `monsters_act` had already chased the
+    /// monster back into adjacency. Consequence: a player who retreats in a
+    /// straight line from an ogre keeps it adjacent every turn (it chases
+    /// at the same speed and re-establishes adjacency), so it awe-becalmed
+    /// with the player taking zero damage — exactly the "stand tall, do
+    /// not flinch, do not retreat" canon inverted. Fixed by deciding
+    /// held-vs-fled from data that predates the chase entirely:
+    /// `pre_chase[i]` (the monster's position before `monsters_act` moved
+    /// it this turn, supplied by `monsters_act_and_resolve_awe`) and
+    /// `prev_player` (the player's own position before THIS turn's move).
+    /// A monster "holds" this turn — awe eligible — only if ALL of:
+    ///   - the player's own move did not INCREASE Manhattan distance to
+    ///     `pre_chase[i]` (comparing `prev_player` vs. `self.px/py` against
+    ///     that one fixed point — the monster's chase this same turn never
+    ///     enters the comparison, so it can't manufacture "holding ground"
+    ///     out of a retreat);
+    ///   - the player ends this turn cardinally adjacent to `pre_chase[i]`
+    ///     (Manhattan distance exactly 1 — a diagonal step can never
+    ///     satisfy this);
+    ///   - the monster wasn't bump-attacked this turn (`attacked != Some(i)`).
+    /// Held: `awe += 1`; crossing `awe_threshold` becalms it exactly like a
+    /// landed talk (`calm = true`, `Game::spared += 1`) — reusing the
+    /// existing becalm state rather than a parallel mechanism, so every
+    /// downstream mercy behavior (no chase/attack, yield-on-bump) works
+    /// unchanged. The log line reuses the monster's own `talk_lines`
+    /// stage-2 pool (the "crosses the threshold" stage already used by a
+    /// landed talk/give) rather than inventing new grounded copy — both
+    /// existing lines read fine without implying a conversation happened.
+    /// `CarryEvent::SpareWitnessed` fires too, the same hook every other
+    /// spare path (talk, give) already fires on becalming. Not held (fled,
+    /// approached-but-not-adjacent, never-was-adjacent, or attacked this
+    /// turn): `awe` resets to 0 — fleeing (or fighting) breaks the stare.
     ///
-    /// Ordering choice (call-site decision, documented here since the brief
-    /// left it open): called AFTER `monsters_act` at every site. The Design
-    /// paragraph's own framing — "you endure its `monsters_act` hit and
-    /// your nerve builds" — reads as building awe from the END of a turn
-    /// that included surviving whatever the monster's own turn did (an
-    /// ogre not yet calm still swings during `monsters_act`); calling here
-    /// also means every early-return path that already skips
-    /// `monsters_act` (dead/won guards, a wall/talk/give no-op, a stairs/
-    /// portal/screen-link/hole transition, a retaliation-killed player)
-    /// skips `resolve_awe` for the identical reason — no separate gating
-    /// logic needed.
-    fn resolve_awe(&mut self, attacked: Option<usize>) {
+    /// Ordering note (unchanged from the original brief): the actual
+    /// becalm still resolves AFTER `monsters_act` runs (via
+    /// `monsters_act_and_resolve_awe`'s call order) — an ogre not yet calm
+    /// still gets its own `monsters_act` turn (attack or chase) before this
+    /// resolves, matching "you endure its hit and your nerve builds." Only
+    /// the DATA the hold-vs-flee decision reads from is pre-chase now, not
+    /// the call's position in the turn sequence.
+    fn resolve_awe(&mut self, attacked: Option<usize>, prev_player: (i32, i32), pre_chase: &[(i32, i32)]) {
         for i in 0..self.monsters.len() {
             let kind = self.monsters[i].kind;
             let threshold = Monster::stats(kind).awe_threshold;
             if threshold == 0 || self.monsters[i].calm {
                 continue; // not awe-able, or already calmed some other way
             }
-            let dx = (self.px - self.monsters[i].x).abs();
-            let dy = (self.py - self.monsters[i].y).abs();
-            let adjacent = dx + dy == 1;
-            if adjacent && attacked != Some(i) {
+            let (mx, my) = pre_chase[i];
+            let old_dist = (prev_player.0 - mx).abs() + (prev_player.1 - my).abs();
+            let new_dist = (self.px - mx).abs() + (self.py - my).abs();
+            let held = new_dist == 1 && new_dist <= old_dist && attacked != Some(i);
+            if held {
                 self.monsters[i].awe = self.monsters[i].awe.saturating_add(1);
                 if self.monsters[i].awe >= threshold {
                     self.monsters[i].calm = true;
@@ -2768,7 +2818,7 @@ impl Game {
                     self.carry_event(CarryEvent::SpareWitnessed);
                 }
             } else {
-                self.monsters[i].awe = 0; // fleeing or fighting breaks the stare
+                self.monsters[i].awe = 0; // fleeing (or fighting) breaks the stare
             }
         }
     }

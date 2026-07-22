@@ -1108,6 +1108,43 @@ mod tests {
         assert!(!ogre.calm, "should not have becalmed");
     }
 
+    /// batch 11 T2 fix round (review-found bug): a STRAIGHT-LINE retreat
+    /// must never awe-becalm an ogre, even though the ogre chases at the
+    /// same speed and re-establishes cardinal adjacency every turn. Before
+    /// the fix, `Game::resolve_awe` measured adjacency AFTER `monsters_act`
+    /// had already chased the ogre back next to the player, so a player who
+    /// did nothing but walk away in a straight line still built awe and
+    /// becalmed the ogre — unharmed, without ever standing tall. The ogre
+    /// starts cardinally adjacent to the east; the player steps directly
+    /// away (west) `awe_threshold` times. Since the player's OWN move
+    /// increases distance to the ogre's start-of-turn position every single
+    /// turn, this must never count as "holding ground."
+    #[test]
+    fn straight_retreat_from_ogre_does_not_awe() {
+        let mut g = Game::new(11);
+        let (ox, oy) = (g.px + 1, g.py); // ogre starts cardinally adjacent, to the east
+        g.monsters.clear();
+        g.monsters.push(crate::game::Monster {
+            kind: OGRE,
+            x: ox,
+            y: oy,
+            hp: 99,
+            ..crate::game::Monster::spawn(OGRE, ox, oy)
+        });
+        let thr = crate::game::Monster::stats(OGRE).awe_threshold as usize;
+        assert!(thr > 0, "ogre must be awe-able");
+        // Step directly away (west, byte 2) every turn — a straight-line
+        // retreat, never toward the ogre, never a wait/talk/attack.
+        for _ in 0..thr {
+            g.apply_input(2); // WEST
+        }
+        assert!(
+            !g.monsters.iter().any(|m| m.kind == OGRE && m.calm),
+            "a straight-line retreat must not awe-becalm the ogre"
+        );
+        assert_eq!(g.spared, 0, "retreat is not standing tall — no spare should be recorded");
+    }
+
     /// Landed-vs-failed determinism (batch 5 addendum): two independent
     /// live games from the same seed, talked at the same fresh goblin the
     /// same number of times, produce an identical `state_hash` — whether
@@ -2161,6 +2198,19 @@ mod tests {
     /// the new mechanic (any player/bot who merely doesn't swing at an ogre
     /// it's beside earns the same mercy a talker would), not a bug in this
     /// policy — so this test no longer asserts `spared == 0`.
+    ///
+    /// batch 11 T2 fix round: `resolve_awe` was rewritten so this can no
+    /// longer happen via a RETREAT (a monster the bot is fleeing from, that
+    /// then chases back into adjacency, no longer builds awe — see that
+    /// method's doc comment). Re-measured after the fix,
+    /// `./target/release/rl144 --sim 300 --policy tactical --report` still
+    /// reports `spared_total: 60` — nonzero, confirming this is a genuine
+    /// sustained hold (the bot's own route keeping it beside a stationary
+    /// ogre it isn't currently routing to fight, without ever increasing
+    /// distance to it), not the retreat artifact the fix removed. So the
+    /// dropped `spared == 0` assertion stays dropped, on firmer footing
+    /// than before: it's now confirmed to reflect an intended emergent
+    /// mercy rather than a bug this fix should have closed off.
     #[test]
     fn tactical_bot_deterministic_and_never_talks() {
         use headless::{sim_seed, Policy};
