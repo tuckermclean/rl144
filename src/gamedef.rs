@@ -187,6 +187,13 @@ pub(crate) struct MonsterDef {
     /// forces a yield regardless of this field, exactly as before batch 9
     /// — see `Game::try_move_player`'s bump branch.
     pub(crate) bump: BumpResponse,
+    /// batch 11: HP the player loses when they bump-ATTACK this kind — a
+    /// guaranteed retaliation applied even on a killing blow, so engaging this
+    /// kind always costs HP no matter how well you play. `0` for every kind
+    /// that doesn't bite back on contact (rat/goblin/passive NPCs); the ogre's
+    /// value is the batch-11 tuning knob. Distinct from the monster's ordinary
+    /// `monsters_act` turn (which still happens if it survives).
+    pub(crate) retaliation: i32,
 }
 
 /// A monster's reaction to a player's bump-into (batch 9 T1, SIGN-OFF ASK

@@ -968,6 +968,27 @@ mod tests {
         assert_eq!(receptivity(&capped_rat, &g), 95, "receptivity must clamp at the ceiling of 95");
     }
 
+    /// batch 11 T1: bump-attacking an ogre always costs the player HP, even
+    /// on a killing blow — the guaranteed-retaliation tax (`MonsterDef::
+    /// retaliation`), separate from the ogre's ordinary `monsters_act` turn
+    /// (which never gets to happen here, since the blow kills it).
+    #[test]
+    fn attacking_an_ogre_always_costs_hp() {
+        let mut g = Game::new(7);
+        // place a 1-hp ogre cardinally adjacent to the player, nothing else
+        // in the way
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.clear();
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 1, regard: 0, calm: false });
+        let hp_before = g.hp;
+        g.apply_input(3); // move/bump East onto the ogre
+        assert!(
+            g.monsters.iter().all(|m| !(m.x == ox && m.y == oy)),
+            "the 1-hp ogre should be dead"
+        );
+        assert!(g.hp < hp_before, "killing an ogre must still cost the player HP (guaranteed retaliation)");
+    }
+
     /// Landed-vs-failed determinism (batch 5 addendum): two independent
     /// live games from the same seed, talked at the same fresh ogre the
     /// same number of times, produce an identical `state_hash` — whether

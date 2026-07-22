@@ -1820,6 +1820,10 @@ impl Game {
             }
             let dmg = self.atk + self.combat_rng.range(0, 3);
             let name = self.mob_name(self.monsters[mi].kind);
+            // batch 11: read before the monster's hp changes (and possibly
+            // the monster is removed below) — `retaliation` is a per-kind
+            // constant, not per-instance state.
+            let retal = Monster::stats(self.monsters[mi].kind).retaliation;
             self.monsters[mi].hp -= dmg;
             self.fx_hit = Some((nx, ny));
             if self.monsters[mi].hp <= 0 {
@@ -1829,6 +1833,30 @@ impl Game {
                 self.carry_event(CarryEvent::KillWitnessed);
             } else {
                 self.log(GAME.strings.hit.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
+            }
+            // batch 11: the ogre (any kind with retaliation > 0) always lands
+            // a hit back the instant you swing — even a killing blow costs
+            // you. Separate from its ordinary `monsters_act` turn (which
+            // only happens if it survives). Runs the same death path any
+            // other combat-kill does (see the `attacks` loop at the bottom
+            // of `monsters_act`) and, like `spend_turn`'s dark-death branch,
+            // computes FOV and returns immediately rather than falling
+            // through into this turn's `spend_turn`/`monsters_act` — the
+            // player is already dead, so burning light or letting other
+            // monsters act again would be redundant and could clobber this
+            // death's own log line with a stale dark-death message.
+            if retal > 0 {
+                self.hp -= retal;
+                if self.hp <= 0 {
+                    self.hp = 0;
+                    self.dead = true;
+                    self.killer = Some(name);
+                    self.log(GAME.strings.killed_by.replace("{}", name));
+                    self.compute_fov();
+                    return;
+                } else {
+                    self.log(GAME.strings.hit_by.replacen("{}", name, 1).replacen("{}", &retal.to_string(), 1));
+                }
             }
         } else if self.blocks.contains(&(nx, ny)) {
             // Sokoban (batch 6 T2): walking into a block attempts to push

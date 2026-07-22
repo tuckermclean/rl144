@@ -245,6 +245,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_lines: RAT_TALK,
         passive: false,
         bump: BumpResponse::Fight,
+        retaliation: 0,
     },
     MonsterDef {
         hp: 6,
@@ -256,6 +257,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_lines: GOBLIN_TALK,
         passive: false,
         bump: BumpResponse::Fight,
+        retaliation: 0,
     },
     MonsterDef {
         hp: 13,
@@ -267,6 +269,9 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_lines: OGRE_TALK,
         passive: false,
         bump: BumpResponse::Fight,
+        // [TUNE] batch 11: guaranteed retaliation — bump-attacking an ogre
+        // always costs 3 HP, even on a killing blow (task 5 tunes this).
+        retaliation: 3,
     },
     // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
     // construction — `passive` keeps it out of `monsters_act` entirely, and
@@ -284,6 +289,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_lines: TRAINER_TALK,
         passive: true,
         bump: BumpResponse::Yield,
+        retaliation: 0,
     },
     // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
     // `bump: Shove` pushes it one tile if the destination is plain floor,
@@ -302,6 +308,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_lines: DONKEY_TALK,
         passive: true,
         bump: BumpResponse::Shove,
+        retaliation: 0,
     },
 ];
 
