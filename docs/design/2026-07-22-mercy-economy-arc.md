@@ -163,12 +163,23 @@ has a target" below).
 1. **Batch 10 — tactical bots + band re-anchor.** Measurement infra; ships nothing
    player-facing; establishes the real difficulty and the two target numbers. Hard
    dependency of all economy work.
-2. **Batch 11 — combat hardening.** Ogre guaranteed hit + heal scarcity; tune violence →
-   ~50%, diplomacy → harder, using the batch-10 bots. Combat-balance MAJOR (moves the bands;
-   same sign-off class as batches 3/4).
-3. **Batch 12 — light as grace (§9-E keystone)** + becalm return-trip dividend + NPC category
-   fix + the trainer-reads-your-last-life reaction + the donkey-follow **seed** (rungs 1–2).
-   The economic unification; the balance / `START_LIGHT` MAJOR.
+2. **Batch 11 — the complete ogre + heal scarcity.** The ogre becomes a two-answer creature
+   in ONE batch, because its guaranteed hit and its awe-becalm are the same coin — the hit IS
+   the awe test: **fighting** it triggers a guaranteed retaliation so it always costs HP even
+   on a killing blow (taxes violence toward ~50%); **standing tall** — holding ground adjacent
+   without fleeing, enduring its hits — awes it into a becalm (the diplomat's real ogre
+   answer, and it costs HP, which batch 12's light-as-grace then makes worth paying). Plus
+   heal scarcity (cut potion drops). Tuned to violence ~50% against the batch-10 bots.
+   Combat-balance MAJOR: moves ALL four bands AND regenerates worldgen goldens (potion-drop
+   placement changes), same sign-off class as batches 3/4. **The ogre awe-becalm was pulled
+   forward from batch 12 (2026-07-22, human) so the diplomat is never answerless-against-ogres
+   mid-arc** — a diplomat with no ogre counterplay would measure as noise, not signal. (Goblin
+   awe stays in batch 12, where it pairs with cheese and the light economy.)
+3. **Batch 12 — light as grace (§9-E keystone)** + goblin awe (walk-backward becalm) +
+   cheese→goblin + becalm return-trip dividend + NPC category fix + the
+   trainer-reads-your-last-life reaction + the donkey-follow **seed** (rungs 1–2). The
+   economic unification; the balance / `START_LIGHT` MAJOR. (Ogre awe moved to batch 11 —
+   see above.)
 4. **Batch 13 — portal ROI.** Loot tables scaled to risk (light caches, unique items,
    otherwise-unreachable lore); the price telegraphed at the threshold in engine facts (the
    portal already knows its destination). Shallow dives +EV for the attentive; deep dives are
@@ -246,7 +257,7 @@ The **universal** becalm is **talk**, not potion — talk works on anything, che
 goblin-coded, potion is mammal-coded. Do not flatten these into one interchangeable "becalm
 cost." The differing prices, and the biology behind them, are the design.
 
-## Goblinoid awe — becalm through nerve, not talk (batch 11 behavior + batch 12 becalm)
+## Goblinoid awe — becalm through nerve, not talk (ogre: complete in batch 11; goblin: batch 12)
 
 **This is the concrete answer to "diplomacy must be harder than it is now."** Mammals (rats)
 becalm through ordinary talk (`receptivity()`). **Goblinoids do not — they becalm through AWE**,
