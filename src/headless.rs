@@ -203,10 +203,35 @@ fn find_tile(map: &[Tile], t: Tile) -> Option<(i32, i32)> {
 /// both change turn to turn) — a full-grid clone plus a handful of writes,
 /// cheap at this scale (COLS*MAP_H = 2000 cells, same order of magnitude
 /// `bfs_dist` itself already walks every call).
-fn routing_map(g: &Game) -> Vec<Tile> {
+pub(crate) fn routing_map(g: &Game) -> Vec<Tile> {
     let mut m = g.map.clone();
     for &(bx, by) in &g.blocks {
         m[idx(bx, by)] = Tile::Wall;
+    }
+    m
+}
+
+/// Preferred routing view for the tactical policies (batch 10): `routing_map`
+/// (sokoban blocks stamped `Tile::Wall`) PLUS every live (non-`calm`) monster's
+/// tile stamped `Tile::Wall`, so a tactical bot PREFERS a path that never walks
+/// into a fight. Pure function of `Game` state — no RNG — like every other bot
+/// decision. Like `routing_map`, this is a PREFERENCE view only, never a
+/// reachability proof: if the objective is unreachable in this view (monsters
+/// wall off the only corridor), the caller falls back to the ordinary
+/// `routing_map` and fights through. A `calm` monster is deliberately NOT
+/// stamped — you can walk onto it (the engine swaps, no fight), matching how the
+/// step logic already treats calm tiles.
+///
+/// `#[allow(dead_code)]`: this task (batch 10 task 1) lands the helper and its
+/// test only; the tactical bot policy that calls it is a later task in this
+/// batch — same substrate-ahead-of-consumer pattern as `save.rs`'s `Ghost`.
+#[allow(dead_code)]
+pub(crate) fn tactical_routing_map(g: &Game) -> Vec<Tile> {
+    let mut m = routing_map(g);
+    for mon in &g.monsters {
+        if !mon.calm && in_map(mon.x, mon.y) {
+            m[idx(mon.x, mon.y)] = Tile::Wall;
+        }
     }
     m
 }

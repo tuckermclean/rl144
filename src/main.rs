@@ -2675,4 +2675,23 @@ mod tests {
         assert!(out.contains('='), "must show at least one screen-link glyph");
         assert!(out.contains('V'), "must show the hole glyph");
     }
+
+    /// batch 10: the tactical routing view stamps a live monster's tile as Wall
+    /// (so the bot prefers to route around it), but leaves a becalmed monster
+    /// walkable (the engine swaps on that tile, no fight).
+    #[test]
+    fn tactical_routing_map_walls_live_monsters_only() {
+        use headless::tactical_routing_map;
+        let mut g = Game::new(7);
+        // find a live monster on depth 1
+        let m = g.monsters.iter().find(|m| !m.calm).expect("a live monster on d1");
+        let (mx, my) = (m.x, m.y);
+        let view = tactical_routing_map(&g);
+        assert_eq!(view[idx(mx, my)], Tile::Wall, "live monster tile must be walled in the tactical view");
+
+        // becalm every monster; now none should be stamped
+        for mon in g.monsters.iter_mut() { mon.calm = true; }
+        let view2 = tactical_routing_map(&g);
+        assert_ne!(view2[idx(mx, my)], Tile::Wall, "a becalmed monster tile must stay walkable");
+    }
 }
