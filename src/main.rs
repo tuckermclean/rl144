@@ -1522,18 +1522,24 @@ mod tests {
         assert_eq!(g.held, vec![TOWEL], "a no-effect use must not consume the item");
     }
 
-    /// USE-ing a potion heals exactly the same amount the old walk-over
-    /// pickup used to (8, capped by maxhp - hp) — the math moved, not the
-    /// number.
+    /// USE-ing a potion applies exactly the potion's AUTHORED heal amount
+    /// (`UseEffect::Heal(n)` in the cartridge), capped by maxhp - hp. Reads `n`
+    /// from GAME rather than hardcoding it, so a balance re-tune of the heal
+    /// (batch 11's heal-scarcity pass cut it 8 -> 3) can't silently break the
+    /// "USE applies the authored heal" invariant — the test tracks the value.
     #[test]
-    fn potion_use_heals_same_as_old_walkover() {
+    fn potion_use_applies_authored_heal() {
         let mut g = blank_room(1);
-        g.hp = (g.maxhp - 5).max(1);
+        g.hp = 1;
         let hp_before = g.hp;
         g.held = vec![POTION];
         g.apply_input(15);
-        let expected = hp_before + 8i32.min(g.maxhp - hp_before);
-        assert_eq!(g.hp, expected, "USE-ing a potion must heal exactly like the old walk-over pickup did");
+        let heal = match GAME.items[POTION as usize].on_use {
+            Some(crate::gamedef::UseEffect::Heal(n)) => n,
+            _ => panic!("potion should have a Heal on_use"),
+        };
+        let expected = hp_before + heal.min(g.maxhp - hp_before);
+        assert_eq!(g.hp, expected, "USE-ing a potion must apply the authored heal amount");
         assert!(g.held.is_empty(), "a landed use must consume the potion");
     }
 
@@ -2336,8 +2342,13 @@ mod tests {
     /// wall. The batch-3 balance pass (spawn count, roll table, potion
     /// counts, per-depth HP bonus; see `descend` and `Monster::stats` in
     /// `game.rs`) fixed this and is gated by `--sim`/`tests/sim-band.json`
-    /// (`make sim`). Seeds 0..50 now produce 3 deterministic wins, so this
-    /// test asserts `wins >= 1` as a floor against regression.
+    /// (`make sim`). Batch 11's heal-scarcity combat MAJOR collapsed the greedy
+    /// bot to <1% wins (it's the too-dumb reference now), so this "the engine
+    /// can still produce a win" floor switched from greedy to the TACTICAL
+    /// (competent-play) bot, which wins ~47% — the honest proxy for "winnable
+    /// by a skilled player." Seeds 0..50 produce several deterministic tactical
+    /// wins; asserts `wins >= 1` as a floor against a return of the batch-2
+    /// unwinnable wall.
     #[test]
     fn sim_bot_wins_some() {
         let mut wins = 0u64;
@@ -2345,7 +2356,7 @@ mod tests {
         let mut deaths_dark = 0u64;
         let mut stuck = 0u64;
         for seed in 0..50u64 {
-            let (r, _world) = sim_seed(seed, Policy::Greedy);
+            let (r, _world) = sim_seed(seed, Policy::Tactical);
             if r.won {
                 wins += 1;
             } else if r.dead_dark {
