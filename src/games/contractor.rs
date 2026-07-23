@@ -273,7 +273,7 @@ const MONSTERS: [MonsterDef; 5] = [
         bump: BumpResponse::Fight,
         // [TUNE] batch 11: guaranteed retaliation — bump-attacking an ogre
         // always costs 3 HP, even on a killing blow (task 5 tunes this).
-        retaliation: 3,
+        retaliation: 6,
         // [TUNE] batch 11 T2: 3 cardinal-adjacent turns of not swinging
         // becalms it via awe — the diplomat's ogre answer.
         awe_threshold: 3,
@@ -342,7 +342,7 @@ const ITEMS: [ItemDef; 9] = [
         effect: ItemEffect::None,
         on_pickup: PickupBehavior::Hold,
         pickup_line: POTION_PICKUP_LINE,
-        on_use: Some(UseEffect::Heal(8)),
+        on_use: Some(UseEffect::Heal(3)),
         use_line: POTION_USE_LINE,
     },
     ItemDef {
@@ -696,12 +696,12 @@ const BALANCE: BalanceDef = BalanceDef {
     monster_sight: 8,
     fov_tiers: &[(50, 8), (30, 6), (18, 5), (10, 4), (4, 3), (i32::MIN, 2)],
     light_tiers: &[(8, 100), (6, 85), (5, 70), (4, 55), (3, 40), (2, 28)],
-    hp_gain_per_depth: 4,
+    hp_gain_per_depth: 3,
     spawn_base_count: 3,
     monster_roll: &[(9, RAT), (13, GOBLIN), (i32::MAX, OGRE)],
     loot_count_lo: 2,
     loot_count_hi: 4,
-    loot_count_per_depth: 2,
+    loot_count_per_depth: 1,
     loot_potion_num: 3,
     loot_potion_den: 4,
     loot_potion_item: POTION,
