@@ -2499,6 +2499,11 @@ impl Game {
     /// Unlike a landed talk, the target is NOT stayed — GIVE isn't
     /// "listening," it's a delivered object, so `monsters_act` runs with
     /// `None` exactly like a plain wait.
+    ///
+    /// **Exception, batch 13 T2**: a `GiveRule::stay_and_roll` row (cheese
+    /// -> goblin, story §12.14) takes a separate branch entirely — see
+    /// `GiveRule::stay_and_roll`'s doc comment for the guaranteed-stay +
+    /// gambled-becalm shape, and below for the mechanics.
     pub(crate) fn try_give_player(&mut self, dx: i32, dy: i32) {
         self.fx_hit = None;
         if self.dead || self.won {
@@ -2525,6 +2530,44 @@ impl Game {
             self.log(GAME.strings.give_declined.replace("{}", name));
             return; // no give-table row for this (item, kind): no-op, no turn
         };
+        if rule.stay_and_roll {
+            // Batch 13 T2 (story §12.14 / arc doc "Cheese has a target"):
+            // guaranteed tempo, gambled grace. The target is ALWAYS stayed
+            // this turn regardless of roll outcome (`stayed = Some(mi)`
+            // below, the same transient per-turn parameter a landed talk
+            // uses — never stored, never hashed). Separately, an
+            // already-calm target short-circuits to "landed" (no double
+            // roll needed); otherwise roll `receptivity` off `parley_rng`
+            // ONLY (never combat/ai/worldgen — same channel discipline as
+            // `try_talk_player`).
+            let already_calm = self.monsters[mi].calm;
+            let chance = receptivity(&self.monsters[mi], self);
+            let landed = already_calm || self.parley_rng.range(0, 100) < chance;
+            if landed && !already_calm {
+                self.monsters[mi].calm = true;
+                self.record_spare();
+                self.carry_event(CarryEvent::SpareWitnessed);
+            }
+            if let Some(t) = rule.line {
+                self.log(t.replace("{M}", name));
+            }
+            if landed {
+                if let Some(t) = rule.line_becalmed {
+                    self.log(t.replace("{M}", name));
+                }
+            }
+            if rule.consumes {
+                self.held.pop();
+            }
+            if !self.spend_turn(0) {
+                return; // died in the dark on a give turn: lose beats anything else
+            }
+            // The player never moves during a give; the target is ALWAYS
+            // stayed here regardless of landed/failed (batch 13 T2's whole
+            // point — the stay is the guaranteed half of the bargain).
+            self.monsters_act_and_resolve_awe(Some(mi), None, (self.px, self.py));
+            return;
+        }
         if rule.heal_full {
             self.monsters[mi].hp = GAME.monsters[kind as usize].hp;
         }

@@ -392,6 +392,12 @@ const CHEESE_USE_LINE: &str = "You burn the cheese. Cheese is, technically, fuel
 const POTION_GIVE_LINE: &str = "You offer the potion. This is not what potions are for. It works."; // NAR_035, verbatim
 const COAT_PICKUP_LINE: &str = "You find a coat. It is a normal coat for one normal monster."; // NAR_036, verbatim
 const TOWEL_PICKUP_LINE: &str = "You find a towel. You cannot imagine who needs it. You will."; // NAR_037, verbatim
+// batch 13 T2 (story §12.14 / arc doc "Cheese has a target"): the human's
+// positive cheese give-target, resolved. Always logged (stay, distracted,
+// eating -- grounded, no invented history); the becalm line is a second,
+// additional line only logged when the roll actually lands.
+const CHEESE_GOBLIN_STAY_LINE: &str = "The {M} forgets the fight -- it only has eyes for the cheese.";
+const CHEESE_GOBLIN_BECALM_LINE: &str = "Between bites, the {M} decides cheese beats a fight.";
 
 const ITEMS: [ItemDef; 9] = [
     ItemDef {
@@ -490,18 +496,28 @@ const ITEMS: [ItemDef; 9] = [
     },
 ];
 
-/* GIVE table (batch 7 T2, story §5/§9-A). Row order doesn't matter for
-   correctness (`Game::try_give_player` scans for the first match and this
-   batch never lists two rows for the same item), but is kept
-   cheese-then-potion to match the items table above. */
-const GIVE_TABLE: [GiveRule; 2] = [
+/* GIVE table (batch 7 T2, story §5/§9-A; cheese -> goblin row added batch
+   13 T2). Row order doesn't matter for correctness (`Game::try_give_player`
+   scans for the first match and this batch never lists two rows for the
+   same item + specific-kind pair), but is kept cheese-rat, potion,
+   cheese-goblin to match the items table's cheese/potion order above. */
+const GIVE_TABLE: [GiveRule; 3] = [
     // cheese -> rat: measured regard PENALTY [TUNE -2] (story §4: "everyone
     // knows rats want cheese... offering cheese: measured regard PENALTY").
     // `line: None` reuses the rat's own stage-3 ("unmoved") talk line via
     // `Game::try_give_player`'s generic fallback rather than inventing new
     // give-specific flavor text — batch 7 T2 brief: "hooks into the
-    // existing talk/regard machinery, not new lines."
-    GiveRule { item: CHEESE, monster: Some(RAT), regard_delta: -2, line: None, heal_full: false, consumes: true },
+    // existing talk/regard machinery, not new lines." UNCHANGED this batch.
+    GiveRule {
+        item: CHEESE,
+        monster: Some(RAT),
+        regard_delta: -2,
+        line: None,
+        heal_full: false,
+        consumes: true,
+        stay_and_roll: false,
+        line_becalmed: None,
+    },
     // potion -> any monster: the single biggest regard event in the game
     // [TUNE +3] (story §5: "Potion, given... undoing the wound after it
     // made them listen"). `heal_full` undoes whatever wound made the
@@ -513,13 +529,35 @@ const GIVE_TABLE: [GiveRule; 2] = [
         line: Some(POTION_GIVE_LINE),
         heal_full: true,
         consumes: true,
+        stay_and_roll: false,
+        line_becalmed: None,
     },
-    // [YOURS/TUNE] story §5/§12.14: cheese also "works on ONE other
-    // monster" — a positive give-target, human-picked (the story is
-    // explicit that this is not a guessing job: goblin/ogre would both be
-    // wrong without the human's line). Deliberately left OUT of this table
-    // until that pick lands; GIVE-ing cheese at anything but a rat falls
-    // through to the generic `give_declined` no-op in the meantime.
+    // cheese -> goblin (batch 13 T2, story §12.14 / arc doc "Cheese has a
+    // target", human-assigned): the reserved positive cheese give-target.
+    // `stay_and_roll` (see `GiveRule::stay_and_roll`'s doc comment): ALWAYS
+    // stays the goblin this turn (guaranteed tempo -- distracted, eating,
+    // not persuaded yet) and separately rolls a `receptivity`-style chance
+    // at an outright becalm (gambled grace -- a hit sets `calm` + counts
+    // `spared`, feeding light under §9-E and the return-trip dividend under
+    // batch 13 T3). `regard_delta: 0`/`heal_full: false` are the harmless
+    // defaults for this row's shape -- the roll decides everything, not
+    // incremental regard. Cheese is always consumed (`consumes: true`)
+    // regardless of roll outcome -- it's eaten either way, which is exactly
+    // the scarcity guard the arc doc calls for ("cheese scarcity keeps the
+    // gamble from becoming a pacifism-dominant economy"). No row exists for
+    // cheese -> ogre: ogres are not cheese-lovers (arc doc, explicit) --
+    // GIVE-ing cheese at one falls through to the generic `give_declined`
+    // no-op, same as any other unmatched (item, kind) pair.
+    GiveRule {
+        item: CHEESE,
+        monster: Some(GOBLIN),
+        regard_delta: 0,
+        line: Some(CHEESE_GOBLIN_STAY_LINE),
+        heal_full: false,
+        consumes: true,
+        stay_and_roll: true,
+        line_becalmed: Some(CHEESE_GOBLIN_BECALM_LINE),
+    },
 ];
 
 /* Meaning is authored upstream; the generator is a librarian. Each depth

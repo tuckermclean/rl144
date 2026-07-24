@@ -376,6 +376,25 @@ pub(crate) struct GiveRule {
     pub(crate) heal_full: bool,
     /// Whether a landed give removes the item from `Game.held`.
     pub(crate) consumes: bool,
+    /// Batch 13 T2 (story §12.14 / "Cheese has a target"): a distinct
+    /// outcome shape from the plain regard_delta/heal_full rows above —
+    /// used by exactly one row this batch (cheese -> goblin). When set,
+    /// `Game::try_give_player` takes an entirely separate branch: the
+    /// target is ALWAYS stayed this turn (guaranteed tempo, reusing the
+    /// batch-5 stayed mechanic — it's distracted, not persuaded yet)
+    /// regardless of outcome, and SEPARATELY rolls a `receptivity`-style
+    /// chance (drawn from `Game::parley_rng`, never combat/ai/worldgen) at
+    /// an outright becalm (gambled grace: a hit sets `calm` and counts
+    /// `Game::spared`, exactly like a landed talk crossing threshold). This
+    /// is orthogonal to `regard_delta`/`heal_full`, which a `stay_and_roll`
+    /// row leaves at their harmless defaults (0/false) since the roll
+    /// decides everything, not incremental regard.
+    pub(crate) stay_and_roll: bool,
+    /// Only meaningful when `stay_and_roll` is set: an extra line logged
+    /// (in addition to `line`, which is always logged as the "it's
+    /// distracted" message) the instant the becalm roll lands. `None` skips
+    /// the extra line (a `stay_and_roll` row should normally set this).
+    pub(crate) line_becalmed: Option<&'static str>,
 }
 
 /// One theme's complete authored identity: label, the run's win-condition

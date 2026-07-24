@@ -1752,6 +1752,135 @@ mod tests {
         assert_eq!(g.turns, before_turns + 1, "a landed give costs a turn");
     }
 
+    /// Batch 13 T2 (story §12.14 / arc doc "Cheese has a target"): give
+    /// cheese to the single goblin at `g.monsters[0]` repeatedly
+    /// (re-supplying a fresh wheel each attempt, since `GiveRule::consumes`
+    /// is true regardless of roll outcome — cheese is eaten either way)
+    /// until the becalm roll lands (`calm` becomes true). Cheese never
+    /// raises `regard` (`regard_delta: 0`), so `receptivity()` is a
+    /// constant IID chance across attempts (unlike a talk, whose landed
+    /// regard climbs the odds) — panics if 200 attempts never land, which
+    /// would indicate a receptivity/RNG-isolation regression rather than
+    /// ordinary variance.
+    fn give_cheese_until_becalmed(g: &mut Game, give_byte: u8) -> u32 {
+        for attempt in 1..=200u32 {
+            g.held.push(CHEESE);
+            g.apply_input(give_byte);
+            if g.monsters[0].calm {
+                return attempt;
+            }
+            assert!(!g.dead, "player died before cheese ever landed (attempt {})", attempt);
+        }
+        panic!("cheese did not land within 200 attempts — receptivity or RNG isolation regression?");
+    }
+
+    /// Cheese ALWAYS stays a goblin the turn it's given, whether the becalm
+    /// roll lands or fails (arc doc: "it always stays the goblin -- stops
+    /// it attacking or advancing that turn"). Loops attempts (re-supplying
+    /// cheese each time) until becalmed, asserting on every single attempt
+    /// that the player took no damage and the goblin never moved.
+    #[test]
+    fn cheese_to_goblin_always_stays_it_no_damage_ever() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+        let hp0 = g.hp;
+        let pos0 = (g.monsters[0].x, g.monsters[0].y);
+        for _ in 1..=200u32 {
+            if g.monsters[0].calm {
+                break;
+            }
+            g.held.push(CHEESE);
+            g.apply_input(11); // give-N
+            assert_eq!(g.hp, hp0, "a cheese-fed goblin must never swing, landed or failed");
+            assert_eq!(
+                (g.monsters[0].x, g.monsters[0].y),
+                pos0,
+                "a cheese-fed goblin must never advance, landed or failed"
+            );
+        }
+    }
+
+    /// A landed cheese becalm sets `calm` outright and counts as a spare
+    /// (`Game::spared`, feeding light under §9-E and the return-trip
+    /// dividend under batch 13 T3) — exactly like a landed talk crossing
+    /// `talk_threshold`.
+    #[test]
+    fn cheese_to_goblin_landed_becalm_sets_calm_and_spared() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+        let spared_before = g.spared;
+        give_cheese_until_becalmed(&mut g, 11); // give-N
+        assert!(g.monsters[0].calm, "a landed cheese roll must becalm the goblin outright");
+        assert_eq!(g.spared, spared_before + 1, "a landed cheese becalm must count as a spare");
+    }
+
+    /// A failed cheese roll leaves the goblin NOT calm, but the guaranteed
+    /// stay still bought the turn (no swing) — the gamble's floor. Scans
+    /// fixed seeds (no external entropy, so this stays fully deterministic)
+    /// for one whose `parley_rng` stream happens to fail at least once
+    /// before becalming — GOBLIN's ~35 `receptivity_base` means most seeds
+    /// see a failure on the very first attempt.
+    #[test]
+    fn cheese_to_goblin_failed_roll_stays_but_not_calm() {
+        let mut saw_failed = false;
+        'seeds: for seed in 1..200u64 {
+            let mut g = blank_room(seed);
+            g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+            for _ in 1..=200u32 {
+                if g.monsters[0].calm {
+                    break;
+                }
+                let hp0 = g.hp;
+                g.held.push(CHEESE);
+                g.apply_input(11); // give-N
+                if !g.monsters[0].calm {
+                    saw_failed = true;
+                    assert_eq!(g.hp, hp0, "a failed cheese roll must still buy the stay (no swing)");
+                    break 'seeds;
+                }
+            }
+        }
+        assert!(saw_failed, "expected at least one seed/attempt with a failed cheese roll before becalming");
+    }
+
+    /// Cheese has no ogre give-target (arc doc: "ogres are not
+    /// cheese-lovers") — declines gracefully via the generic no-match
+    /// path, no crash, no turn, item stays held.
+    #[test]
+    fn cheese_to_ogre_declines_gracefully() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0 });
+        g.held = vec![CHEESE];
+        let before_turns = g.turns;
+        g.apply_input(11); // give-N
+        assert_eq!(g.turns, before_turns, "cheese has no ogre give-target: no-op, no turn");
+        assert_eq!(g.held, vec![CHEESE], "a declined give must not consume the item");
+        assert!(!g.monsters[0].calm);
+    }
+
+    /// Channel discipline (mirrors `parley_isolated_from_combat`'s style):
+    /// the cheese-to-goblin `stay_and_roll` give must draw only
+    /// `parley_rng`, never `combat_rng`/`ai_rng` — the goblin is always
+    /// either calm (skipped outright) or stayed (skipped via `stayed`), so
+    /// `monsters_act` never reaches an attack or movement roll for it, and
+    /// there's no other monster in this fixture to draw either channel.
+    #[test]
+    fn cheese_give_isolated_from_combat_and_ai() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+        for _ in 1..=200u32 {
+            if g.monsters[0].calm {
+                break;
+            }
+            let before_combat = g.combat_rng.0;
+            let before_ai = g.ai_rng.0;
+            g.held.push(CHEESE);
+            g.apply_input(11); // give-N
+            assert_eq!(g.combat_rng.0, before_combat, "cheese give must never draw combat_rng");
+            assert_eq!(g.ai_rng.0, before_ai, "cheese give must never draw ai_rng");
+        }
+    }
+
     /// Give the potion to a wounded monster: heals it to full AND raises
     /// regard (story §5: "the single biggest regard event in the game").
     #[test]
