@@ -49,18 +49,33 @@ You cannot fight for free.
 - Effect: each fight becomes *trade / flee / talk-down*, not free bump-through. This is the
   terrain the tactical bot navigates.
 
-### Engine 2 — light as grace (run-level ceiling): §9-E promoted to keystone
-§9-E (McGuffin mood → light), previously priced "cheap flavor, no sign-off," becomes the
-economic keystone:
-- **Killing dims your light** — the McGuffin recoils; your world literally shortens. (On top
-  of the existing per-attack `VIOLENCE_TAX`.)
-- **Sparing feeds your light** — a becalm is the game's only *renewable* light source.
-- **The McGuffin's mood IS the fuel gauge** — its dimming/quieting is not flavor, it is the
-  survival readout. The narrator-cannot-lie doctrine holds: mood is engine state, and its
-  dimming is a verifiable fact about what you did.
-- Effect: a kill-heavy descent can't afford the 2× climb-out burn, so violence caps at ~50%
-  **even when you win every fight.** The return trip becomes the scene the mechanics always
-  implied — climbing through floors whose light economy you set on the way down.
+### Engine 2 — light as grace: the McGuffin is a second lantern with an opinion (REDESIGNED 2026-07-24, human)
+§9-E's "McGuffin mood → light" became the economic keystone — but the naive form (spare → light
+stipend) failed in measurement: the diplomat drowned in unspent light (1259 left on wins) while
+dying of HP. Light was never its bottleneck. The human redesigned it around what the McGuffin
+already IS in the story — not a fuel gauge, a **second lantern** you carry out, whose radius is
+her verdict on how you played. Five commitments (batch 12):
+- **The descent is honest.** Killing still dims your light (`kill_light_penalty` — measurably
+  worked: tactical-violent 46.8% → 37.9%, dark deaths 80 → 522). **Mercy pays NOTHING on the way
+  down** — no stipend. It is goodness on credit; the entire return arrives at the top.
+- **Rest heals.** Waiting (byte 4) while hurt heals a little, only when no hostile is cardinally
+  adjacent (so awe-holding stays its own act). HP was the diplomat's real wall (69% combat
+  deaths); time-is-light-is-HP, no new verb.
+- **The pickup is a verdict.** At amulet pickup the McGuffin's opinion ANCHORS to your kill/spare
+  record (two new hashed ints, `SAVE_VERSION` bump). Late redemption on the climb is permitted
+  but anchored LOW; **and every becalmed monster she sees on the ascent brightens her** — the
+  spared literally light the way home.
+- **She is a positional light SOURCE, and the death check rewrites.** Her shine, radius set by
+  mood tier, is centered on her tile and composes with the torch in FOV. Death is no longer
+  `light <= 0`; it is **"no light reaches you"** — torch dead AND outside her radius. A
+  max-shine diplomat finishes the climb walking in her light after the torch dies (THE flip); a
+  mood-zero brute gets radius ~0 and dies exactly as today (the descent nerf preserved). Put-down
+  (byte 16) becomes strategy: park her, scout at 1×, return — self-limiting, intended play.
+- **Cheese is the poor-man's torch** (burn-for-flicker, batch 7) — the last-resort light of the
+  brute she won't shine for.
+- Grounding: her mood and radius are engine state; lines frame RELATIONSHIP not economy (*"There
+  is not much left. It warms you with it anyway."*). The solver stays geometric and conservative:
+  her shine only ever ADDS survivability. Targets: tactical-diplomat ~[50,60], violence high-30s.
 
 ## The measurement reframe (ships FIRST, batch 10)
 
