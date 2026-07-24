@@ -13,7 +13,7 @@ use crate::rng::{fnv_bytes, h64};
 // ---------- Save / replay: state is deltas (seed + input log) ----------
 /* A save is the original seed plus one byte per input; the world is
    reconstructed by replaying. Byte format, no serde:
-     "RL14" | version u8 (=1, 2, 3, 4, or 5) | seed u64 LE | input bytes...
+     "RL14" | version u8 (=1..=6) | seed u64 LE | input bytes...
    Inputs: 0=N 1=S 2=W 3=E 4=wait 5=restart(reroll to a new seed)
    6=retry(same seed, save v2 — see INPUT_RETRY) 7=talk-N 8=talk-S 9=talk-W
    10=talk-E (save v3, batch 5, DECISION.md item 3 — the Henson ruling;
@@ -22,19 +22,23 @@ use crate::rng::{fnv_bytes, h64};
    direction order mirrors talk's/move's exactly, see
    `game::Game::apply_input`) 16=put-down (save v5, batch 8 T1, story
    §9-D — self-apply like use, no direction). Tens of bytes per save.
-   `save_bytes` always writes v5; `parse_save` accepts v1, v2, v3, v4, or
-   v5 — a v1/v2/v3/v4 log never contains byte 16 (put-down didn't exist
-   yet), so it replays byte-identical under v5 parsing either way (see the
-   `v1_save_replays_under_v5_parsing`/`v2_save_replays_under_v5_parsing`/
-   `v3_save_replays_under_v5_parsing`/`v4_save_replays_under_v5_parsing`
-   tests in main.rs). This is a version bump rather than a silent superset,
-   precisely so an OLD binary
-   (whose own `parse_save` only ever accepted up to v4) REJECTS a v5 save
-   cleanly instead of silently ignoring the put-down byte and diverging
-   from what was actually played — same discipline the v3->v4 give/use
-   bump established. */
+   `save_bytes` always writes v6; `parse_save` accepts v1 through v6 — a
+   v1/v2/v3/v4 log never contains byte 16 (put-down didn't exist yet), and
+   NO version's log contains a byte for the batch-12 R4 mood mechanic
+   (there isn't one: `mood_sum`/`mood_count` are pure derived state — see
+   `state_hash`'s doc comment — with no new entry in the input vocabulary
+   at all), so every older version replays byte-identical under v6 parsing
+   (see the `v1_save_replays_under_v6_parsing`/
+   `v2_save_replays_under_v6_parsing`/`v3_save_replays_under_v6_parsing`/
+   `v4_save_replays_under_v6_parsing`/`v5_save_replays_under_v6_parsing`
+   tests in main.rs). SAVE_VERSION still bumps on this batch (5->6), per
+   the brief, even though the byte vocabulary itself didn't grow this
+   time — kept in lockstep with every hashed-state addition regardless of
+   whether THIS particular one needed the bump to replay correctly, so the
+   version number stays a trustworthy label for "what state_hash covers"
+   rather than something that only moves when a new input byte forces it. */
 const SAVE_MAGIC: &[u8; 4] = b"RL14";
-const SAVE_VERSION: u8 = 5;
+const SAVE_VERSION: u8 = 6;
 pub(crate) const INPUT_RESTART: u8 = 5;
 /// Save v2 (batch 4 task 2, DECISION.md sign-off item 2): reconstruct
 /// `Game::new_overworld(g.seed)` (batch 9 T3 — see `replay`'s doc comment)
@@ -55,7 +59,7 @@ pub(crate) fn save_bytes(seed0: u64, inputs: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn parse_save(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
-    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=5).contains(&bytes[4]) {
+    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=6).contains(&bytes[4]) {
         return None;
     }
     let mut s = [0u8; 8];
@@ -135,7 +139,11 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// Same contrast for `Monster.awe` (batch 11 T2): hashed per-monster right
 /// beside `regard`/`calm` — it changes whether a future turn becalms the
 /// monster, exactly like `regard` does, so it's run-defining, not
-/// presentation.
+/// presentation. `g.mood_sum`/`g.mood_count` (batch 12 R4, "the pickup
+/// verdict") join the same hashed set for the same reason: `Game::mood`'s
+/// value will drive the McGuffin's shine radius (a near-future task), so
+/// it's run-defining like every other counter here, not a `killer`/`echo`/
+/// `facing`/`fx_hit`/`mcguffin_last_line_turn`-style presentation value.
 /// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
 /// in (batch 6 T1): current world, provenance, and every stored
 /// `WorldState`'s own id.
@@ -246,6 +254,13 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         // hashed rather than excluded).
         g.speech_attempts as u64,
         g.objective_dropped as u64,
+        // batch 12 R4: run-defining (see this function's doc comment above)
+        // — cast the same way `hp`/`light`/etc above already do (an i32
+        // widened to u64 is deterministic either way, negative values
+        // included, though neither field is expected to go negative given
+        // this cartridge's non-negative anchor-weight/valence constants).
+        g.mood_sum as u64,
+        g.mood_count as u64,
         g.combat_rng.0,
         g.ai_rng.0,
         g.flavor_rng.0,

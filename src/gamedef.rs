@@ -202,6 +202,20 @@ pub(crate) struct MonsterDef {
     /// hashed run state). `3` for the ogre ([TUNE] batch 11), `0` for every
     /// other kind this batch.
     pub(crate) awe_threshold: u8,
+    /// batch 12 R4 (the pickup verdict — "not every kill is as despicable
+    /// as every other"): the mood valence averaged into `Game::mood_sum`/
+    /// `Game::mood_count` (see `Game::mood`'s doc comment for the running-
+    /// average model) when the player kills this kind AFTER the objective's
+    /// first pickup — read via `Monster::stats(kind).kill_valence` at the
+    /// kill site, BEFORE the monster is removed from `Game::monsters`. Lower
+    /// = more despicable (killing the near-defenseless); higher = closer to
+    /// self-defense. All values are still below the neutral midpoint (50)
+    /// — a kill is never commendable, only more or less forgivable. A
+    /// per-kind [TUNE] constant, not run state, exactly like `retaliation`/
+    /// `awe_threshold` above. `0` for an un-killable kind (irrelevant —
+    /// `passive`/`Yield`/`Shove` bump responses mean this path is never
+    /// reached for it, kept sane rather than left to imply a meaning).
+    pub(crate) kill_valence: i32,
 }
 
 /// A monster's reaction to a player's bump-into (batch 9 T1, SIGN-OFF ASK
@@ -441,6 +455,18 @@ pub(crate) struct BalanceDef {
     /// awe-holding) and the portal-footing rule (never fires on a
     /// transiting wait).
     pub(crate) rest_heal: i32,
+    /// batch 12 R4 (the pickup verdict): weight given the anchor score
+    /// (`Game::pickup`'s objective-pickup arm) in the mood running average
+    /// — `mood_sum = mood_anchor_weight * anchor_score; mood_count =
+    /// mood_anchor_weight` at the moment of seeding, so early conduct
+    /// (post-pickup kills/spares) nudges the average rather than swamping
+    /// it outright. [TUNE] starting value; see `Game::mood`'s doc comment
+    /// for the full model.
+    pub(crate) mood_anchor_weight: i32,
+    /// batch 12 R4: the mood valence averaged in on a post-pickup spare/
+    /// becalm (`Game::record_spare`) — the diplomat's counterpart to
+    /// `MonsterDef::kill_valence`. [TUNE] starting value.
+    pub(crate) mood_spare_valence: i32,
 }
 
 /// The win condition: which item ends the run, how it's carried, and where

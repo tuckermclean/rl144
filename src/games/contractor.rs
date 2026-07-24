@@ -247,6 +247,9 @@ const MONSTERS: [MonsterDef; 5] = [
         bump: BumpResponse::Fight,
         retaliation: 0,
         awe_threshold: 0,
+        // batch 12 R4 [TUNE]: cruelty to the near-harmless — the most
+        // despicable kill in the roster.
+        kill_valence: 0,
     },
     MonsterDef {
         hp: 6,
@@ -260,6 +263,9 @@ const MONSTERS: [MonsterDef; 5] = [
         bump: BumpResponse::Fight,
         retaliation: 0,
         awe_threshold: 0,
+        // batch 12 R4 [TUNE]: a middling threat — more forgivable than the
+        // rat, still below self-defense.
+        kill_valence: 15,
     },
     MonsterDef {
         hp: 13,
@@ -277,6 +283,10 @@ const MONSTERS: [MonsterDef; 5] = [
         // [TUNE] batch 11 T2: 3 cardinal-adjacent turns of not swinging
         // becalms it via awe — the diplomat's ogre answer.
         awe_threshold: 3,
+        // batch 12 R4 [TUNE]: a guaranteed-hitter (see `retaliation` above)
+        // — killing it reads closest to self-defense, the least despicable
+        // of the three, though still below the neutral midpoint.
+        kill_valence: 30,
     },
     // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
     // construction — `passive` keeps it out of `monsters_act` entirely, and
@@ -296,6 +306,10 @@ const MONSTERS: [MonsterDef; 5] = [
         bump: BumpResponse::Yield,
         retaliation: 0,
         awe_threshold: 0,
+        // batch 12 R4: un-killable by construction (see the comment above
+        // this table) — irrelevant, kept sane rather than implying a
+        // meaning.
+        kill_valence: 0,
     },
     // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
     // `bump: Shove` pushes it one tile if the destination is plain floor,
@@ -316,6 +330,9 @@ const MONSTERS: [MonsterDef; 5] = [
         bump: BumpResponse::Shove,
         retaliation: 0,
         awe_threshold: 0,
+        // batch 12 R4: un-killable by construction — irrelevant, same as
+        // TRAINER above.
+        kill_valence: 0,
     },
 ];
 
@@ -727,6 +744,11 @@ const BALANCE: BalanceDef = BalanceDef {
     // batch 12 T3 (story "light as grace" — the grace half): [TUNE]
     // starting value, priced later against the tactical-band re-baseline.
     rest_heal: 1,
+    // batch 12 R4 (the pickup verdict): [TUNE] starting values, per the
+    // human-authored mood model — see `gamedef::BalanceDef::
+    // mood_anchor_weight`'s doc comment.
+    mood_anchor_weight: 20,
+    mood_spare_valence: 100,
 };
 
 const WIN: WinDef = WinDef {

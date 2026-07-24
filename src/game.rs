@@ -483,6 +483,40 @@ pub(crate) struct Game {
     /// state (it changes which `CarryEvent` a future pickup fires), not
     /// presentation.
     pub(crate) objective_dropped: bool,
+    /// batch 12 R4 (the pickup verdict — "light as grace"): running-average
+    /// numerator/denominator for the McGuffin's mood (`Game::mood`). Seeded
+    /// ONCE, at the objective's FIRST pickup (`Game::pickup`'s
+    /// `ItemEffect::Objective` arm, the `!was_dropped` branch — same guard
+    /// that already distinguishes a first pickup from a `PickedBackUp` re-
+    /// pickup, so a put-down/re-pickup cannot re-seed the anchor), from the
+    /// descent's kill/spare record: `anchor_score = 50` if the player never
+    /// fought or talked, else `100 * spared / (kills + spared)` (0 = pure
+    /// brute, 100 = pure diplomat). `mood_sum = mood_anchor_weight *
+    /// anchor_score; mood_count = mood_anchor_weight` at that moment (see
+    /// `BalanceDef::mood_anchor_weight`). Every notable act on the climb
+    /// thereafter averages in: a post-pickup kill adds
+    /// `MonsterDef::kill_valence` for the kind killed (graduated —
+    /// "not every kill is as despicable as every other"), a post-pickup
+    /// spare/becalm (`Game::record_spare`) adds `BalanceDef::
+    /// mood_spare_valence`. Both are hashed (`save::state_hash`): mood is
+    /// run-defining (it will drive the McGuffin's shine radius, a future
+    /// task), not presentation. `mood_count == 0` (before any pickup) means
+    /// `Game::mood` returns the neutral 50 — her shine doesn't exist until
+    /// she's picked up, so an unseeded average is harmless.
+    ///
+    /// R5+ hook (NOT built this task, per explicit human instruction): "every
+    /// time she sees a becalmed monster, she likes you that much more" — a
+    /// bounded, once-per-monster mood lift for passing a becalmed monster
+    /// within her shine radius on the climb. The natural site is
+    /// `Game::monsters_act`'s per-monster loop, but a becalmed monster hits
+    /// that loop's `calm || passive` early `continue` before any
+    /// distance/sees check runs — the detection has to live ahead of that
+    /// `continue`, gated on `has_objective` and a new hashed once-per-
+    /// monster "already greeted the McGuffin" flag (farming-guarded, same
+    /// spirit as `Monster.awe`'s cap). Left as a comment, not code: this
+    /// task is the anchor seed plus the kill/spare valences only.
+    pub(crate) mood_sum: i32,
+    pub(crate) mood_count: i32,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
@@ -610,6 +644,8 @@ impl Game {
             held: Vec::new(),
             speech_attempts: 0,
             objective_dropped: false,
+            mood_sum: 0,
+            mood_count: 0,
             monsters: Vec::new(),
             items: Vec::new(),
             rooms: Vec::new(),
@@ -1206,8 +1242,39 @@ impl Game {
     /// McGuffin's mood/shine at pickup (later tasks). Kept as the one
     /// consolidated spare site regardless, so a future mood/anchor mechanic
     /// has exactly one place to hook — same lesson as batch 11's awe helper.
+    ///
+    /// Batch 12 R4: that "future mechanic" is now — a post-pickup spare
+    /// (`self.mood_count > 0`, i.e. the anchor has already been seeded by
+    /// `Game::pickup`) averages `BalanceDef::mood_spare_valence` into the
+    /// running mood average (`Game::mood`). A spare BEFORE the objective is
+    /// ever picked up only feeds the anchor's `spared` count at the pickup
+    /// snapshot — it doesn't touch `mood_sum`/`mood_count` directly, which
+    /// is exactly why this guard is `mood_count > 0` and not, say, `self.
+    /// has_objective` (a spare landed after a `put_down` still counts,
+    /// matching the brief's "post-pickup" wording — chronologically after
+    /// the first pickup, not only while currently carrying).
     fn record_spare(&mut self) {
         self.spared += 1;
+        if self.mood_count > 0 {
+            self.mood_sum += GAME.balance.mood_spare_valence;
+            self.mood_count += 1;
+        }
+    }
+
+    /// The McGuffin's mood (batch 12 R4, "the pickup verdict"): a pure,
+    /// deterministic running average, `0..=100`, derived only from hashed
+    /// state (`mood_sum`/`mood_count` — see their doc comment on `Game` for
+    /// the full seeding/update model). `50` (neutral) whenever
+    /// `mood_count == 0` — before the objective's first pickup, there is no
+    /// average to report yet, and the McGuffin's shine (a later task) has
+    /// no opinion to shine with. Will drive her shine radius once that
+    /// task lands; this task only needs the value. No caller yet outside
+    /// tests (the shine-radius consumer is the next task) — same
+    /// no-caller-yet status as `save::Ghost`/`save::parse_ghost`, `#[allow(
+    /// dead_code)]` for the same reason.
+    #[allow(dead_code)]
+    pub(crate) fn mood(&self) -> i32 {
+        if self.mood_count == 0 { 50 } else { (self.mood_sum / self.mood_count).clamp(0, 100) }
     }
 
     /// Snapshot the current depth (of the CURRENT world — see `Game::saved`'s
@@ -1876,6 +1943,10 @@ impl Game {
             // the monster is removed below) — `retaliation` is a per-kind
             // constant, not per-instance state.
             let retal = Monster::stats(self.monsters[mi].kind).retaliation;
+            // batch 12 R4: same read-before-removal discipline as `retal`
+            // above — the mood valence for THIS kind, in case this swing
+            // kills it.
+            let kv = Monster::stats(self.monsters[mi].kind).kill_valence;
             self.monsters[mi].hp -= dmg;
             self.fx_hit = Some((nx, ny));
             let killed = self.monsters[mi].hp <= 0;
@@ -1892,6 +1963,15 @@ impl Game {
                 // retal-killed branch's own `spend_turn` call) — confirmed
                 // by reading both call sites, not assumed.
                 self.light -= GAME.balance.kill_light_penalty;
+                // batch 12 R4: a POST-pickup kill (the anchor already
+                // seeded, `mood_count > 0`) averages this kind's
+                // `kill_valence` into the running mood — see `Game::mood`'s
+                // doc comment for the model, `MonsterDef::kill_valence`'s
+                // for why this isn't a flat value.
+                if self.mood_count > 0 {
+                    self.mood_sum += kv;
+                    self.mood_count += 1;
+                }
                 self.log(GAME.strings.slay.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
                 self.carry_event(CarryEvent::KillWitnessed);
             } else {
@@ -2640,6 +2720,22 @@ impl Game {
         if kills > spared { CarryEvent::PickedUpBloody } else { CarryEvent::PickedUpMerciful }
     }
 
+    /// batch 12 R4 (the pickup verdict): the FIRST-pickup mood anchor
+    /// score, seeded from this same kill/spare record — pure, no-`self`,
+    /// no-RNG, pulled out for the same testability reason as
+    /// `pickup_register_event` right above. `50` (neutral) if the player
+    /// neither fought nor talked before pickup, else `100 * spared /
+    /// (kills + spared)` — `0` = pure brute, `100` = pure diplomat. Scaled
+    /// by `BalanceDef::mood_anchor_weight` at the call site
+    /// (`Game::pickup`), not here — this function is the ratio alone.
+    pub(crate) fn anchor_score(kills: u32, spared: u32) -> i32 {
+        if kills + spared == 0 {
+            50
+        } else {
+            (100 * spared as i64 / (kills + spared) as i64) as i32
+        }
+    }
+
     fn pickup(&mut self) {
         if let Some(i) = self.items.iter().position(|i| i.x == self.px && i.y == self.py) {
             let kind = self.items[i].kind;
@@ -2670,6 +2766,19 @@ impl Game {
                     if was_dropped {
                         self.carry_event(CarryEvent::PickedBackUp);
                     } else {
+                        // batch 12 R4: seed the McGuffin's mood anchor from
+                        // this descent's kill/spare record — this branch
+                        // (`!was_dropped`) is the TRUE first pickup, reached
+                        // exactly once per run (a re-pickup after `put_down`
+                        // takes the `PickedBackUp` arm above instead), so no
+                        // extra `mood_count == 0` guard is needed here: this
+                        // IS the batch-8 first-pickup guard, reused per the
+                        // brief. Sequenced before the preamble/register below
+                        // so `Game::mood` is already meaningful the instant
+                        // the pickup's own log lines are written.
+                        self.mood_sum =
+                            GAME.balance.mood_anchor_weight * Self::anchor_score(self.kills, self.spared);
+                        self.mood_count = GAME.balance.mood_anchor_weight;
                         // batch 8 T1 fix-round (story §9-C, the pickup
                         // register): the FIRST objective pickup logs the
                         // fixed `carried_preamble` verbatim, in order, no
@@ -2721,6 +2830,21 @@ impl Game {
                 // unconditionally — never chases, never attacks, regardless
                 // of `regard`/`calm` (see `MonsterDef::passive`'s doc
                 // comment).
+                //
+                // R5+ HOOK (batch 12 R4's brief, NOT built this task — see
+                // `Game::mood_sum`'s doc comment): "every time she sees a
+                // becalmed monster, she likes you that much more" — a
+                // bounded, once-per-monster (hashed "already greeted"
+                // flag, farming-guarded like `Monster.awe`'s cap) mood lift
+                // for passing a becalmed monster within the McGuffin's
+                // shine radius while carrying. This is the ONLY place a
+                // becalmed monster is visited at all before this early
+                // `continue` — the detection has to be gated on
+                // `self.has_objective` and land HERE, ahead of this line,
+                // since a `calm` monster never reaches the dist/sees check
+                // below. Left as a comment: this task ships the anchor seed
+                // (`Game::pickup`) and the kill/spare valences
+                // (`Game::kills`'s call site, `Game::record_spare`) only.
                 continue;
             }
             let (mx, my) = (self.monsters[i].x, self.monsters[i].y);

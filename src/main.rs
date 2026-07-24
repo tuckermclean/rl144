@@ -1998,6 +1998,190 @@ mod tests {
         assert_eq!(Game::pickup_register_event(2, 2), CarryEvent::PickedUpMerciful, "an equal tie reads merciful");
     }
 
+    // ---------- Batch 12 R4: the pickup verdict (mood anchor + running average) ----------
+
+    /// `Game::anchor_score` is the pure ratio behind the mood anchor: `50`
+    /// (neutral) if the player neither fought nor talked before pickup,
+    /// else `100 * spared / (kills + spared)` — `0` for a pure brute, `100`
+    /// for a pure diplomat.
+    #[test]
+    fn anchor_score_pure_diplomat_brute_and_neutral() {
+        assert_eq!(Game::anchor_score(0, 0), 50, "no kills or spares: neutral");
+        assert_eq!(Game::anchor_score(0, 5), 100, "pure diplomat: max");
+        assert_eq!(Game::anchor_score(5, 0), 0, "pure brute: min");
+        assert_eq!(Game::anchor_score(2, 2), 50, "an equal split reads neutral, same as doing nothing");
+    }
+
+    /// Before the objective is ever picked up, `mood_count == 0` and
+    /// `Game::mood` reports the neutral midpoint — the McGuffin has no
+    /// opinion to report yet.
+    #[test]
+    fn mood_is_neutral_before_any_pickup() {
+        let g = Game::new(1);
+        assert_eq!(g.mood_count, 0);
+        assert_eq!(g.mood(), 50);
+    }
+
+    /// The anchor seeds correctly at the objective's FIRST real walk-over
+    /// pickup, from whatever kill/spare record the descent left behind: a
+    /// pure-diplomat run (kills 0) anchors mood to 100, a pure-brute run
+    /// (spared 0) anchors it to 0, and a run that neither fought nor talked
+    /// anchors it to the neutral 50 — mirroring `anchor_score_*` above but
+    /// through the real `Game::pickup` path, not the pure predicate alone.
+    #[test]
+    fn mood_anchors_at_first_pickup_from_kill_spare_record() {
+        let mut diplomat = blank_room(101);
+        diplomat.spared = 5;
+        diplomat.items.push(Item { x: diplomat.px + 1, y: diplomat.py, kind: GAME.win.objective_item });
+        diplomat.try_move_player(1, 0);
+        assert!(diplomat.has_objective, "setup: pickup must land");
+        assert_eq!(diplomat.mood(), 100, "a pure-diplomat record (0 kills) anchors mood to 100");
+
+        let mut brute = blank_room(102);
+        brute.kills = 5;
+        brute.items.push(Item { x: brute.px + 1, y: brute.py, kind: GAME.win.objective_item });
+        brute.try_move_player(1, 0);
+        assert_eq!(brute.mood(), 0, "a pure-brute record (0 spares) anchors mood to 0");
+
+        let mut neither = blank_room(103);
+        neither.items.push(Item { x: neither.px + 1, y: neither.py, kind: GAME.win.objective_item });
+        neither.try_move_player(1, 0);
+        assert_eq!(neither.mood(), 50, "no kills or spares anchors mood to the neutral midpoint");
+    }
+
+    /// A re-pickup after `put_down` (`CarryEvent::PickedBackUp`, not a
+    /// FIRST pickup) must NOT re-seed the anchor: changing the kill/spare
+    /// record between the put-down and the re-pickup must not move
+    /// `Game::mood` at all.
+    #[test]
+    fn repickup_after_put_down_does_not_reseed_anchor() {
+        let mut g = blank_room(104);
+        g.kills = 1;
+        g.spared = 3; // anchor_score(1, 3) = 100*3/4 = 75
+        let (px0, py0) = (g.px, g.py);
+        g.items.push(Item { x: px0 + 1, y: py0, kind: GAME.win.objective_item });
+        g.try_move_player(1, 0);
+        assert!(g.has_objective);
+        assert_eq!(g.mood(), 75, "setup: anchor seeded from the 1-kill/3-spare record");
+        let mood_after_first_pickup = g.mood();
+
+        g.put_down();
+        assert!(g.objective_dropped);
+
+        // Change the record after the anchor was seeded — a re-pickup must
+        // not react to this at all.
+        g.kills += 10;
+        g.spared = 0;
+
+        g.try_move_player(-1, 0); // step off the dropped objective's tile
+        assert!(!g.has_objective);
+        g.try_move_player(1, 0); // step back onto it: re-pickup (PickedBackUp)
+        assert!(g.has_objective);
+        assert!(!g.objective_dropped);
+        assert_eq!(
+            g.mood(),
+            mood_after_first_pickup,
+            "a re-pickup after put-down must not re-seed the anchor from the new record"
+        );
+    }
+
+    /// The running average: a post-pickup KILL averages in below the
+    /// neutral anchor (dimming mood), and a post-pickup SPARE/becalm
+    /// averages in above it (brightening mood) — the diplomat/brute halves
+    /// of "the pickup verdict."
+    #[test]
+    fn post_pickup_kill_lowers_mood_and_spare_raises_it() {
+        let mut g = blank_room(105);
+        g.items.push(Item { x: g.px + 1, y: g.py, kind: GAME.win.objective_item });
+        g.try_move_player(1, 0);
+        assert_eq!(g.mood(), 50, "setup: neutral anchor");
+        let (px1, py1) = (g.px, g.py);
+
+        // A 1-hp OGRE east of the (now-stationary, attacks don't move the
+        // player) carrier: a guaranteed kill.
+        let (ox, oy) = (px1 + 1, py1);
+        g.monsters.push(Monster { kind: OGRE, x: ox, y: oy, hp: 1, ..Monster::spawn(OGRE, ox, oy) });
+        let mood_before_kill = g.mood();
+        g.try_move_player(1, 0);
+        assert_eq!(g.kills, 1, "setup: the ogre must actually die");
+        assert!(g.mood() < mood_before_kill, "a post-pickup kill must lower mood");
+
+        // A becalmed rat (threshold 2) east of the carrier: a spare.
+        let (rx, ry) = (px1 + 1, py1);
+        g.monsters.push(Monster { kind: RAT, x: rx, y: ry, hp: 1, regard: 0, calm: false, awe: 0 });
+        let mood_before_spare = g.mood();
+        talk_until_landed(&mut g, 1, 0, RAT);
+        talk_until_landed(&mut g, 1, 0, RAT); // crosses threshold 2: becalms
+        assert!(g.monsters.iter().any(|m| m.kind == RAT && m.calm), "setup: the rat must actually becalm");
+        assert!(g.mood() > mood_before_spare, "a post-pickup spare must raise mood");
+    }
+
+    /// Human spec refinement (mid-batch 12 R4): kill valence is graduated
+    /// by kind, not flat — killing the near-harmless RAT is more
+    /// despicable (lower valence) than killing the guaranteed-hitter OGRE
+    /// (closer to self-defense), so the same one-kill script must lower
+    /// mood MORE for a rat than for an ogre.
+    #[test]
+    fn killing_a_rat_lowers_mood_more_than_killing_an_ogre() {
+        assert!(
+            Monster::stats(RAT).kill_valence < Monster::stats(OGRE).kill_valence,
+            "the rat's kill_valence must be lower (more despicable) than the ogre's"
+        );
+        let mood_after_one_kill = |seed: u64, kind: MKind| -> i32 {
+            let mut g = blank_room(seed);
+            g.items.push(Item { x: g.px + 1, y: g.py, kind: GAME.win.objective_item });
+            g.try_move_player(1, 0);
+            assert_eq!(g.mood(), 50, "setup: neutral anchor");
+            let (ox, oy) = (g.px + 1, g.py);
+            g.monsters.push(Monster { kind, x: ox, y: oy, hp: 1, ..Monster::spawn(kind, ox, oy) });
+            g.try_move_player(1, 0);
+            assert_eq!(g.kills, 1, "setup: the monster must actually die");
+            g.mood()
+        };
+        let rat_mood = mood_after_one_kill(201, RAT);
+        let ogre_mood = mood_after_one_kill(202, OGRE);
+        assert!(
+            rat_mood < ogre_mood,
+            "killing a rat ({rat_mood}) must lower mood more than killing an ogre ({ogre_mood})"
+        );
+    }
+
+    /// `Game::mood` is a pure function of hashed state: the same script run
+    /// twice must land on the exact same mood (and the same state hash).
+    #[test]
+    fn mood_is_deterministic_given_the_same_script() {
+        let run = |seed: u64| -> Game {
+            let mut g = blank_room(seed);
+            g.kills = 2;
+            g.spared = 6;
+            g.items.push(Item { x: g.px + 1, y: g.py, kind: GAME.win.objective_item });
+            g.try_move_player(1, 0);
+            g
+        };
+        let a = run(55);
+        let b = run(55);
+        assert_eq!(a.mood(), b.mood(), "the same script must produce the same mood");
+        assert_eq!(state_hash(&a), state_hash(&b));
+    }
+
+    /// `mood_sum`/`mood_count` are run-defining, hashed state (they will
+    /// drive the McGuffin's shine radius, a near-future task) — mirrors
+    /// `state_hash_covers_speech_attempts_and_objective_dropped` below.
+    #[test]
+    fn state_hash_covers_mood_sum_and_mood_count() {
+        let mut a = Game::new(9);
+        let b = Game::new(9);
+        assert_eq!(state_hash(&a), state_hash(&b));
+
+        a.mood_sum = 37;
+        assert_ne!(state_hash(&a), state_hash(&b), "mood_sum must be hashed");
+        a.mood_sum = 0;
+        assert_eq!(state_hash(&a), state_hash(&b));
+
+        a.mood_count = 5;
+        assert_ne!(state_hash(&a), state_hash(&b), "mood_count must be hashed");
+    }
+
     /// `speech_attempts`/`objective_dropped` are run-defining, hashed state.
     #[test]
     fn state_hash_covers_speech_attempts_and_objective_dropped() {
@@ -2083,16 +2267,16 @@ mod tests {
     }
 
     /// Save back-compat (DECISION.md sign-off item 2; extended to v3 by
-    /// batch 5, to v4 by batch 7 T2, to v5 by batch 8 T1): a v1-versioned
-    /// byte blob (which by construction never contains byte 6 or bytes
-    /// 7-16 — none of INPUT_RETRY/talk/give/use/put-down existed yet)
-    /// parses under today's v5-aware `parse_save` and replays byte-
-    /// identically to the same log fed straight to `replay`.
+    /// batch 5, to v4 by batch 7 T2, to v5 by batch 8 T1, to v6 by batch 12
+    /// R4): a v1-versioned byte blob (which by construction never contains
+    /// byte 6 or bytes 7-16 — none of INPUT_RETRY/talk/give/use/put-down
+    /// existed yet) parses under today's v6-aware `parse_save` and replays
+    /// byte-identically to the same log fed straight to `replay`.
     /// `tests/fixtures/ref.sav` (used by `make xhash`) is itself exactly
     /// such a v1 blob, containing a byte 5 — this test is the unit-level
     /// proof that the case `make xhash` exercises end-to-end still works.
     #[test]
-    fn v1_save_replays_under_v5_parsing() {
+    fn v1_save_replays_under_v6_parsing() {
         let seed0 = 123u64;
         let log = vec![0u8, 1, 2, 3, 4, INPUT_RESTART, 0, 1, 2, 3, 4];
         let mut v1_bytes = Vec::new();
@@ -2117,7 +2301,7 @@ mod tests {
     /// save v3/v4/v5), so it too must replay byte-identically under today's
     /// parser.
     #[test]
-    fn v2_save_replays_under_v5_parsing() {
+    fn v2_save_replays_under_v6_parsing() {
         let seed0 = 321u64;
         let log = vec![0u8, 1, INPUT_RETRY, 2, 3, 4];
         let mut v2_bytes = Vec::new();
@@ -2139,7 +2323,7 @@ mod tests {
     /// bytes (7-10) but never give/use/put-down (11-16, save v4/v5) — it too
     /// must replay byte-identically under today's parser.
     #[test]
-    fn v3_save_replays_under_v5_parsing() {
+    fn v3_save_replays_under_v6_parsing() {
         let seed0 = 654u64;
         let log = vec![0u8, 7, 1, 8, 2, 9, 3, 10, 4];
         let mut v3_bytes = Vec::new();
@@ -2161,7 +2345,7 @@ mod tests {
     /// give/use bytes (11-15) but never put-down (16, save v5) — it too
     /// must replay byte-identically under today's parser.
     #[test]
-    fn v4_save_replays_under_v5_parsing() {
+    fn v4_save_replays_under_v6_parsing() {
         let seed0 = 987u64;
         let log = vec![0u8, 1, 11, 2, 12, 3, 15, 4];
         let mut v4_bytes = Vec::new();
@@ -2179,19 +2363,43 @@ mod tests {
         assert_eq!(state_hash(&from_v4), state_hash(&direct));
     }
 
+    /// Save v5 back-compat (batch 8 T1's own version, now one behind
+    /// current): a v5-versioned blob may carry put-down (16) but nothing
+    /// past it (save v6, batch 12 R4, added no new input byte at all — see
+    /// this module's header comment — so there's nothing a v5 log could
+    /// contain that v6 parsing wouldn't already handle identically).
+    #[test]
+    fn v5_save_replays_under_v6_parsing() {
+        let seed0 = 741u64;
+        let log = vec![0u8, 1, 16, 2, 16, 3, 4];
+        let mut v5_bytes = Vec::new();
+        v5_bytes.extend_from_slice(b"RL14");
+        v5_bytes.push(5); // v5
+        v5_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v5_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v5_bytes).expect("v5 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v5 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v5), state_hash(&direct));
+    }
+
     /// Put-down byte (16, batch 8 T1) round-trips through save -> parse ->
     /// replay identically, same proof shape as the version back-compat
     /// tests above: a log containing byte 16 survives `save_bytes` (which
-    /// now writes v5) -> `parse_save` -> `replay` producing the exact same
+    /// now writes v6) -> `parse_save` -> `replay` producing the exact same
     /// state as replaying the original log directly.
     #[test]
     fn put_down_byte_round_trips_through_save_parse_replay() {
         let seed0 = 246u64;
         let log = vec![0u8, 1, 16, 2, 3, 16, 4];
         let bytes = save_bytes(seed0, &log);
-        assert_eq!(bytes[4], 5, "save_bytes must write the current version (5)");
+        assert_eq!(bytes[4], 6, "save_bytes must write the current version (6)");
 
-        let (s, parsed_log) = parse_save(&bytes).expect("v5 blob must parse");
+        let (s, parsed_log) = parse_save(&bytes).expect("v6 blob must parse");
         assert_eq!(s, seed0);
         assert_eq!(parsed_log, log);
 
@@ -2200,19 +2408,20 @@ mod tests {
         assert_eq!(state_hash(&from_saved), state_hash(&direct));
     }
 
-    /// `save_bytes` writes the current version (5, batch 8 T1) and a
-    /// version outside 1..=5 is rejected by `parse_save` — the "old binary
-    /// must reject a v5 save cleanly" half of the save-v5 rationale
-    /// (game.rs's `apply_input` handling the put-down byte 16 is the other
-    /// half).
+    /// `save_bytes` writes the current version (6, batch 12 R4) and a
+    /// version outside 1..=6 is rejected by `parse_save` — the "old binary
+    /// must reject a newer save cleanly" half of every save-version bump's
+    /// rationale (this bump's other half is simply keeping the version
+    /// label in lockstep with the hashed-state addition — see this
+    /// module's header comment on `SAVE_VERSION`).
     #[test]
     fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
         let bytes = save_bytes(7, &[0, 1, 2]);
-        assert_eq!(bytes[4], 5, "save_bytes must write the current version");
+        assert_eq!(bytes[4], 6, "save_bytes must write the current version");
         assert!(parse_save(&bytes).is_some());
 
         let mut future = bytes.clone();
-        future[4] = 6;
+        future[4] = 7;
         assert!(parse_save(&future).is_none(), "an unknown version must be rejected");
 
         let mut zero = bytes;
