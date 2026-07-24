@@ -66,6 +66,16 @@ pub(crate) const CHEESE: crate::game::IKind = 6;
 pub(crate) const COAT: crate::game::IKind = 7;
 #[allow(dead_code)]
 pub(crate) const TOWEL: crate::game::IKind = 8;
+// batch 14 T1 (portal ROI, story arc doc item 4): the light-cache reward —
+// a `Consume` walk-over item, `ItemEffect::LightCache`, placed only in
+// authored-floor portal destinations (never in a root-world depth, so it
+// never touches the root goldens). Glyph `$` — not used by any existing
+// tile/item/monster/vault/overworld legend character (checked against
+// `headless::level_dump`'s legend and every other item's glyph). Nothing
+// places it yet: batch 14 T4 stamps it into `AUTHORED_FLOORS`' maps once its
+// value is derived (T2) and capped (T3) — `#[allow(dead_code)]` until then.
+#[allow(dead_code)]
+pub(crate) const LIGHT_CACHE: crate::game::IKind = 9;
 
 /* Mercy as talk (batch 5, DECISION.md item 3 — the Henson ruling: "if you
    could talk to a rat, you could give a rat mercy"; addendum, human
@@ -450,7 +460,7 @@ const POTION_GIVE_ENRAGE_LINE: &str = "The potion sickens the {M} instead of hea
 const CHEESE_GOBLIN_STAY_LINE: &str = "The {M} forgets the fight -- it only has eyes for the cheese.";
 const CHEESE_GOBLIN_BECALM_LINE: &str = "Between bites, the {M} decides cheese beats a fight.";
 
-const ITEMS: [ItemDef; 9] = [
+const ITEMS: [ItemDef; 10] = [
     ItemDef {
         glyph: b'!',
         color: 0xFF50A0,
@@ -542,6 +552,24 @@ const ITEMS: [ItemDef; 9] = [
         effect: ItemEffect::None,
         on_pickup: PickupBehavior::Hold,
         pickup_line: TOWEL_PICKUP_LINE,
+        on_use: None,
+        use_line: "",
+    },
+    // LIGHT_CACHE (batch 14 T1, portal ROI): `Consume`, walk-over — unlike
+    // CHEESE/COAT/TOWEL above it is NOT `Hold`, since the reward is meant
+    // to land the instant you find it, the same convention as the potion's
+    // pre-batch-7 walk-over heal. `pickup_line` is "" here (ignored for
+    // `Consume` rows per `ItemDef::on_pickup`'s doc comment) — the actual
+    // message comes from `StringsDef::light_cache_found`, read at
+    // `Game::pickup`'s `LightCache` match arm. `100` is a placeholder value
+    // [DERIVED in batch 14 T2 from the geometric dive-cost probe — not yet
+    // tied to any floor's actual round-trip cost].
+    ItemDef {
+        glyph: b'$',
+        color: 0xFFE080,
+        effect: ItemEffect::LightCache(100),
+        on_pickup: PickupBehavior::Consume,
+        pickup_line: "",
         on_use: None,
         use_line: "",
     },
@@ -1136,6 +1164,11 @@ const STRINGS: StringsDef = StringsDef {
     // exactly what happened (the becalmed monster's light trickle), never
     // invents new lore.
     becalm_dividend: "The {} remembers you; it lights your way.",
+    // batch 14 T1 (portal ROI): grounded — restates the walk-over fact and
+    // the amount actually refilled, nothing more (no promise of what the
+    // cache "was" or where it came from — that's the portal's threshold
+    // telegraph's job in T4, gated on actual cache presence).
+    light_cache_found: "A cache of light! Your torch flares. (+{} light)",
 };
 
 /* The overworld's 3 fixed screens (batch 9 T1, story §9-J prep, SIGN-OFF

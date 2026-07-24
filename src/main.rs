@@ -39,11 +39,11 @@ use game::{
     in_map, mood_shine_radius, receptivity,
 };
 #[cfg(test)]
-use gamedef::CarryEvent;
+use gamedef::{CarryEvent, ItemEffect, PickupBehavior};
 #[cfg(test)]
 use games::GAME;
 #[cfg(test)]
-use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, OGRE, POTION, RAT, TOWEL, TRAINER};
+use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, OGRE, POTION, RAT, TOWEL, TRAINER};
 #[cfg(test)]
 use headless::{level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -2254,6 +2254,40 @@ mod tests {
         g.apply_input(15);
         assert!(g.hp > hp_before, "USE-ing the held potion must heal");
         assert!(g.held.is_empty());
+    }
+
+    // ---------- Light-cache item (batch 14 T1, portal ROI) ----------
+
+    /// Walking onto a light-cache (`ItemEffect::LightCache`) raises `light`
+    /// by exactly its authored value, and the item is consumed (walk-over,
+    /// not held) — placeholder T1 value, uncapped (T3 adds the per-run cap).
+    #[test]
+    fn light_cache_walkover_raises_light_and_is_consumed() {
+        let mut g = blank_room(1);
+        g.items.push(Item { x: g.px + 1, y: g.py, kind: LIGHT_CACHE });
+        let value = match GAME.items[LIGHT_CACHE as usize].effect {
+            ItemEffect::LightCache(n) => n,
+            _ => panic!("LIGHT_CACHE should carry an ItemEffect::LightCache"),
+        };
+        let light_before = g.light;
+        let items_before = g.items.len();
+        g.apply_input(3); // East, onto the cache
+        assert_eq!(
+            g.light,
+            light_before + value - GAME.balance.base_burn,
+            "walking onto the cache must add its value, then pay the ordinary per-turn burn"
+        );
+        assert_eq!(g.items.len(), items_before - 1, "a walked-over cache must be consumed, not left behind");
+    }
+
+    /// The light-cache item's own def shape: `Consume` (not `Hold` — the
+    /// reward lands the instant you walk over it, no GIVE/USE step), and
+    /// its effect really is `ItemEffect::LightCache`.
+    #[test]
+    fn light_cache_is_consume_not_hold() {
+        let def = &GAME.items[LIGHT_CACHE as usize];
+        assert!(def.on_pickup == PickupBehavior::Consume, "the light-cache must be a walk-over Consume item");
+        assert!(matches!(def.effect, ItemEffect::LightCache(_)), "the light-cache's effect must be LightCache");
     }
 
     // ---------- PUT DOWN / CarryEvent (batch 8 T1, story §9-B/C/D) ----------

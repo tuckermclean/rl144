@@ -356,6 +356,14 @@ pub(crate) enum ItemEffect {
     /// match is the only place `effect` is ever read and a `Hold` item
     /// never reaches it.
     None,
+    /// batch 14 T1 (the portal-ROI reward): a walk-over refill of the
+    /// run's light pool by this many light. `Consume` only (see the active
+    /// cartridge's item table). The value here is whatever the cartridge
+    /// authored — batch 14 T2 derives it from a geometric dive-cost probe
+    /// rather than picking it by feel, and batch 14 T3 adds a per-run cap
+    /// at the `Game::pickup` call site (this variant itself carries no cap
+    /// — that's applied where it's read, not in the data).
+    LightCache(i32),
 }
 
 /// Whether a walk-over pickup applies `ItemDef::effect` immediately or adds
@@ -722,4 +730,9 @@ pub(crate) struct StringsDef {
     /// monster (`Game::resolve_becalm_dividend`). `{}` fills from the
     /// monster's name.
     pub(crate) becalm_dividend: &'static str,
+    /// batch 14 T1 (the portal-ROI light-cache item): logged on a landed
+    /// walk-over pickup of a `Consume` item whose `ItemEffect` is
+    /// `LightCache`. `{}` fills from the amount of light actually
+    /// refilled (post-cap as of batch 14 T3; uncapped through T2).
+    pub(crate) light_cache_found: &'static str,
 }

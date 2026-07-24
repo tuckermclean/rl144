@@ -3166,6 +3166,12 @@ impl Game {
                     self.log(String::from(GAME.strings.lore_prefix));
                     self.log(line);
                 }
+                ItemEffect::LightCache(n) => {
+                    // [value DERIVED in batch 14 T2 — placeholder here]
+                    // [CAPPED in batch 14 T3 — uncapped here]
+                    self.light += n;
+                    self.log(GAME.strings.light_cache_found.replace("{}", &n.to_string()));
+                }
                 // Unreachable in practice: every `Hold` row (the only place
                 // `ItemEffect::None` appears) returns above before this
                 // match is ever reached. Kept as an explicit arm so this
