@@ -81,7 +81,10 @@ pub(crate) fn save_filename(whash: u64) -> String {
 /// only if it actually ended dead (a retry logged after a win or mid-run,
 /// which shouldn't happen from either backend's UI but is defensively
 /// handled the same way for a hand-built/replayed log, leaves `echo` at its
-/// `Game::new_overworld` default of `None`).
+/// `Game::new_overworld` default of `None`). batch 13 T1 ("the trainer
+/// reads your last life"): the same byte-6 arm also sets `last_life_bloody`
+/// from the identical `g.dead` gate, read at the identical point — see
+/// `Game::last_life_bloody`'s own doc comment in game.rs.
 ///
 /// Batch 9 T3 (story §9-J prep, SIGN-OFF ASKS #3/#4): all three
 /// reconstruction points call `Game::new_overworld`, not `Game::new` — this
@@ -105,9 +108,15 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
             }
             INPUT_RETRY => {
                 let echo = if g.dead { Some((g.px, g.py, g.depth)) } else { None };
+                // batch 13 T1: same read `Game::pickup_register_event` uses
+                // for the McGuffin's own pickup register, captured at the
+                // same instant as `echo` above, for the same reason — the
+                // just-ended `g` is about to be replaced.
+                let last_life_bloody = if g.dead { Some(g.kills > g.spared) } else { None };
                 let seed = g.seed;
                 g = Game::new_overworld(seed);
                 g.echo = echo;
+                g.last_life_bloody = last_life_bloody;
             }
             _ => g.apply_input(b),
         }
@@ -121,18 +130,20 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// discipline broke somewhere.
 ///
 /// `g.killer`, `g.echo`, `g.facing`, `g.fx_hit`, (batch 8 T1) `g.
-/// mcguffin_last_line_turn`, and (batch 12 R5) `g.died_out_of_her_light`
-/// are all deliberately NOT hashed: every one of them is presentation-only
-/// (the End screen's cause-of-death line; the retry-echo tile; the player
-/// sprite's facing; the screen-feel flash/squash tile; the McGuffin-chatter
+/// mcguffin_last_line_turn`, (batch 12 R5) `g.died_out_of_her_light`, and
+/// (batch 13 T1) `g.last_life_bloody`/`g.last_life_greeting_spoken` are all
+/// deliberately NOT hashed: every one of them is presentation-only (the End
+/// screen's cause-of-death line; the retry-echo tile; the player sprite's
+/// facing; the screen-feel flash/squash tile; the McGuffin-chatter
 /// rate-limit tracker; the End screen's "out of her light" death-message
-/// variant, respectively), none affects anything replay needs to
-/// reproduce, and each is fully determined by state that IS hashed anyway
-/// (the same move/attack/death/turn sequence that produces `dead`/`px`/
-/// `py`/the monster-hp deltas/`turns`/`mood_sum`/`mood_count` itself). See
-/// each field's own doc comment in `game.rs` for the field-specific
-/// rationale; this is the one place that enumerates them together as a
-/// set.
+/// variant; the last-life memory an overworld NPC's resurrection greeting
+/// reacts to, and that greeting's own one-shot speak gate, respectively),
+/// none affects anything replay needs to reproduce, and each is fully
+/// determined by state that IS hashed anyway (the same move/attack/death/
+/// turn sequence that produces `dead`/`px`/`py`/the monster-hp deltas/
+/// `turns`/`mood_sum`/`mood_count`/`kills`/`spared` itself). See each
+/// field's own doc comment in `game.rs` for the field-specific rationale;
+/// this is the one place that enumerates them together as a set.
 ///
 /// `g.speech_attempts` and `g.objective_dropped` (batch 8 T1) are, by
 /// contrast, hashed below alongside `held`/`spared`/etc — both are

@@ -479,6 +479,34 @@ pub(crate) struct Game {
     /// its default `false` on any non-darkness death or while alive; only
     /// meaningful when `dead && killer.is_none()`.
     pub(crate) died_out_of_her_light: bool,
+    /// batch 13 T1 ("the trainer reads your last life"): an echo-shaped,
+    /// presentation-only memory of how the PREVIOUS attempt ended, carried
+    /// forward across a same-seed RETRY (input byte 6) exactly the way
+    /// `echo` (the death position) is — see `save::replay`'s byte-6 arm,
+    /// which sets both from the same just-ended `Game` at the same point.
+    /// `Some(true)` when that attempt died with `kills > spared` (the SAME
+    /// read the McGuffin's pickup register already uses — see
+    /// `Game::pickup_register_event`), `Some(false)` for a merciful death
+    /// (`kills <= spared`), `None` for anything that isn't a post-death
+    /// retry — a fresh reroll (byte 5) or a run's very first attempt, both
+    /// of which leave it at `Self::base`'s default. Read by
+    /// `Game::try_talk_player` (`MonsterDef::resurrection_lines`) so an
+    /// overworld NPC can react to how the just-ended life was played.
+    /// Presentation-only: joins the `killer`/`echo`/`facing`/`fx_hit`/
+    /// `mcguffin_last_line_turn`/`died_out_of_her_light` exclusion set —
+    /// deliberately NOT hashed by `state_hash` (see that function's doc
+    /// comment), NOT printed by `--dump`, NOT itself saved (recomputed
+    /// fresh by `save::replay` on every replay, exactly like `echo`).
+    pub(crate) last_life_bloody: Option<bool>,
+    /// batch 13 T1: whether the resurrection greeting above has already
+    /// been spoken THIS attempt — a one-shot gate so a `resurrection_
+    /// lines`-bearing NPC greets a returning player exactly once per life,
+    /// not on every landed talk afterward. Resets to `false` on every fresh
+    /// `Self::base` call (a new attempt, retried or rerolled). Same
+    /// presentation-only exclusion set as `last_life_bloody` above: it only
+    /// gates which extra line gets logged once, nothing replay needs to
+    /// reproduce.
+    pub(crate) last_life_greeting_spoken: bool,
     /// Whether the player currently holds the run's win-condition item
     /// (`ItemEffect::Objective` — see `Game::pickup`). Doubles the per-turn
     /// light burn (`WinDef::carry_burn`, it is heavy) and is the second of
@@ -674,6 +702,8 @@ impl Game {
             fx_hit: None,
             mcguffin_last_line_turn: None,
             died_out_of_her_light: false,
+            last_life_bloody: None,
+            last_life_greeting_spoken: false,
             has_objective: false,
             held: Vec::new(),
             speech_attempts: 0,
@@ -2391,6 +2421,23 @@ impl Game {
         }
         let chance = receptivity(&self.monsters[mi], self);
         let landed = self.parley_rng.range(0, 100) < chance;
+        // batch 13 T1 ("the trainer reads your last life"): the
+        // resurrection greeting fires on the FIRST LANDED talk of a fresh
+        // post-death life, once, for whichever kind's cartridge data
+        // actually has one (`resurrection_lines` — `None` is a graceful
+        // no-op, same invariant as `carry_event`'s empty-pool check).
+        // `last_life_bloody`/`last_life_greeting_spoken` are both
+        // presentation-only (see their own doc comments) — this can never
+        // perturb `regard`/`calm`/anything `spend_turn` or `state_hash`
+        // touches, only which extra line gets logged this one time.
+        if landed && !self.last_life_greeting_spoken {
+            if let Some(bloody) = self.last_life_bloody {
+                if let Some(lines) = GAME.monsters[kind as usize].resurrection_lines {
+                    self.log(String::from(lines[if bloody { 0 } else { 1 }]));
+                    self.last_life_greeting_spoken = true;
+                }
+            }
+        }
         let stayed = if landed {
             let threshold = Monster::talk_threshold(kind);
             let before = self.monsters[mi].regard;

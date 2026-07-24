@@ -2754,6 +2754,189 @@ mod tests {
         );
     }
 
+    /// batch 13 T1 test helper: walk the player to the nearest REACHABLE
+    /// `RAT` via real BFS pathing over `live.map` (never assumes a specific
+    /// seed's layout by eye) and bump-attack it dead — used to produce a
+    /// genuine `kills > spared` state for the resurrection-memory tests
+    /// below. Every byte it plays is appended to `log`, so the caller's
+    /// script and `live`'s actual state stay in lockstep for a later
+    /// `save::replay`. Deliberately targets `RAT` (weakest kind, no
+    /// retaliation) rather than the nearest monster of any kind, so the
+    /// walk itself can't accidentally kill the player against a tougher
+    /// kind before landing the one kill this helper exists to produce.
+    fn walk_and_kill_a_rat(live: &mut Game, log: &mut Vec<u8>) {
+        for _ in 0..500 {
+            assert!(!live.dead && !live.won, "died/won before landing the kill this helper needs");
+            let dist_from_player = bfs_dist(&live.map, (live.px, live.py));
+            let target = live
+                .monsters
+                .iter()
+                .filter(|m| m.kind == RAT)
+                .map(|m| (m.x, m.y))
+                .filter(|&(x, y)| dist_from_player[idx(x, y)] > 0)
+                .min_by_key(|&(x, y)| dist_from_player[idx(x, y)]);
+            let Some((tx, ty)) = target else {
+                panic!("no reachable rat on this level; pick a different seed for this test");
+            };
+            let dist_from_target = bfs_dist(&live.map, (tx, ty));
+            let d0 = dist_from_target[idx(live.px, live.py)];
+            let mut stepped = false;
+            for (byte, dx, dy) in [(0u8, 0, -1), (1, 0, 1), (2, -1, 0), (3, 1, 0)] {
+                let (nx, ny) = (live.px + dx, live.py + dy);
+                if in_map(nx, ny) && dist_from_target[idx(nx, ny)] == d0 - 1 {
+                    log.push(byte);
+                    live.apply_input(byte);
+                    stepped = true;
+                    break;
+                }
+            }
+            assert!(stepped, "BFS says reachable but no descending neighbor was found");
+            if live.kills > 0 {
+                return;
+            }
+        }
+        panic!("walk_and_kill_a_rat: safety cap exceeded without landing a kill");
+    }
+
+    /// batch 13 T1 ("the trainer reads your last life"): `last_life_bloody`
+    /// is `None` before any resurrection has happened — a run's very first
+    /// attempt, fresh off `Game::new_overworld`.
+    #[test]
+    fn last_life_bloody_none_for_a_fresh_life() {
+        let g = Game::new_overworld(7);
+        assert_eq!(g.last_life_bloody, None);
+    }
+
+    /// batch 13 T1: after replaying a log whose retry byte (6) followed a
+    /// death with `kills > spared`, `last_life_bloody == Some(true)` — the
+    /// same echo-shaped carry as `echo` above, read at the exact same
+    /// reconstruction point in `save::replay`'s byte-6 arm. Uses a real,
+    /// played-out kill (`walk_and_kill_a_rat`, never a hand-set field) so
+    /// this test actually exercises the `kills > spared` read against real
+    /// gameplay, not just the field's plumbing.
+    #[test]
+    fn last_life_bloody_true_after_a_bloody_retry() {
+        let seed0 = 33u64;
+        let mut live = Game::new_overworld(seed0);
+        let mut log: Vec<u8> = Vec::new();
+        for &b in &[1u8, 3, 3, 3] {
+            log.push(b);
+            live.apply_input(b);
+        }
+        assert_eq!(live.world, WorldId::Seed(seed0), "fixture: must have crossed into the root dungeon");
+        walk_and_kill_a_rat(&mut live, &mut log);
+        assert!(live.kills > live.spared, "setup: this attempt must actually be bloody");
+        while !live.dead && !live.won {
+            log.push(4);
+            live.apply_input(4);
+        }
+        assert!(live.dead, "a waiting-to-death finish is what this test needs");
+        log.push(INPUT_RETRY);
+
+        let replayed = replay(seed0, &log);
+        assert_eq!(replayed.last_life_bloody, Some(true));
+
+        let mut fresh = Game::new_overworld(seed0);
+        fresh.last_life_bloody = Some(true);
+        assert_eq!(
+            state_hash(&replayed),
+            state_hash(&fresh),
+            "last_life_bloody must be unhashed: only its own value should differ"
+        );
+    }
+
+    /// batch 13 T1: the merciful counterpart of the test above — a
+    /// waiting-only run kills and spares nobody (`kills == spared == 0`,
+    /// which satisfies `kills <= spared`), so its retry carries
+    /// `Some(false)`.
+    #[test]
+    fn last_life_bloody_false_after_a_merciful_retry() {
+        let seed0 = 33u64;
+        let mut live = Game::new_overworld(seed0);
+        let mut log: Vec<u8> = Vec::new();
+        for &b in &[1u8, 3, 3, 3] {
+            log.push(b);
+            live.apply_input(b);
+        }
+        while !live.dead && !live.won {
+            log.push(4);
+            live.apply_input(4);
+        }
+        assert!(live.dead, "a waiting-only run must die, not win");
+        assert!(live.kills <= live.spared, "setup: a waiting-only run kills/spares nobody");
+        log.push(INPUT_RETRY);
+
+        let replayed = replay(seed0, &log);
+        assert_eq!(replayed.last_life_bloody, Some(false));
+    }
+
+    /// `last_life_bloody`/`last_life_greeting_spoken` are presentation-only
+    /// (same exclusion set as `killer`/`echo`/`facing`/`fx_hit`/
+    /// `mcguffin_last_line_turn`/`died_out_of_her_light`) and must NOT be
+    /// hashed.
+    #[test]
+    fn last_life_bloody_is_not_hashed() {
+        let mut a = Game::new(9);
+        let b = Game::new(9);
+        assert_eq!(state_hash(&a), state_hash(&b));
+
+        a.last_life_bloody = Some(true);
+        assert_eq!(state_hash(&a), state_hash(&b), "the presentation-only memory must not be hashed");
+
+        a.last_life_bloody = Some(false);
+        assert_eq!(state_hash(&a), state_hash(&b));
+
+        a.last_life_greeting_spoken = true;
+        assert_eq!(state_hash(&a), state_hash(&b), "the one-shot speak gate must not be hashed either");
+    }
+
+    /// batch 13 T1: the resurrection greeting fires exactly once, on the
+    /// first LANDED talk of a fresh life, branched on `last_life_bloody` —
+    /// bloody reads TRA_007 ("Back already? Happens...") verbatim, merciful
+    /// reads its new grounded counterpart. A second talk in the same life
+    /// never repeats either line (the one-shot gate holds). Seeds 1 and 3
+    /// are both confirmed-landing first parley rolls for the TRAINER's
+    /// fresh-state receptivity (base 90, no regard/wound/atk/torch terms
+    /// yet) — picked so this test asserts the fired line directly rather
+    /// than hedging on whether the roll happened to land.
+    #[test]
+    fn trainer_resurrection_greeting_fires_once_bloody_and_merciful() {
+        let full_hp = GAME.monsters[TRAINER as usize].hp;
+        let bloody_line = GAME.monsters[TRAINER as usize].resurrection_lines.unwrap()[0];
+        let merciful_line = GAME.monsters[TRAINER as usize].resurrection_lines.unwrap()[1];
+        assert_eq!(bloody_line, "Back already? Happens. I don't ask. You don't ask.", "must be TRA_007 verbatim");
+
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0 });
+        g.last_life_bloody = Some(true);
+        g.try_talk_player(1, 0);
+        assert!(g.last_life_greeting_spoken, "setup: seed 1's first parley roll must land");
+        assert!(g.msgs.iter().any(|m| m == bloody_line), "a landed first talk after a bloody life must speak TRA_007");
+        let bloody_count_before = g.msgs.iter().filter(|m| *m == bloody_line).count();
+        g.try_talk_player(1, 0);
+        assert_eq!(
+            g.msgs.iter().filter(|m| *m == bloody_line).count(),
+            bloody_count_before,
+            "the greeting must never repeat, even across further landed talks"
+        );
+
+        let mut h = blank_room(3);
+        h.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0 });
+        h.last_life_bloody = Some(false);
+        h.try_talk_player(1, 0);
+        assert!(h.last_life_greeting_spoken, "setup: seed 3's first parley roll must land");
+        assert!(h.msgs.iter().any(|m| m == merciful_line), "a landed first talk after a merciful life must speak the merciful counterpart");
+
+        // A monster with no `resurrection_lines` row (every other kind this
+        // batch) must never speak either line, even with the memory set —
+        // the graceful no-op, same invariant as `carry_event`'s empty pool.
+        let mut r = blank_room(4);
+        r.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
+        r.last_life_bloody = Some(true);
+        r.try_talk_player(1, 0);
+        assert!(!r.msgs.iter().any(|m| m == bloody_line), "a kind with no resurrection_lines row must never speak one");
+    }
+
     /// GAME.ghost_labels (content.rs): every preset phrase is ASCII and <=16
     /// bytes, per the RLG1 format's label_idx contract in save.rs.
     #[test]

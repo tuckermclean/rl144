@@ -205,7 +205,26 @@ const OGRE_TALK: [[&str; 2]; 4] = [
    trainer has "been down there. Twice" (TRA_002), so he plausibly knows.
    This is the batch's guaranteed pre-pickup warning that she will judge how
    you came down; the FULL trainer-memory (reading your last life) is the
-   deferred batch-13 hook, but the warning itself lands here. */
+   deferred batch-13 hook, but the warning itself lands here.
+
+   batch 13 T1 (the deferred hook above, now built): TRA_007 ("resurrection")
+   was held out of TRAINER_TALK because it isn't anchored to "landed a talk
+   with the trainer" like the four stage rows above it — it's anchored to
+   "the player is back from a death," a different trigger entirely
+   (`MonsterDef::resurrection_lines`, fired once by `Game::try_talk_player`
+   on the first landed talk of a fresh post-death life). Wired verbatim,
+   unmodified, as the bloody-return slot (index 0): "Back already? Happens.
+   I don't ask. You don't ask." reads as an ironic salute once the player
+   already knows their own last life killed more than it spared — the line
+   itself states no such thing, the irony is entirely the player's own
+   knowledge, same "grounded, invent nothing" discipline as every other
+   register here. The merciful-return counterpart (index 1) is new-authored
+   in the same terse, dry-coach register, restating only the complementary
+   fact (spared >= kills) without claiming a number or inventing a reason he'd
+   know it: "Back already? Quiet trip, from what I can tell. Don't get many
+   of those." Every other kind's `resurrection_lines` stays `None` — this
+   batch's memory is the trainer's alone; a future kind can opt in the same
+   way. */
 const TRAINER_TALK: [[&str; 2]; 4] = [
     [
         "Rule one: kill five rats. Warms up the sword arm. Everyone does it.",
@@ -242,6 +261,14 @@ const DONKEY_TALK: [[&str; 2]; 4] = [
         "The donkey stays put, chewing, unmoved by any of it.",
     ],
 ];
+// batch 13 T1 ("the trainer reads your last life"): TRA_007 (verbatim,
+// FLAVOR-DRAFT-v0.md's `(resurrection)` slot) for a bloody return, a new
+// grounded counterpart for a merciful one — see `TRAINER_TALK`'s own doc
+// comment above for the full grounding rationale.
+const TRAINER_RESURRECTION: [&str; 2] = [
+    "Back already? Happens. I don't ask. You don't ask.",
+    "Back already? Quiet trip, from what I can tell. Don't get many of those.",
+];
 
 const MONSTERS: [MonsterDef; 5] = [
     MonsterDef {
@@ -252,6 +279,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_threshold: 2,
         receptivity_base: 55,
         talk_lines: RAT_TALK,
+        resurrection_lines: None,
         passive: false,
         bump: BumpResponse::Fight,
         retaliation: 0,
@@ -268,6 +296,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_threshold: 3,
         receptivity_base: 35,
         talk_lines: GOBLIN_TALK,
+        resurrection_lines: None,
         passive: false,
         bump: BumpResponse::Fight,
         retaliation: 0,
@@ -284,6 +313,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_threshold: 4,
         receptivity_base: 20,
         talk_lines: OGRE_TALK,
+        resurrection_lines: None,
         passive: false,
         bump: BumpResponse::Fight,
         // [TUNE] batch 11: guaranteed retaliation — bump-attacking an ogre
@@ -311,6 +341,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_threshold: 3,
         receptivity_base: 90,
         talk_lines: TRAINER_TALK,
+        resurrection_lines: Some(TRAINER_RESURRECTION),
         passive: true,
         bump: BumpResponse::Yield,
         retaliation: 0,
@@ -335,6 +366,7 @@ const MONSTERS: [MonsterDef; 5] = [
         talk_threshold: 4,
         receptivity_base: 30,
         talk_lines: DONKEY_TALK,
+        resurrection_lines: None,
         passive: true,
         bump: BumpResponse::Shove,
         retaliation: 0,

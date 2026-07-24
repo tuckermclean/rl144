@@ -185,6 +185,18 @@ pub(crate) struct MonsterDef {
     /// `flavor_rng`. `{M}` fills from the theme's own mob name for this
     /// kind (`ThemeDef::mobs[kind_index]`).
     pub(crate) talk_lines: [[&'static str; 2]; 4],
+    /// batch 13 T1 ("the trainer reads your last life"): a one-shot
+    /// resurrection greeting, spoken by `Game::try_talk_player` on the
+    /// FIRST landed talk of a fresh post-death life — index 0 for a life
+    /// that ended bloody (`Game::last_life_bloody == Some(true)`), index 1
+    /// for a life that ended merciful (`Some(false)`). `None` for every
+    /// kind that has nothing to say about a resurrection — an empty-pool
+    /// no-op exactly like `GameDef::carried_lines`' own graceful-skip
+    /// invariant: no row means no line, no state mutation beyond the
+    /// gate itself. Read once per life via `Game::last_life_greeting_
+    /// spoken`; see `Game::last_life_bloody`'s doc comment in game.rs for
+    /// where the memory it reacts to comes from.
+    pub(crate) resurrection_lines: Option<[&'static str; 2]>,
     /// batch 9 T1 (story §9-J prep, SIGN-OFF ASK #6): never chases or
     /// attacks, from spawn — checked in `Game::monsters_act` beside the
     /// existing `calm` skip. `false` for every pre-batch-9 kind. Unlike
