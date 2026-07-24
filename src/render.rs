@@ -353,7 +353,11 @@ fn anim_phase(g: &Game, x: i32, y: i32) -> u8 {
 /// in a row with no `Game` mutation between returns equal vectors.
 #[allow(dead_code)]
 pub(crate) fn scene(g: &Game) -> Vec<SceneEntity> {
-    let pct = light_pct(fov_radius(g.light));
+    // batch 14 render fix: each entity's `light_pct` grades by the strongest
+    // source reaching ITS tile (`g.lit_r`), not one frame-wide torch value —
+    // so a future sprite backend dims each entity by the light that actually
+    // falls on it (the McGuffin's shine included), matching `render_play`.
+    let lit = |x: i32, y: i32| light_pct(g.lit_r[idx(x, y)] as i32);
     let mut out = Vec::new();
 
     out.push(SceneEntity {
@@ -362,7 +366,7 @@ pub(crate) fn scene(g: &Game) -> Vec<SceneEntity> {
         y: g.py,
         facing: g.facing,
         anim_phase: anim_phase(g, g.px, g.py),
-        light_pct: pct,
+        light_pct: lit(g.px, g.py),
     });
 
     for m in &g.monsters {
@@ -373,7 +377,7 @@ pub(crate) fn scene(g: &Game) -> Vec<SceneEntity> {
                 y: m.y,
                 facing: monster_facing(g, m),
                 anim_phase: anim_phase(g, m.x, m.y),
-                light_pct: pct,
+                light_pct: lit(m.x, m.y),
             });
         }
     }
@@ -386,7 +390,7 @@ pub(crate) fn scene(g: &Game) -> Vec<SceneEntity> {
                 y: it.y,
                 facing: Facing::S, // items have no orientation
                 anim_phase: anim_phase(g, it.x, it.y),
-                light_pct: pct,
+                light_pct: lit(it.x, it.y),
             });
         }
     }
@@ -399,7 +403,7 @@ pub(crate) fn scene(g: &Game) -> Vec<SceneEntity> {
                 y: ey,
                 facing: Facing::S,
                 anim_phase: anim_phase(g, ex, ey),
-                light_pct: pct,
+                light_pct: lit(ex, ey),
             });
         }
     }
@@ -423,11 +427,19 @@ pub(crate) fn render_cells(g: &Game, screen: Screen, cells: &mut [Cell]) {
 /// player glyph, and the bar-based status row.
 fn render_play(g: &Game, cells: &mut [Cell]) {
     let theme = g.theme();
-    // Brightness percentage for currently-visible tiles/items/monsters only;
-    // seen-but-not-visible tiles keep the existing dim() treatment instead
-    // (memory stays legible; the dark closes in on what's currently seen).
+    // Brightness for currently-visible tiles/items/monsters only; seen-but-
+    // not-visible tiles keep the existing dim() treatment (memory stays
+    // legible; the dark closes in on what's currently seen). Batch 14 render
+    // fix: each visible cell grades by `light_pct(g.lit_r[i])` — the strength
+    // of the STRONGEST source reaching THAT tile (torch or the McGuffin's
+    // shine) — not one frame-wide `pct` from the torch alone. So a tile only
+    // she lights renders at her brightness, and the brighter source wins on
+    // overlap. `radius` (the torch's own) is still what the status bar and
+    // the dump legend report. At full torch `light_pct(lit_r)==100` for every
+    // torch-lit tile, so a turn-0 frame (no carried McGuffin) is byte-
+    // identical to before — which is exactly why this bug survived every
+    // golden until a human carried her.
     let radius = fov_radius(g.light);
-    let pct = light_pct(radius);
     // map
     for y in 0..MAP_H as i32 {
         for x in 0..COLS as i32 {
@@ -452,7 +464,7 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
                 Tile::Hole => (b'V' as u16, PAL_HOLE),
                 Tile::ShutDoor => (b'+' as u16, PAL_SHUTDOOR),
             };
-            let c = if g.vis[i] { scale(color, pct) } else { dim(color) };
+            let c = if g.vis[i] { scale(color, light_pct(g.lit_r[i] as i32)) } else { dim(color) };
             put(cells, x as usize, y as usize, ch, c);
         }
     }
@@ -475,7 +487,8 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
     for it in &g.items {
         if g.vis[idx(it.x, it.y)] {
             let def = &GAME.items[it.kind as usize];
-            put(cells, it.x as usize, it.y as usize, def.glyph as u16, scale(def.color, pct));
+            let p = light_pct(g.lit_r[idx(it.x, it.y)] as i32);
+            put(cells, it.x as usize, it.y as usize, def.glyph as u16, scale(def.color, p));
         }
     }
     // push-blocks (batch 6 T2, sokoban; visible only). Drawn AFTER items so
@@ -484,7 +497,8 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
     // item-then-block layering.
     for &(bx, by) in &g.blocks {
         if g.vis[idx(bx, by)] {
-            put(cells, bx as usize, by as usize, b'B' as u16, scale(PAL_BLOCK, pct));
+            let p = light_pct(g.lit_r[idx(bx, by)] as i32);
+            put(cells, bx as usize, by as usize, b'B' as u16, scale(PAL_BLOCK, p));
         }
     }
     // monsters (visible only). Becalmed monsters (batch 5) render with
@@ -497,12 +511,18 @@ fn render_play(g: &Game, cells: &mut [Cell]) {
         if g.vis[idx(m.x, m.y)] {
             let def = Monster::stats(m.kind);
             let fg = if m.calm { PAL_CALM_TINT } else { def.color };
-            put(cells, m.x as usize, m.y as usize, def.glyph as u16, scale(fg, pct));
+            let p = light_pct(g.lit_r[idx(m.x, m.y)] as i32);
+            put(cells, m.x as usize, m.y as usize, def.glyph as u16, scale(fg, p));
         }
     }
-    // player — the torch itself gutters at the lowest radius (dim to 85%);
-    // otherwise it's always full brightness, since it IS the light source.
-    let player_fg = if radius <= 3 { scale(PAL_PLAYER, 85) } else { PAL_PLAYER };
+    // player — graded uniformly by the strongest source at the player's own
+    // tile (batch 14 render fix), same as every other cell. The player sits
+    // at a light source's center (the torch, and the McGuffin's shine while
+    // carried), so `lit_r` there is the max of the two: full at full torch,
+    // and still bright when she shines even after the torch has guttered —
+    // the visible payoff of light-as-grace. At full torch this is
+    // `light_pct(full)==100`, a no-op, so turn-0 frames are byte-identical.
+    let player_fg = scale(PAL_PLAYER, light_pct(g.lit_r[idx(g.px, g.py)] as i32));
     put(cells, g.px as usize, g.py as usize, b'@' as u16, player_fg);
 
     // status: labeled HP/Torch bars.
@@ -807,6 +827,11 @@ mod tests {
         let normal_kind = g_normal.monsters[0].kind;
         g_normal.vis[idx(mx, my)] = true;
         g_normal.seen[idx(mx, my)] = true;
+        // batch 14 render fix: grading is now per-tile via `lit_r`, so a test
+        // that hand-forces a tile visible must also set its light-source
+        // radius (this test bypasses `compute_fov`). Full torch radius →
+        // light_pct 100 → `scale` a no-op, keeping this a pure color/tint check.
+        g_normal.lit_r[idx(mx, my)] = fov_radius(g_normal.light) as u8;
         let mut cells_normal = vec![BLANK; CELLS];
         render_cells(&g_normal, Screen::Play, &mut cells_normal);
         let normal_fg = cells_normal[my as usize * COLS + mx as usize].fg;
@@ -817,12 +842,74 @@ mod tests {
         g_calm.monsters[0].calm = true;
         g_calm.vis[idx(mx, my)] = true;
         g_calm.seen[idx(mx, my)] = true;
+        g_calm.lit_r[idx(mx, my)] = fov_radius(g_calm.light) as u8;
         let mut cells_calm = vec![BLANK; CELLS];
         render_cells(&g_calm, Screen::Play, &mut cells_calm);
         let calm_fg = cells_calm[my as usize * COLS + mx as usize].fg;
 
         assert_eq!(calm_fg, PAL_CALM_TINT, "calm monster renders the documented tint exactly");
         assert_ne!(calm_fg, normal_fg, "calm tint must differ from the normal kind color");
+    }
+
+    /// Batch 14 render fix — the regression guard for the bug a human caught
+    /// only by playing (every gate stayed green because the turn-0 frame
+    /// goldens can never reach a carried-and-shining state). While the
+    /// McGuffin is carried and her mood shines a WIDE radius, a tile she
+    /// alone lights beyond a DYING torch must render at HER brightness, not
+    /// the torch's murk. Before the fix, `render_play` graded the whole frame
+    /// by one `light_pct(fov_radius(g.light))` (torch-only), so her light read
+    /// as torch-capped. This constructs that exact scenario directly (no
+    /// seed-dependent depth-5 replay needed) and asserts the tile she alone
+    /// lights renders bright — and specifically NOT at the old buggy torch
+    /// murk.
+    #[test]
+    fn mcguffin_shine_renders_at_her_brightness_not_the_dying_torch() {
+        use crate::game::{Tile, fov_radius, idx, in_map, mood_shine_radius};
+        let mut g = Game::new(1);
+        let (px, py) = (g.px, g.py);
+        // Open a clear box around the player so LOS to a far tile is guaranteed.
+        for dy in -7..=7 {
+            for dx in -7..=7 {
+                if in_map(px + dx, py + dy) {
+                    g.map[idx(px + dx, py + dy)] = Tile::Floor;
+                }
+            }
+        }
+        // Dying torch: a small radius (torch-only grading would be dim murk).
+        g.light = 1;
+        let torch_r = fov_radius(g.light);
+        // Carried + top mood -> a wide shine centered on the player.
+        g.has_objective = true;
+        g.mood_sum = 100 * 20;
+        g.mood_count = 20; // mood() == 100
+        let her_r = mood_shine_radius(g.mood());
+        assert!(her_r > torch_r, "fixture: her shine ({}) must exceed the dying torch ({})", her_r, torch_r);
+        assert_ne!(light_pct(her_r), light_pct(torch_r), "fixture: her brightness must differ from the torch's");
+        g.compute_fov();
+        // A tile she alone lights: one past the torch radius, within hers.
+        let d = torch_r + 1;
+        assert!(d <= her_r, "fixture: the probe tile must be inside her shine");
+        let (tx, ty) = if in_map(px + d, py) {
+            (px + d, py)
+        } else if in_map(px - d, py) {
+            (px - d, py)
+        } else if in_map(px, py + d) {
+            (px, py + d)
+        } else {
+            (px, py - d)
+        };
+        assert!(g.vis[idx(tx, ty)], "fixture: the far tile must be lit by her shine");
+        assert_eq!(g.lit_r[idx(tx, ty)] as i32, her_r, "her shine is the strongest source at this tile");
+        let mut cells = vec![BLANK; CELLS];
+        render_cells(&g, Screen::Play, &mut cells);
+        let rendered = cells[ty as usize * COLS + tx as usize].fg;
+        let floor = g.theme().floor;
+        assert_eq!(rendered, scale(floor, light_pct(her_r)), "her-lit tile renders at HER brightness");
+        assert_ne!(
+            rendered,
+            scale(floor, light_pct(torch_r)),
+            "her-lit tile must NOT render at the dying-torch murk (the exact bug this fixes)"
+        );
     }
 
     /// Title-screen legend lines (incl. the talk chord addition, batch 5 task

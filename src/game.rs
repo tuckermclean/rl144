@@ -393,6 +393,16 @@ pub(crate) struct Game {
     pub(crate) map: Vec<Tile>,
     pub(crate) seen: Vec<bool>,
     pub(crate) vis: Vec<bool>,
+    /// Per-tile brightness source (batch 14 render fix): `lit_r[i]` is the
+    /// RADIUS of the STRONGEST light source (torch or the McGuffin's shine)
+    /// reaching tile `i` this turn, filled by `light_circle` and reset each
+    /// `compute_fov`. `render_play` grades tile `i` by `light_pct(lit_r[i])`
+    /// so a tile only the McGuffin lights renders at HER brightness, not the
+    /// dying torch's (the bug: a single frame-wide `pct` from the torch made
+    /// her light read as torch-capped). Presentation-only — a pure-derived
+    /// rendering buffer exactly like `vis`, never hashed (`state_hash`),
+    /// never saved, never dumped; adding it shifts no `xhash`.
+    pub(crate) lit_r: Vec<u8>,
     pub(crate) px: i32,
     pub(crate) py: i32,
     pub(crate) hp: i32,
@@ -706,6 +716,7 @@ impl Game {
             map: vec![Tile::Wall; COLS * MAP_H],
             seen: vec![false; COLS * MAP_H],
             vis: vec![false; COLS * MAP_H],
+            lit_r: vec![0; COLS * MAP_H],
             px: 0,
             py: 0,
             hp: GAME.balance.starting_hp,
@@ -1218,9 +1229,17 @@ impl Game {
     /// walked in); while put down, it's centered wherever she was left —
     /// the "park / scout / return" shuttle is exactly this, no separate
     /// code path.
-    fn compute_fov(&mut self) {
+    pub(crate) fn compute_fov(&mut self) {
         let r = fov_radius(self.light);
         self.vis.iter_mut().for_each(|v| *v = false);
+        // batch 14 (render fix): reset the per-tile source-strength buffer
+        // alongside `vis`. `lit_r[i]` records the RADIUS of the strongest
+        // light source reaching tile `i` this turn (torch or McGuffin), so
+        // `render_play` can grade each tile by its OWN source's brightness
+        // instead of the whole frame by the torch's — see `light_circle`'s
+        // `.max()` fill and `Game::lit_r`'s doc comment. Presentation-only,
+        // recomputed every turn exactly like `vis`, never hashed/saved.
+        self.lit_r.iter_mut().for_each(|v| *v = 0);
         let (px, py) = (self.px, self.py);
         self.light_circle(px, py, r);
         if let Some(((cx, cy), rr)) = self.mcguffin_light() {
@@ -1234,8 +1253,13 @@ impl Game {
     /// 12 R5), so the two light sources can never silently disagree on
     /// what "within radius" or "unobstructed" means.
     fn light_circle(&mut self, cx: i32, cy: i32, r: i32) {
+        let rr = r.clamp(0, u8::MAX as i32) as u8;
         self.vis[idx(cx, cy)] = true;
         self.seen[idx(cx, cy)] = true;
+        // batch 14 (render fix): record this source's radius at each tile it
+        // reaches, keeping the MAX so the brightest source wins where the
+        // torch and the McGuffin's shine overlap.
+        self.lit_r[idx(cx, cy)] = self.lit_r[idx(cx, cy)].max(rr);
         for dy in -r..=r {
             for dx in -r..=r {
                 if dx * dx + dy * dy > r * r {
@@ -1248,6 +1272,7 @@ impl Game {
                 if self.los(cx, cy, tx, ty) {
                     self.vis[idx(tx, ty)] = true;
                     self.seen[idx(tx, ty)] = true;
+                    self.lit_r[idx(tx, ty)] = self.lit_r[idx(tx, ty)].max(rr);
                 }
             }
         }
