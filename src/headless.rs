@@ -239,6 +239,52 @@ const SIM_TURN_CAP: u32 = 6000;
 /// `start_light` (2000) and well above zero — a wait still only burns
 /// `base_burn` (1) per turn, so this is a generous reserve, not a tight one.
 const REST_LIGHT_RESERVE: i32 = 150;
+/// Batch 12 stuck fix: the LIFETIME cap on how many turns a single
+/// `sim_seed` run may spend resting (`Game::apply_input(4)` fired from the
+/// rest branch below), symmetric between `Policy::Tactical` and
+/// `Policy::TacticalPacifist` — a bot heuristic, not a `BalanceDef` field or
+/// hashed `Game` state (the engine itself has no lifetime limit on
+/// `wait_turn`'s heal; this is purely how much the SIM BOT leans on it).
+/// Defensive hygiene, not the fix for the 5 STUCK runs this batch found
+/// (that's `STALL_LIMIT`/`force_plain_leg` below — traced proof: at the
+/// point those runs loop forever, `heal_now` is false and no rest fires at
+/// all, so no rest cap alone touches that loop). Rest is still a genuine
+/// infinite-in-principle health sink, though — a bot that could lean on it
+/// forever would never lose a war of attrition it should lose — so it gets
+/// bounded on its own merits. 300 is generous next to ordinary play
+/// (measured: seed 817's whole run used only 19 rest turns total) but small
+/// next to `SIM_TURN_CAP`.
+const MAX_REST_TURNS_PER_RUN: u32 = 300;
+/// Batch 12 stuck fix, the fix that actually resolves the 5 STUCK
+/// `tactical-pacifist` runs (seeds 817/1074/3133/3191/4552, all timing out
+/// at `SIM_TURN_CAP` with `light_left == 0`): how many turns in a row the
+/// tactical policies' preferred (monster-avoidant) routing view may go
+/// without shrinking `player_d` for the CURRENT objective before that view
+/// is abandoned for the rest of the leg. Root cause, confirmed by a traced
+/// replay of seed 817: `tactical_routing_map` walls off a monster's OWN
+/// tile, and `sim_seed` re-derives it FROM SCRATCH every turn with no
+/// memory of the turn before — so when a monster happens to patrol back and
+/// forth across a shortcut near the bot's path, the "preferred" route
+/// alternates in lockstep with the monster's own oscillation, and the bot
+/// gets entrained into undoing its own step forever (the trace shows the
+/// SAME tile's computed distance alternating between two values, one turn
+/// apart, matching the monster's period exactly). This hazard predates this
+/// batch (`tactical_routing_map` is batch 10) and always resolved on its
+/// own before now — either the torch ran out (`dead_dark`) or combat
+/// elsewhere ended the run first. Batch 12 R5 made the McGuffin a
+/// positional light source, and a diplomat who never kills anchors mood at
+/// the top shine tier once she's carried, so `dead_dark` stopped being
+/// reachable at all for that policy — turning a self-resolving stall into
+/// an unbounded one. 20 is generous for ordinary play (a real monster
+/// detour inside one room very rarely needs 20 turns of zero improvement to
+/// resolve) but small next to `SIM_TURN_CAP`, and — critically, unlike a
+/// rest cap — this one is a genuine invariant: once the plain,
+/// monster-oblivious `routing_map` is in force, its distance field cannot
+/// be perturbed by a monster's position at all, so the greedy shortest-step
+/// choice is guaranteed strictly-decreasing turn over turn, which is what
+/// actually proves termination rather than merely relocating the seeds
+/// where it fails.
+const STALL_LIMIT: u32 = 20;
 /// Fixed neighbor order for tie-breaking the greedy step: N, S, W, E — this
 /// is also the apply_input byte order (0..=3), so the index IS the move.
 const SIM_DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
@@ -322,6 +368,22 @@ impl Policy {
 pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
     let mut g = Game::new(seed);
     let mut turns: u32 = 0;
+    // batch 12 stuck fix: lifetime rest-turn budget, see
+    // `MAX_REST_TURNS_PER_RUN`'s doc comment and the rest branch below.
+    let mut rest_turns_used: u32 = 0;
+    // batch 12 stuck fix, the other half: stall detection for the tactical
+    // (monster-avoidant) routing preference — see the doc comment at its
+    // use site below for the full mechanism this guards against.
+    // `stall_objective` is the current leg's target coordinate (a new leg —
+    // new loot pick, new depth, the return climb — resets tracking);
+    // `stall_best` is the best (lowest) `player_d` seen so far on this leg;
+    // `stall_count` is turns since that best improved; `force_plain_leg`
+    // latches once a stall is confirmed, for the rest of the current leg
+    // only.
+    let mut stall_objective: Option<(i32, i32)> = None;
+    let mut stall_best: i32 = i32::MAX;
+    let mut stall_count: u32 = 0;
+    let mut force_plain_leg = false;
     loop {
         if g.dead {
             let dark = g.light == 0;
@@ -427,8 +489,46 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // CRITICAL, not a nicety: `Game::wait_turn` transits while
         // standing on a portal (batch 6) — see its doc comment — and this
         // bot must NEVER emit wait there, or `bot_never_transits` breaks.
+        //
+        // batch 12 stuck fix: `rest_turns_used` (below, a plain local
+        // counter — bot heuristic state, not `Game` state, so it needs no
+        // hashing) caps the LIFETIME total of rest turns a single run may
+        // spend, `MAX_REST_TURNS_PER_RUN` each. Root cause of the 5
+        // `tactical-pacifist` STUCK runs this fixes (seeds 817/1074/3133/
+        // 3191/4552, all timing out at SIM_TURN_CAP with light==0): rest
+        // was propping the bot up through near-death combat moments (real
+        // `#[test]`-traced example, seed 817: hp fell to 6/29 around turn
+        // 750, recovered only via repeated rest) it would otherwise not
+        // have survived — survival that, pre-batch-12, would have ended in
+        // `dead_combat`. Once past that survival window, these seeds walk
+        // into a genuinely SEPARATE, pre-existing `tactical_routing_map`
+        // hazard: a patrolling monster's own tile alternately opens/closes
+        // a shortcut in the monster-avoidant view, and the fully-
+        // myopic-replan-every-turn routing has no memory of that, so it
+        // gets entrained into the monster's own oscillation and undoes its
+        // own step every single turn forever (confirmed by trace: the
+        // player's distance-to-objective at the SAME two tiles alternates
+        // between two values turn over turn, in lockstep with the flip).
+        // That hazard was already latent in `tactical_routing_map` before
+        // this batch, but always resolved on its own: either the run's
+        // torch ran out first (`dead_dark`) or combat elsewhere finished
+        // the run before ever reaching the trap. Batch 12 R5 made the
+        // McGuffin a positional light source, and a diplomat who never
+        // kills anchors mood near 100 (`mood_shine_tiers`' top tier once
+        // she's carried) — so `dead_dark` stopped being reachable at all
+        // for exactly this policy, turning a previously-self-resolving
+        // stall into an unbounded one. Capping lifetime rest restores the
+        // termination invariant the same way the pre-batch-12 game did:
+        // rest is a grace, not a guarantee, so a run that would only have
+        // survived by resting indefinitely again eventually loses the race
+        // against combat instead of stalling forever. Chosen empirically
+        // (see the task-5 report for the measured win-rate deltas this
+        // produces) — high enough that ordinary healthy play essentially
+        // never brushes it, low enough to guarantee no seed in the 5000-run
+        // gate can lean on rest forever.
         if tactical
             && heal_now
+            && rest_turns_used < MAX_REST_TURNS_PER_RUN
             && g.light > REST_LIGHT_RESERVE
             && g.map[idx(g.px, g.py)] != Tile::Portal
             && !g.monsters.iter().any(|m| {
@@ -438,6 +538,7 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
             })
         {
             g.apply_input(4);
+            rest_turns_used += 1;
             turns += 1;
             continue;
         }
@@ -457,7 +558,12 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // fights); if that view leaves the objective unreachable this turn, the
         // `player_d < 0` fallback below re-runs on the ordinary `routing_map`.
         // `tactical` itself is computed once, above, ahead of the rest branch.
-        let rmap = if tactical { tactical_routing_map(&g) } else { routing_map(&g) };
+        // batch 12 stuck fix: `force_plain_leg` (see `STALL_LIMIT`'s doc
+        // comment) can drop the monster-avoidant preference for the rest of
+        // the current leg once it's proven to be looping rather than
+        // helping.
+        let rmap =
+            if tactical && !force_plain_leg { tactical_routing_map(&g) } else { routing_map(&g) };
         let objective = if g.has_objective {
             find_tile(&g.map, Tile::UpStairs)
         } else {
@@ -487,10 +593,37 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         };
         let dist = bfs_dist(&rmap, objective);
         let player_d = dist[idx(g.px, g.py)];
+        // batch 12 stuck fix: stall tracking for the tactical policies' PREFERRED
+        // (monster-avoidant) view — see `STALL_LIMIT`'s doc comment for the full
+        // mechanism. A new leg (the objective's own coordinate changed — a fresh
+        // loot pick, a new depth, the return climb) always resets tracking, since
+        // "no improvement" only means something within a single leg. Only tactical
+        // policies track/act on this; greedy/pacifist never touch `tactical_routing_map`
+        // in the first place, so they have nothing to stall against.
+        if tactical {
+            if Some(objective) != stall_objective {
+                stall_objective = Some(objective);
+                stall_best = player_d;
+                stall_count = 0;
+                force_plain_leg = false;
+            } else if player_d >= 0 && (stall_best < 0 || player_d < stall_best) {
+                stall_best = player_d;
+                stall_count = 0;
+            } else {
+                stall_count += 1;
+                if stall_count > STALL_LIMIT {
+                    force_plain_leg = true;
+                }
+            }
+        }
         // Tactical fallback: monsters walled off the objective in the preferred
         // view. Re-route on the ordinary map (fight through) — never a false
         // "stuck" over a corridor a fight would open. Rebind rmap/dist/player_d.
-        let (rmap, dist, player_d) = if tactical && player_d < 0 {
+        // Only reachable while still on the avoidant view (`!force_plain_leg` —
+        // once the stall guard above has already dropped to the plain map,
+        // `rmap`/`dist`/`player_d` were computed against it a few lines up, so
+        // recomputing here would just be the same `bfs_dist` call twice).
+        let (rmap, dist, player_d) = if tactical && !force_plain_leg && player_d < 0 {
             let rmap2 = routing_map(&g);
             let dist2 = bfs_dist(&rmap2, objective);
             let pd2 = dist2[idx(g.px, g.py)];

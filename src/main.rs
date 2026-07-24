@@ -2823,6 +2823,30 @@ mod tests {
         }
     }
 
+    /// batch 12 stuck fix regression: before `headless::STALL_LIMIT` (plus
+    /// the `MAX_REST_TURNS_PER_RUN` hygiene cap alongside it), `--sim 5000
+    /// --policy tactical-pacifist` produced exactly 5 STUCK runs (seeds
+    /// 817, 1074, 3133, 3191, 4552 — every one timing out at
+    /// `SIM_TURN_CAP` with `light_left == 0`). Traced root cause (seed
+    /// 817): rest propped the run through a near-death combat moment it
+    /// would otherwise have lost, the objective-carrying diplomat's maxed
+    /// mood then made her carried light immune to darkness death, and the
+    /// run walked into a separate, pre-existing `tactical_routing_map`
+    /// hazard — a patrolling monster's tile alternately opening/closing a
+    /// shortcut, entraining the fully-myopic per-turn replan into undoing
+    /// its own step forever, with no death left to end it. Pin all five by
+    /// name so a future rest/routing change that reintroduces the stall
+    /// fails loudly here instead of only showing up as a nonzero `stuck`
+    /// count in a full 5000-seed `--sim` run.
+    #[test]
+    fn tactical_pacifist_previously_stuck_seeds_now_terminate() {
+        use headless::{sim_seed, Policy};
+        for seed in [817u64, 1074, 3133, 3191, 4552] {
+            let (r, _) = sim_seed(seed, Policy::TacticalPacifist);
+            assert!(!r.stuck, "seed {seed} must not get stuck (tactical-pacifist)");
+        }
+    }
+
     /// A diplomat who routes around fights and only talks when forced wins at least
     /// as often as the blunt pacifist that talks its way through everything.
     #[test]
