@@ -1413,6 +1413,7 @@ mod tests {
         // DIM: mood 0 -> radius 0 -> gone dark, but rest still heals.
         let mut g = Game::new(1);
         g.monsters.clear();
+        assert!(g.map[idx(g.px, g.py)] != Tile::Portal, "fixture: not on a portal");
         g.has_objective = true;
         g.hp = g.maxhp - 5;
         g.mood_sum = 0;
@@ -1428,6 +1429,7 @@ mod tests {
         // A wait that heals NOTHING (already full HP) speaks no rest line.
         let mut g = Game::new(1);
         g.monsters.clear();
+        assert!(g.map[idx(g.px, g.py)] != Tile::Portal, "fixture: not on a portal");
         g.has_objective = true;
         assert_eq!(g.hp, g.maxhp, "fixture: fresh game is full HP");
         let before = g.msgs.len();

@@ -843,14 +843,16 @@ const MCG_KILL_WITNESSED: [&str; 4] = [
 // MCG_060 ("There. A little of mine...") was held on the batch-8 T2
 // grounding review because it reads as bestowing the §9-E mood->light gift,
 // unwired then. Batch 12's second-lantern design IS that mechanic (her shine
-// radius = f(mood)), so per that hold's own instruction ("revive verbatim
-// once §9-E lands") it is REVIVED VERBATIM below in MCG_RESTED_DIM: at a low
-// mood her ring is small (radius 2), so only "a little" of her light reaches
-// you while she tends a rest — grounded exactly. MCG_062 ("Take the next
-// step on me.") stays held: it is now grounded by the same shine, but it is
-// a STEPPING line, a mismatch for a rest-in-place beat — it awaits a future
-// climb/shine hook, not this rest pool. MCG_063 (the coat-monster claim)
-// stays held because that monster still does not exist.
+// radius = f(mood)) — but MCG_060 STAYS HELD anyway (batch 12 R7 grounding
+// review caught this): "a little of mine" asserts a nonzero shine reaching
+// the player, and her radius hits 0 at mood<25 (a pure brute's dead lantern),
+// where the claim is simply false. It needs a context with a GUARANTEED
+// small-but-nonzero ring; no current trigger provides one (RestedDim spans
+// radius 0 too, see its own comment). Revive it there, not here. MCG_062
+// ("Take the next step on me.") stays held: it is grounded by the same shine,
+// but it is a STEPPING line, a mismatch for a rest-in-place beat — it awaits
+// a future climb/shine hook, not this rest pool. MCG_063 (the coat-monster
+// claim) stays held because that monster still does not exist.
 const MCG_SPARE_WITNESSED: [&str; 1] = [
     "I've decided your footsteps have a rhythm. I've named it.", // MCG_061
 ];
@@ -870,13 +872,17 @@ const MCG_RESTED_BRIGHT: [&str; 2] = [
     "Lean here. I'll hold a bright ring around you a while.",
 ];
 // DIM fires when she has gone dim (radius < 4): rest still heals — the
-// mending doesn't need her shine — so these are grounded even when her ring
-// is small or dark. First line is MCG_060, revived verbatim (see the held-
-// note above MCG_SPARE_WITNESSED): at a low mood only "a little" of her
-// light reaches you, which is exactly what the line says.
+// mending doesn't need her shine — so both lines stay true across the WHOLE
+// sub-50 range, INCLUDING the mood<25 / radius-0 tier where she casts NO
+// light at all. That radius-0 edge is exactly why MCG_060 ("...a little of
+// mine...") is NOT revived here despite §9-E landing: it asserts a nonzero
+// shine, false when her ring is 0 (see the held-note above
+// MCG_SPARE_WITNESSED). "gone dim" and "dimmed near to nothing" both cover
+// radius 2 AND radius 0 honestly; "isn't mine to give"/"doesn't need me"
+// both restate that rest_heal never consults her shine.
 const MCG_RESTED_DIM: [&str; 2] = [
-    "There. A little of mine. Don't mention it. Mention it a little.", // MCG_060
     "I've gone dim. Rest anyway; the mending doesn't need me.",
+    "Dimmed near to nothing. Rest -- the mending isn't mine to give.",
 ];
 
 const CARRIED_LINES: [(CarryEvent, &[&str]); 9] = [
