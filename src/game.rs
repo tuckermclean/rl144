@@ -2636,7 +2636,7 @@ impl Game {
         // batch 8 T1 / batch 12 R7: a plain wait (not a portal transit) while
         // carrying is the McGuffin's chance to speak. A wait that actually
         // MENDS is her tending you, mood-keyed by her visible shine: a wide
-        // ring (radius >= 4, mood >= 50) is `RestedBright` ("light to spare");
+        // ring (radius >= 4, i.e. mood > 50 / 51+) is `RestedBright` ("light to spare");
         // a dim/dark McGuffin is `RestedDim` (she has little glow left, yet
         // rest heals regardless of her shine). A wait that heals nothing
         // (full hp, or a hostile blocking the rest) falls to the plain

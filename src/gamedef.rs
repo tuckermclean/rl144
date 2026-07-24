@@ -125,7 +125,7 @@ pub(crate) struct OverworldDef {
 /// actually MENDS (`Game::rest_heal` returned true — hp rose, no hostile
 /// adjacent) is the McGuffin's chance to tend you, keyed to her mood via her
 /// visible shine radius — `RestedBright` when `mood_shine_radius(self.mood())
-/// >= 4` (mood >= 50, she casts a wide ring and has light to spare),
+/// >= 4` (mood > 50, i.e. 51+ — the strict tier boundary; she casts a wide ring),
 /// `RestedDim` otherwise (she has gone dim, but rest heals regardless of her
 /// shine — the mending doesn't need her). Dispatched from `Game::wait_turn`'s
 /// non-transit branch INSTEAD of `Idle` on a mending turn; a wait that heals
