@@ -259,7 +259,7 @@ pub(crate) struct Monster {
     /// to 0 the instant the player either isn't adjacent or attacked it
     /// this turn (fleeing or fighting breaks the stare). At
     /// `>= Monster::stats(kind).awe_threshold` the monster becalms exactly
-    /// like a landed talk (`calm = true`, `Game::spared += 1`) — this is
+    /// like a landed talk (`calm = true`, `Game::record_spare()`) — this is
     /// run-defining mercy state, hashed in `save::state_hash` right beside
     /// `regard`/`calm`, NOT the presentation-only exclusion set
     /// (`killer`/`echo`/`facing`/`fx_hit`/`mcguffin_last_line_turn`).
@@ -1196,6 +1196,18 @@ impl Game {
             self.carry_event(CarryEvent::TierCrossed);
         }
         true
+    }
+
+    /// Light-as-grace (batch 12 T2, the mercy half): the single site every
+    /// becalm path (landed talk, landed give, awe crossing its threshold)
+    /// routes through — increments `self.spared` and feeds the torch
+    /// `GAME.balance.spare_light_gain`, capped at `start_light()` (mercy
+    /// refills the torch toward full, never past it). Consolidated into one
+    /// helper so a future becalm site can't silently skip the light gain —
+    /// same lesson as batch 11's awe helper.
+    fn record_spare(&mut self) {
+        self.spared += 1;
+        self.light = (self.light + GAME.balance.spare_light_gain).min(start_light());
     }
 
     /// Snapshot the current depth (of the CURRENT world — see `Game::saved`'s
@@ -2188,7 +2200,7 @@ impl Game {
             };
             if became_calm {
                 self.monsters[mi].calm = true;
-                self.spared += 1;
+                self.record_spare();
                 self.carry_event(CarryEvent::SpareWitnessed);
             }
             let v = self.flavor_rng.range(0, 2) as usize;
@@ -2272,7 +2284,7 @@ impl Game {
         let regard = self.monsters[mi].regard;
         if !self.monsters[mi].calm && regard >= Monster::talk_threshold(kind) {
             self.monsters[mi].calm = true;
-            self.spared += 1;
+            self.record_spare();
             self.carry_event(CarryEvent::SpareWitnessed);
         }
         let line = match rule.line {
@@ -2786,7 +2798,8 @@ impl Game {
     ///     satisfy this);
     ///   - the monster wasn't bump-attacked this turn (`attacked != Some(i)`).
     /// Held: `awe += 1`; crossing `awe_threshold` becalms it exactly like a
-    /// landed talk (`calm = true`, `Game::spared += 1`) — reusing the
+    /// landed talk (`calm = true`, `Game::record_spare()`, batch 12 T2:
+    /// also feeds the torch — see that helper) — reusing the
     /// existing becalm state rather than a parallel mechanism, so every
     /// downstream mercy behavior (no chase/attack, yield-on-bump) works
     /// unchanged. The log line reuses the monster's own `talk_lines`
@@ -2820,7 +2833,7 @@ impl Game {
                 self.monsters[i].awe = self.monsters[i].awe.saturating_add(1);
                 if self.monsters[i].awe >= threshold {
                     self.monsters[i].calm = true;
-                    self.spared += 1;
+                    self.record_spare();
                     let name = self.mob_name(kind);
                     let v = self.flavor_rng.range(0, 2) as usize;
                     let line = GAME.monsters[kind as usize].talk_lines[2][v].replace("{M}", name);

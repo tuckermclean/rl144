@@ -433,6 +433,13 @@ pub(crate) struct BalanceDef {
     /// Light lost each time the player kills — the McGuffin recoils; the
     /// violence half of light-as-grace [batch 12].
     pub(crate) kill_light_penalty: i32,
+    /// Light gained each becalm (talk, give, or awe crossing its threshold)
+    /// — the only renewable light source in the run; the mercy half of
+    /// light-as-grace [batch 12 T2]. Capped so `Game::light` never exceeds
+    /// `start_light()` — the torch has a max, mercy refills toward full,
+    /// never overfills. See `Game::record_spare`, the single site that
+    /// applies this.
+    pub(crate) spare_light_gain: i32,
 }
 
 /// The win condition: which item ends the run, how it's carried, and where

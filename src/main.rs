@@ -789,6 +789,73 @@ mod tests {
             "a kill must dim light by kill_light_penalty on top of the ordinary attack-turn burn");
     }
 
+    /// Light-as-grace (batch 12 T2, the mercy half): every becalm feeds the
+    /// player's light via `Game::record_spare`, the only renewable light
+    /// source in the run. Driven via the deterministic awe path (`standing
+    /// tall`, batch 11 T2) rather than the randomized talk-receptivity roll,
+    /// exactly like the existing awe tests above. Light burns FIRST each
+    /// turn via `spend_turn` (`base_burn`, no violence tax on a wait), and
+    /// only on the becalm turn does `record_spare` add `spare_light_gain`
+    /// afterward — so the exact expected light after `thr` waited turns is
+    /// `start - thr*base_burn + spare_light_gain`, computed purely from
+    /// `GAME.balance` with no fudge factor.
+    #[test]
+    fn sparing_feeds_light() {
+        let mut g = Game::new(11);
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.clear();
+        g.monsters.push(crate::game::Monster {
+            kind: OGRE,
+            x: ox,
+            y: oy,
+            hp: 99,
+            ..crate::game::Monster::spawn(OGRE, ox, oy)
+        });
+        let thr = crate::game::Monster::stats(OGRE).awe_threshold as usize;
+        g.light = 100; // low and round, so the gain is visible and uncapped
+        for _ in 0..thr {
+            g.apply_input(4); // WAIT adjacent = stand tall
+        }
+        assert!(g.monsters.iter().any(|m| m.x == ox && m.y == oy && m.calm), "ogre becalmed via awe");
+        let expected = 100 - (thr as i32) * GAME.balance.base_burn + GAME.balance.spare_light_gain;
+        assert!(expected < game::start_light(), "test setup must stay below the cap to prove the uncapped gain");
+        assert_eq!(g.light, expected, "a becalm must add exactly spare_light_gain net of that turn's own burn");
+    }
+
+    /// Light-as-grace (batch 12 T2): the mercy gain is capped at
+    /// `start_light()` — the torch has a max, mercy refills toward full but
+    /// never overfills. Starting already at full light, `spare_light_gain`
+    /// would push light past the cap absent the `.min(start_light())` clamp
+    /// in `Game::record_spare`; asserted both as an exact value (light lands
+    /// exactly back at the cap, since the post-burn value plus the gain
+    /// exceeds it) and as the general invariant.
+    #[test]
+    fn spare_light_is_capped_at_start_light() {
+        let mut g = Game::new(11);
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.clear();
+        g.monsters.push(crate::game::Monster {
+            kind: OGRE,
+            x: ox,
+            y: oy,
+            hp: 99,
+            ..crate::game::Monster::spawn(OGRE, ox, oy)
+        });
+        let thr = crate::game::Monster::stats(OGRE).awe_threshold as usize;
+        g.light = game::start_light(); // already full
+        for i in 0..thr {
+            g.apply_input(4);
+            assert!(g.light <= game::start_light(), "light must never exceed start_light, turn {i}");
+        }
+        assert!(g.monsters.iter().any(|m| m.x == ox && m.y == oy && m.calm), "ogre becalmed via awe");
+        let post_burn = game::start_light() - (thr as i32) * GAME.balance.base_burn;
+        assert!(
+            post_burn + GAME.balance.spare_light_gain > game::start_light(),
+            "test setup must actually exercise the cap (gain must overshoot start_light)"
+        );
+        assert_eq!(g.light, game::start_light(), "the becalm turn's gain must clamp exactly at the cap");
+    }
+
     /// Running out of light on the exit tile is a LOSE, not a win.
     #[test]
     fn lose_beats_win_at_zero_light() {
