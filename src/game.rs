@@ -2438,33 +2438,42 @@ impl Game {
 
     /// Rest (batch 12 R3, "light as grace"): waiting while hurt heals
     /// `BalanceDef::rest_heal` HP, but ONLY when no non-calm monster is
-    /// cardinally adjacent (N/S/E/W — the same shape a bump-attack or talk
-    /// can resolve in one move). That gate is REQUIRED, not an
-    /// optimization: it's what keeps rest and awe-holding
-    /// (`resolve_awe`, batch 11 T2 — "stand tall while an ogre pummels
-    /// you") as two distinct acts. Awe-holding needs sustained adjacency to
-    /// an awe-able threat; rest needs the opposite, a genuinely clear
-    /// moment, so a player can't earn both from the same stationary turn.
-    /// A calm monster never attacks, so it doesn't block rest. Only ever
-    /// called from `wait_turn`'s non-transiting branch — see the
-    /// portal-footing note there for why a wait on a portal tile can never
-    /// reach this call at all.
+    /// Chebyshev-adjacent (N/S/E/W AND the four diagonals — the same shape
+    /// `monsters_act` uses to decide whether a monster attacks, see its
+    /// `dist == 1` check). That gate is REQUIRED, not an optimization: it's
+    /// what keeps rest and awe-holding (`resolve_awe`, batch 11 T2 — "stand
+    /// tall while an ogre pummels you") as two distinct acts. Awe-holding
+    /// needs sustained adjacency to an awe-able threat; rest needs the
+    /// opposite, a genuinely clear moment, so a player can't earn both from
+    /// the same stationary turn. A calm monster never attacks, so it
+    /// doesn't block rest. Only ever called from `wait_turn`'s
+    /// non-transiting branch — see the portal-footing note there for why a
+    /// wait on a portal tile can never reach this call at all.
+    ///
+    /// batch 12 R3 fix round: this gate originally tested CARDINAL
+    /// adjacency only, but `monsters_act`'s attack decision (and the chase
+    /// AI that parks a monster next to the player) uses CHEBYSHEV
+    /// adjacency, which includes the four diagonals. A monster parked
+    /// diagonally adjacent would attack every turn while this cardinal-only
+    /// check saw no hostile neighbor and healed anyway — free healing under
+    /// a live attacker, defeating the whole point of the gate. Fixed to use
+    /// the identical Chebyshev formula `monsters_act` uses.
     fn rest_heal(&mut self) {
         if self.hp >= self.maxhp {
             return; // don't heal a corpse... or anyone already topped up
         }
         // `passive` (TRAINER/DONKEY, batch 9 T1) monsters never fight —
         // same exclusion `monsters_act` already applies before its own
-        // attack/chase decision — so one standing cardinally adjacent
-        // isn't a "hostile" for this gate's purposes and doesn't block
-        // rest. A `calm` monster is excluded for the same reason (a
-        // becalmed monster never attacks either); only a live, non-calm,
-        // fight-capable monster in melee range blocks the heal.
+        // attack/chase decision — so one standing adjacent isn't a
+        // "hostile" for this gate's purposes and doesn't block rest. A
+        // `calm` monster is excluded for the same reason (a becalmed
+        // monster never attacks either); only a live, non-calm,
+        // fight-capable monster in melee range (Chebyshev distance 1)
+        // blocks the heal.
         let hostile_adjacent = self.monsters.iter().any(|m| {
             !m.calm
                 && !Monster::stats(m.kind).passive
-                && ((m.x == self.px && (m.y - self.py).abs() == 1)
-                    || (m.y == self.py && (m.x - self.px).abs() == 1))
+                && (m.x - self.px).abs().max((m.y - self.py).abs()) == 1
         });
         if hostile_adjacent {
             return;

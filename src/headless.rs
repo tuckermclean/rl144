@@ -415,13 +415,16 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // (mercy/violence's differing light math), never from bot code —
         // Greedy/Pacifist don't get this branch at all, so their frozen
         // bands (`tests/sim-band.json`/`tests/pacifist-band.json`) can't
-        // move. The cardinal-adjacency check mirrors `Game::rest_heal`'s
-        // own gate exactly (no live, non-calm, fight-capable monster N/S/
-        // E/W) so the bot only ever waits when the engine would actually
-        // grant the heal — never a wasted turn. `REST_LIGHT_RESERVE` keeps
-        // the bot from resting itself into the dark (a wait still burns a
-        // turn of light like any other action). The `Tile::Portal` check
-        // is CRITICAL, not a nicety: `Game::wait_turn` transits while
+        // move. The adjacency check mirrors `Game::rest_heal`'s own gate
+        // exactly (no live, non-calm, fight-capable monster at Chebyshev
+        // distance 1 — N/S/E/W AND the four diagonals, batch 12 R3 fix
+        // round: this used to be cardinal-only, which let the bot rest
+        // through a diagonal attacker the same way the engine bug did)
+        // so the bot only ever waits when the engine would actually grant
+        // the heal — never a wasted turn. `REST_LIGHT_RESERVE` keeps the
+        // bot from resting itself into the dark (a wait still burns a turn
+        // of light like any other action). The `Tile::Portal` check is
+        // CRITICAL, not a nicety: `Game::wait_turn` transits while
         // standing on a portal (batch 6) — see its doc comment — and this
         // bot must NEVER emit wait there, or `bot_never_transits` breaks.
         if tactical
@@ -431,8 +434,7 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
             && !g.monsters.iter().any(|m| {
                 !m.calm
                     && !Monster::stats(m.kind).passive
-                    && ((m.x == g.px && (m.y - g.py).abs() == 1)
-                        || (m.y == g.py && (m.x - g.px).abs() == 1))
+                    && (m.x - g.px).abs().max((m.y - g.py).abs()) == 1
             })
         {
             g.apply_input(4);

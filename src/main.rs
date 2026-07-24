@@ -1293,6 +1293,45 @@ mod tests {
         );
     }
 
+    /// Batch 12 R3 fix round: the reviewer's exact repro — `Game::rest_heal`
+    /// originally tested CARDINAL adjacency only, but `monsters_act`'s
+    /// attack decision (and the chase AI that parks a monster next to the
+    /// player) uses CHEBYSHEV adjacency, which includes the diagonals. A
+    /// live, non-calm, fight-capable monster parked DIAGONALLY adjacent
+    /// still attacks every turn — so the old cardinal-only gate saw no
+    /// hostile neighbor and healed anyway, landing a heal on top of the
+    /// same turn's hit (free healing under a live attacker). This test must
+    /// FAIL on the old cardinal-only code and PASS once the gate matches
+    /// `monsters_act`'s Chebyshev formula. Same precise-math discipline as
+    /// `resting_does_not_heal_adjacent_to_hostile` above: the fixture
+    /// precomputes the exact combat roll from the same first-ever
+    /// `combat_rng` draw, so the assertion proves the heal did NOT land on
+    /// top of the hit, not merely that the net change is negative.
+    #[test]
+    fn resting_does_not_heal_diagonally_adjacent_to_hostile() {
+        let seed = 1;
+        let mut g = Game::new(seed);
+        let (rx, ry) = (g.px + 1, g.py + 1);
+        assert!(
+            in_map(rx, ry) && g.map[idx(rx, ry)] != Tile::Wall,
+            "fixture: the tile diagonally adjacent (SE) to the player must be open floor"
+        );
+        g.monsters.clear();
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0 });
+        g.hp = g.maxhp - 5;
+        let hp_before = g.hp;
+        let mut crng = channel(seed, &["combat"]);
+        let expected_dmg = crate::game::Monster::stats(RAT).atk + crng.range(0, 2);
+        g.apply_input(4); // WAIT
+        assert!(!g.dead, "fixture: the player must survive the rat's hit");
+        assert_eq!(
+            g.hp,
+            hp_before - expected_dmg,
+            "a diagonally-adjacent live hostile still attacks on a wait (Chebyshev), \
+             so rest must not also heal that same turn"
+        );
+    }
+
     /// Batch 12 R3: `Game::wait_turn`'s portal-footing guard — rest is only
     /// ever attempted from the non-transiting branch, so a wait while
     /// standing on a portal must transit exactly as before (batch 6) AND
