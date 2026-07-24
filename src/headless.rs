@@ -748,11 +748,20 @@ pub(crate) fn sim_main(n: u64, report: bool, policy: Policy) {
     };
     match std::fs::read_to_string(band_path) {
         Ok(band) => {
+            // Named locals bound BEFORE the match, not literal arrays inside
+            // the arms: this is the fix for a recurring E0716 (temporary
+            // value dropped while borrowed) that has been reported and
+            // fixed-in-review twice before without ever landing, then
+            // duplicated by batch 10 into two more arms. Whether a given
+            // rustc version's temporary-lifetime-extension rules happen to
+            // paper over the four-arm literal form or not, binding these
+            // once here is unconditionally sound and keeps the match a
+            // simple two-arm dispatch over which array to borrow.
+            let with_dark = [("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)];
+            let without_dark = [("win_pct", win_pct)];
             let checks: &[(&str, i32)] = match policy {
-                Policy::Greedy => &[("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)],
-                Policy::Tactical => &[("win_pct", win_pct), ("deaths_dark", deaths_dark as i32)],
-                Policy::Pacifist => &[("win_pct", win_pct)],
-                Policy::TacticalPacifist => &[("win_pct", win_pct)],
+                Policy::Greedy | Policy::Tactical => &with_dark,
+                Policy::Pacifist | Policy::TacticalPacifist => &without_dark,
             };
             for &(k, v) in checks {
                 if let Some((lo, hi)) = band_range(&band, k) {

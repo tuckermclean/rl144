@@ -35,9 +35,9 @@ FRAME_SEEDS := 1 42
 
 REF_SAVE := tests/fixtures/ref.sav
 
-.PHONY: check build test goldens solve sim size build-term test-term frames targets xhash
+.PHONY: check build test goldens solve sim size build-term test-term frames targets xhash msrv
 
-check: build test test-term goldens frames xhash solve sim size
+check: build test test-term goldens frames xhash solve sim size msrv
 
 build:
 	RUSTFLAGS="-D warnings" cargo build --release
@@ -52,6 +52,55 @@ build-term:
 
 test-term:
 	cargo test --quiet --no-default-features --features backend-term
+
+# MSRV enforcement (batch 12 T1, "third strike"). Cargo.toml declares
+# `rust-version = "1.75"`, but `build`/`test` above only ever exercise
+# whatever rustc happens to be on PATH in THIS environment — which is how
+# a real E0716 (temporary value dropped while borrowed) in sim_main's
+# band-key match got reported and fixed-in-review TWICE and then
+# duplicated by batch 10 into two more arms without ever tripping a gate:
+# this box's ambient rustc was newer than 1.75 (whose temporary-lifetime-
+# extension rules are stricter about borrowing a literal array straight
+# out of a match arm), so the risky pattern quietly compiled here every
+# time and the failure only ever showed up in human review, not CI.
+#
+# If `rustup` is on PATH, this target runs the REAL pinned check — `cargo
+# +1.75 check` (installing the 1.75 toolchain first if it isn't already)
+# for both feature sets — and FAILS the gate on any error, exactly like a
+# reintroduced E0716 should. If `rustup` is NOT available (the case in
+# this sandboxed environment: no rustup, no `+1.75` toolchain, no apt
+# package index/network to fetch one — verified before writing this
+# target, see the batch-12 T1 report), it falls back to an ordinary
+# `cargo check` under the ambient toolchain and prints a loud warning that
+# MSRV was NOT actually verified this run. That fallback is a
+# documentation/best-effort device, not real enforcement — it is the
+# "at minimum add cargo check under the declared rust-version" floor, not
+# the ceiling. CI, which has network access, MUST install a real 1.75
+# toolchain and run the pinned check as its own gate step:
+#   rustup toolchain install 1.75
+#   rustup run 1.75 cargo check --release --features backend-minifb
+#   rustup run 1.75 cargo check --release --no-default-features --features backend-term
+# Do not treat a green `make check` on a rustup-less box as MSRV-clean;
+# treat it as "MSRV unverified, see the warning."
+msrv:
+	@if command -v rustup >/dev/null 2>&1; then \
+		rustup toolchain install 1.75 >/dev/null 2>&1 || true; \
+		ok=1; \
+		rustup run 1.75 cargo check --release --features backend-minifb || ok=0; \
+		rustup run 1.75 cargo check --release --no-default-features --features backend-term || ok=0; \
+		if [ "$$ok" -eq 1 ]; then \
+			echo "msrv: OK (pinned rustc 1.75, both backends)"; \
+		else \
+			echo "msrv: FAIL — cargo check under pinned rustc 1.75 failed (both backends must pass)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "warning: rustup not found in this environment — cannot pin rustc 1.75."; \
+		echo "warning: falling back to 'cargo check' under the ambient toolchain ($$(rustc --version)), which does NOT verify the declared rust-version = \"1.75\" MSRV from Cargo.toml."; \
+		echo "warning: CI MUST install a real 1.75 toolchain and run the pinned check itself — see this target's comment in the Makefile for the exact commands."; \
+		cargo check --release --features backend-minifb && \
+		cargo check --release --no-default-features --features backend-term; \
+	fi
 
 # Regenerate dumps for the golden seeds into a scratch temp dir and cmp them
 # against the committed fixtures in tests/golden/. Never writes into the
