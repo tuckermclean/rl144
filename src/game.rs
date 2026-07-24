@@ -1198,16 +1198,16 @@ impl Game {
         true
     }
 
-    /// Light-as-grace (batch 12 T2, the mercy half): the single site every
-    /// becalm path (landed talk, landed give, awe crossing its threshold)
-    /// routes through — increments `self.spared` and feeds the torch
-    /// `GAME.balance.spare_light_gain`, capped at `start_light()` (mercy
-    /// refills the torch toward full, never past it). Consolidated into one
-    /// helper so a future becalm site can't silently skip the light gain —
-    /// same lesson as batch 11's awe helper.
+    /// The single site every becalm path (landed talk, landed give, awe
+    /// crossing its threshold) routes through — increments `self.spared`.
+    /// Batch 12 R2: the mercy-side light stipend this helper used to apply
+    /// (batch 12 T2's now-removed balance field) was stripped — mercy no
+    /// longer feeds light on the descent; that reward moves to the
+    /// McGuffin's mood/shine at pickup (later tasks). Kept as the one
+    /// consolidated spare site regardless, so a future mood/anchor mechanic
+    /// has exactly one place to hook — same lesson as batch 11's awe helper.
     fn record_spare(&mut self) {
         self.spared += 1;
-        self.light = (self.light + GAME.balance.spare_light_gain).min(start_light());
     }
 
     /// Snapshot the current depth (of the CURRENT world — see `Game::saved`'s

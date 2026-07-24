@@ -724,9 +724,6 @@ const BALANCE: BalanceDef = BalanceDef {
     // batch 12 T1 (story "light as grace" — the violence half): [TUNE]
     // starting value, priced later against the balance sim re-baseline.
     kill_light_penalty: 8,
-    // batch 12 T2 (story "light as grace" — the mercy half): [TUNE] starting
-    // value, priced later against the balance sim re-baseline.
-    spare_light_gain: 40,
 };
 
 const WIN: WinDef = WinDef {
