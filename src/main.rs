@@ -2390,6 +2390,97 @@ mod tests {
         assert_eq!(g.items.len(), items_before - 1, "the floor's cache must be consumed on walk-over");
     }
 
+    // ---------- The anti-brute-bailout guard (batch 14 T3, portal ROI) ----------
+
+    /// TDD test 1 (batch-14-T3 brief): collecting enough caches to cross
+    /// `max_cache_light_per_run` clamps the total light ever granted to the
+    /// cap — the last cache that would push the running total past it grants
+    /// only the remaining headroom, and any cache walked over AFTER the cap
+    /// is already reached grants nothing at all. `cache_light_collected`
+    /// tracks the running total throughout and never exceeds the cap.
+    #[test]
+    fn light_cache_cap_clamps_total_per_run() {
+        let mut g = blank_room(1);
+        let value = match GAME.items[LIGHT_CACHE as usize].effect {
+            ItemEffect::LightCache(n) => n,
+            _ => panic!("LIGHT_CACHE should carry an ItemEffect::LightCache"),
+        };
+        let cap = GAME.balance.max_cache_light_per_run;
+        assert!(value > 0 && cap > 0, "fixture sanity: both value and cap must be positive");
+        // Enough caches in a line east of the player to run the collected
+        // total past the cap at least once (ceil(cap / value) + 1 more, so
+        // the very last one is walked over already at the cap).
+        let n_caches = (cap / value) + 2;
+        for i in 0..n_caches {
+            g.items.push(Item { x: g.px + 1 + i, y: g.py, kind: LIGHT_CACHE });
+        }
+
+        let mut total_granted = 0i32;
+        let mut last_grant = -1i32;
+        for _ in 0..n_caches {
+            let light_before = g.light;
+            let before_collected = g.cache_light_collected;
+            g.apply_input(3); // step east, onto the next cache
+            let grant = g.light - (light_before - GAME.balance.base_burn);
+            last_grant = grant;
+            total_granted += grant;
+            assert_eq!(
+                g.cache_light_collected,
+                before_collected + grant,
+                "cache_light_collected must track exactly what was granted"
+            );
+            assert!(
+                g.cache_light_collected <= cap,
+                "cache_light_collected must never exceed the per-run cap"
+            );
+        }
+        assert_eq!(total_granted, cap, "the running total across the whole run must clamp to exactly the cap");
+        assert_eq!(g.cache_light_collected, cap, "cache_light_collected must land exactly at the cap");
+        assert_eq!(last_grant, 0, "a cache walked over once the cap is already reached must grant nothing");
+    }
+
+    /// TDD test 2: `Game.cache_light_collected` is hashed (mirrors
+    /// `monster_dividend_paid_is_hashed`/the `mood_sum` hash coverage) — two
+    /// otherwise-identical games differing only in this field must hash
+    /// differently, proving `save::state_hash` actually folds it in.
+    #[test]
+    fn cache_light_collected_is_hashed() {
+        let mut a = Game::new(9);
+        let b = Game::new(9);
+        assert_eq!(state_hash(&a), state_hash(&b));
+
+        a.cache_light_collected = 21;
+        assert_ne!(state_hash(&a), state_hash(&b), "cache_light_collected must be part of state_hash");
+    }
+
+    /// TDD test 3 (the older-version-save back-compat half): see
+    /// `v7_save_replays_under_v8_parsing` in the save-version back-compat
+    /// block further down — a v7 (pre-cap) save replays byte-identical
+    /// under v8 parsing, the full save/parse/replay round trip this task's
+    /// `SAVE_VERSION` bump requires.
+    ///
+    /// TDD test 4: a single cache walked over well under the cap still
+    /// refunds its FULL authored value — the common case (a light-rich
+    /// player who never approaches the cap) is unaffected by the guard.
+    #[test]
+    fn single_cache_below_cap_refunds_full_value() {
+        let mut g = blank_room(1);
+        let value = match GAME.items[LIGHT_CACHE as usize].effect {
+            ItemEffect::LightCache(n) => n,
+            _ => panic!("LIGHT_CACHE should carry an ItemEffect::LightCache"),
+        };
+        assert!(value < GAME.balance.max_cache_light_per_run, "fixture sanity: one cache must sit well under the cap");
+        g.items.push(Item { x: g.px + 1, y: g.py, kind: LIGHT_CACHE });
+        let light_before = g.light;
+        g.apply_input(3); // East, onto the cache
+        assert_eq!(
+            g.light,
+            light_before + value - GAME.balance.base_burn,
+            "a single cache below the cap must refund its full authored value, uncapped"
+        );
+        assert_eq!(g.cache_light_collected, value, "cache_light_collected must equal the full grant");
+    }
+
     // ---------- PUT DOWN / CarryEvent (batch 8 T1, story §9-B/C/D) ----------
 
     /// PUT DOWN (byte 16) while not carrying the objective: graceful no-op,
@@ -3143,12 +3234,13 @@ mod tests {
         assert_eq!(state_hash(&from_v5), state_hash(&direct));
     }
 
-    /// Save v6 back-compat (batch 12 R4's own version, now one behind
+    /// Save v6 back-compat (batch 12 R4's own version, now two behind
     /// current): a v6-versioned blob may carry any byte through put-down
-    /// (16) but nothing past it (save v7, batch 13 T3, the becalm
-    /// return-trip dividend, added no new input byte at all either — see
-    /// this module's header comment — so there's nothing a v6 log could
-    /// contain that v7 parsing wouldn't already handle identically).
+    /// (16) but nothing past it (neither save v7's becalm return-trip
+    /// dividend, batch 13 T3, nor save v8's cache-light cap, batch 14 T3,
+    /// added a new input byte at all — see this module's header comment —
+    /// so there's nothing a v6 log could contain that v8 parsing wouldn't
+    /// already handle identically).
     #[test]
     fn v6_save_replays_under_v7_parsing() {
         let seed0 = 852u64;
@@ -3168,17 +3260,43 @@ mod tests {
         assert_eq!(state_hash(&from_v6), state_hash(&direct));
     }
 
+    /// Save v7 back-compat (batch 13 T3's own version, now one behind
+    /// current): a v7-versioned blob replays byte-identically under v8
+    /// parsing — batch 14 T3's cache-light cap added a hashed counter
+    /// (`Game::cache_light_collected`) but no new input byte, so there's
+    /// nothing a v7 log could contain that v8 parsing wouldn't already
+    /// handle identically. Mirrors `v6_save_replays_under_v7_parsing` above,
+    /// one version up.
+    #[test]
+    fn v7_save_replays_under_v8_parsing() {
+        let seed0 = 951u64;
+        let log = vec![0u8, 1, 16, 2, 7, 3, 4];
+        let mut v7_bytes = Vec::new();
+        v7_bytes.extend_from_slice(b"RL14");
+        v7_bytes.push(7); // v7
+        v7_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v7_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v7_bytes).expect("v7 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v7 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v7), state_hash(&direct));
+    }
+
     /// Put-down byte (16, batch 8 T1) round-trips through save -> parse ->
     /// replay identically, same proof shape as the version back-compat
     /// tests above: a log containing byte 16 survives `save_bytes` (which
-    /// now writes v7) -> `parse_save` -> `replay` producing the exact same
+    /// now writes v8) -> `parse_save` -> `replay` producing the exact same
     /// state as replaying the original log directly.
     #[test]
     fn put_down_byte_round_trips_through_save_parse_replay() {
         let seed0 = 246u64;
         let log = vec![0u8, 1, 16, 2, 3, 16, 4];
         let bytes = save_bytes(seed0, &log);
-        assert_eq!(bytes[4], 7, "save_bytes must write the current version (7)");
+        assert_eq!(bytes[4], 8, "save_bytes must write the current version (8)");
 
         let (s, parsed_log) = parse_save(&bytes).expect("v7 blob must parse");
         assert_eq!(s, seed0);
@@ -3189,8 +3307,8 @@ mod tests {
         assert_eq!(state_hash(&from_saved), state_hash(&direct));
     }
 
-    /// `save_bytes` writes the current version (7, batch 13 T3) and a
-    /// version outside 1..=7 is rejected by `parse_save` — the "old binary
+    /// `save_bytes` writes the current version (8, batch 14 T3) and a
+    /// version outside 1..=8 is rejected by `parse_save` — the "old binary
     /// must reject a newer save cleanly" half of every save-version bump's
     /// rationale (this bump's other half is simply keeping the version
     /// label in lockstep with the hashed-state addition — see this
@@ -3198,11 +3316,11 @@ mod tests {
     #[test]
     fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
         let bytes = save_bytes(7, &[0, 1, 2]);
-        assert_eq!(bytes[4], 7, "save_bytes must write the current version");
+        assert_eq!(bytes[4], 8, "save_bytes must write the current version");
         assert!(parse_save(&bytes).is_some());
 
         let mut future = bytes.clone();
-        future[4] = 8;
+        future[4] = 9;
         assert!(parse_save(&future).is_none(), "an unknown version must be rejected");
 
         let mut zero = bytes;

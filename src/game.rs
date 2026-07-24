@@ -587,6 +587,17 @@ pub(crate) struct Game {
     /// task is the anchor seed plus the kill/spare valences only.
     pub(crate) mood_sum: i32,
     pub(crate) mood_count: i32,
+    /// batch 14 T3 (portal ROI, the anti-brute-bailout guard): running total
+    /// of `ItemEffect::LightCache` light actually GRANTED this run (after
+    /// clamping, not the raw sum of every cache's authored value) —
+    /// `Game::pickup`'s `LightCache` arm caps each grant so this never
+    /// exceeds `GameDef::balance.max_cache_light_per_run`. Hashed
+    /// (`save::state_hash`): it's run-defining state, since it changes how
+    /// much light a FUTURE cache pickup can still refund, exactly the same
+    /// rationale as `speech_attempts`/`objective_dropped`/`mood_sum` above —
+    /// not a `killer`/`echo`/`facing`/`fx_hit`/`mcguffin_last_line_turn`-
+    /// style presentation value.
+    pub(crate) cache_light_collected: i32,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
@@ -719,6 +730,7 @@ impl Game {
             objective_dropped: false,
             mood_sum: 0,
             mood_count: 0,
+            cache_light_collected: 0,
             monsters: Vec::new(),
             items: Vec::new(),
             rooms: Vec::new(),
@@ -3175,10 +3187,19 @@ impl Game {
                 ItemEffect::LightCache(n) => {
                     // value DERIVED in batch 14 T2 (see the cartridge's
                     // `ItemEffect::LightCache(21)` doc comment for the
-                    // geometric dive-cost derivation).
-                    // [CAPPED in batch 14 T3 — uncapped here]
-                    self.light += n;
-                    self.log(GAME.strings.light_cache_found.replace("{}", &n.to_string()));
+                    // geometric dive-cost derivation). CAPPED in batch 14 T3
+                    // (the anti-brute-bailout guard, see
+                    // `BalanceDef::max_cache_light_per_run`'s doc comment for
+                    // the sizing): the grant is clamped to whatever headroom
+                    // remains below the per-run cap, never the raw authored
+                    // value once a run has already collected enough cache
+                    // light to approach it. `.max(0)` guards the
+                    // already-at-or-past-cap case (a negative remainder must
+                    // grant nothing, not go negative).
+                    let grant = n.min(GAME.balance.max_cache_light_per_run - self.cache_light_collected).max(0);
+                    self.light += grant;
+                    self.cache_light_collected += grant;
+                    self.log(GAME.strings.light_cache_found.replace("{}", &grant.to_string()));
                 }
                 // Unreachable in practice: every `Hold` row (the only place
                 // `ItemEffect::None` appears) returns above before this

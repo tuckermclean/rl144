@@ -597,6 +597,30 @@ pub(crate) struct BalanceDef {
     /// starting value, measured against the tactical bots at batch 13 T7,
     /// never hand-tuned to feel.
     pub(crate) becalm_dividend: i32,
+    /// The anti-brute-bailout guard (batch 14 T3, portal ROI sign-off
+    /// addition #2): the TOTAL `ItemEffect::LightCache` light a single run
+    /// may ever collect, across every cache it walks over. Sized from the
+    /// tactical-bot sim data, `START_LIGHT`-comment style, never hand-picked:
+    /// a slaughter route self-burns roughly `kill_light_penalty (8) *
+    /// the tactical/violent bot's median kills per run (~17, from
+    /// `--sim 5000 --policy tactical`'s measured `kills_total` ≈ 84317 over
+    /// 5000 runs)` ≈ 135 light on the kill penalty alone (before even
+    /// counting a dark-mood McGuffin's own light loss) — this cap is set
+    /// WELL below half of that (135/2 ≈ 67), at 60, so portal caches can
+    /// never rescue a slaughter route: at most they refund a minority
+    /// fraction of what the violence tax alone already cost. A merciful
+    /// player, who never triggers `kill_light_penalty`, keeps every cache's
+    /// full value regardless of this cap — it only ever bites a run that has
+    /// already collected `max_cache_light_per_run` total, never a run's
+    /// first cache. **Does not bind today**: this cartridge's two authored
+    /// floors hold one cache each at the shared derived value (T2's 21), so
+    /// the current maximum collectible in a single run is `2 * 21 = 42`,
+    /// under this 60 cap — the cap is a forward guard for when more floors
+    /// or caches exist, not yet a lever that fires in today's content (see
+    /// `Game::pickup`'s `LightCache` arm for where it's applied, and
+    /// `main.rs`'s `light_cache_cap_clamps_total_per_run` test for the
+    /// clamping behavior once enough caches exist to hit it).
+    pub(crate) max_cache_light_per_run: i32,
 }
 
 /// The win condition: which item ends the run, how it's carried, and where

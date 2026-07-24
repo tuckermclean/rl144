@@ -997,6 +997,13 @@ const BALANCE: BalanceDef = BalanceDef {
     // pacifism dominant in batch 5 (guaranteed stayed swing) before the
     // parley repricing. Re-priced at T7 against the tactical bots.
     becalm_dividend: 2,
+    // batch 14 T3 (portal ROI, the anti-brute-bailout guard): see
+    // `BalanceDef::max_cache_light_per_run`'s doc comment for the full
+    // sizing derivation (kill_light_penalty * tactical-bot median kills/run
+    // ≈ 135 self-burn; this cap sits well under half that). Does not bind
+    // against today's content (2 floors * 1 cache * value 21 = 42 max
+    // collectible) — a forward guard, sized from data, not hand-picked.
+    max_cache_light_per_run: 60,
 };
 
 const WIN: WinDef = WinDef {
