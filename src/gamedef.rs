@@ -242,6 +242,31 @@ pub(crate) struct MonsterDef {
     /// `passive`/`Yield`/`Shove` bump responses mean this path is never
     /// reached for it, kept sane rather than left to imply a meaning).
     pub(crate) kill_valence: i32,
+    /// batch 13 T5 (goblinoid awe, arc doc "Goblinoid awe — becalm through
+    /// nerve, not talk"): which movement tactic `Game::resolve_awe` reads as
+    /// THIS kind's awe move. `false` (the ogre's shape, unchanged from batch
+    /// 11) means awe builds by HOLDING — ending a turn cardinally adjacent
+    /// without having given ground. `true` (the goblin) means the MIRROR —
+    /// awe builds by GIVING GROUND — stepping away from a cardinal-adjacent
+    /// position this same turn. Irrelevant when `awe_threshold == 0`.
+    pub(crate) awe_by_giving_ground: bool,
+    /// batch 13 T5: whether doing the OPPOSITE of this kind's awe move
+    /// (`awe_by_giving_ground`) lands a punishing hit — "the two moves are
+    /// opposite and mutually fatal" (arc doc). `true` for both the ogre
+    /// (fleeing gets you killed) and the goblin (standing still against it
+    /// gets you killed); `false` (irrelevant) for every non-awe-able kind.
+    /// See `Game::resolve_awe`'s doc comment for the exact hit mechanics —
+    /// it reuses the monster's ordinary swing formula (`atk` + `combat_rng`
+    /// draw), never a separate damage path.
+    pub(crate) punish_wrong_move: bool,
+    /// batch 13 T5 (telegraphing, arc doc §315 — mandatory): a single
+    /// grounded cue logged whenever the player ends a turn cardinally
+    /// adjacent to this kind (while awe-able and not yet calm), restating
+    /// only which movement tactic this kind rewards — so a wrong-move death
+    /// is learn-by-death, not a gotcha. Empty string for every non-awe-able
+    /// kind (never read — the `awe_threshold == 0` guard in `resolve_awe`
+    /// skips the kind before this field would ever be reached).
+    pub(crate) awe_tell: &'static str,
 }
 
 /// A monster's reaction to a player's bump-into (batch 9 T1, SIGN-OFF ASK

@@ -2480,12 +2480,28 @@ impl Game {
         if !self.spend_turn(0) {
             return; // died in the dark on a talk turn: lose beats anything else
         }
-        // batch 11 T2: talking isn't bump-attacking, so `attacked = None`
-        // here — a talked-to (or stayed) monster can still build awe this
-        // same turn if it's cardinally adjacent, independent of `stayed`.
-        // The player never moves during a talk, so `(self.px, self.py)` IS
-        // this turn's pre-move position (batch 11 T2 fix round).
-        self.monsters_act_and_resolve_awe(stayed, None, (self.px, self.py));
+        // batch 11 T2: talking isn't bump-attacking, so a HOLD-type kind
+        // (the ogre) reads a talk turn as building/holding awe exactly like
+        // a wait would (independent of `stayed`) — "talk is a no-move
+        // action" is deliberately double-duty for that kind (see
+        // `talking_at_an_ogre_stands_tall_and_awes`).
+        //
+        // batch 13 T5: a GIVE-GROUND-type kind (the goblin) is the mirror
+        // and must NOT get the same double-duty — talk is its OWN
+        // pre-existing mercy mechanic (batch 5's regard/`talk_threshold`
+        // path), orthogonal to awe, exactly like a GIVE is (see
+        // `try_give_player`'s exclusions above). Without this exclusion, a
+        // bot (or player) that persists at repeatedly talking to the same
+        // un-becalmed goblin — a legitimate, pre-existing mercy strategy —
+        // would ALSO read as "planted, refusing to give ground" every one
+        // of those turns and take the punish hit on top of it, turning an
+        // ordinary mercy attempt into an accidental death spiral. Measured:
+        // this exact gap collapsed `--sim 5000 --policy pacifist` from its
+        // 17-win baseline before this exclusion was added. Excluding here
+        // only stops awe/punish bookkeeping for THIS monster THIS turn — it
+        // never touches `regard`/`calm`/the ordinary talk becalm above.
+        let awe_exclude = if Monster::stats(kind).awe_by_giving_ground { Some(mi) } else { None };
+        self.monsters_act_and_resolve_awe(stayed, awe_exclude, (self.px, self.py));
     }
 
     /// GIVE: the mercy verb's counterpart (batch 7 T2, story §5/§9-A).
@@ -2579,7 +2595,12 @@ impl Game {
             // The player never moves during a give; the target is ALWAYS
             // stayed here regardless of landed/failed (batch 13 T2's whole
             // point — the stay is the guaranteed half of the bargain).
-            self.monsters_act_and_resolve_awe(Some(mi), None, (self.px, self.py));
+            // batch 13 T5: also excluded from `resolve_awe`'s awe/punish
+            // bookkeeping (`Some(mi)` as the exclusion index too) — cheese's
+            // guaranteed stay is a BRIBE, a separate mechanism from
+            // standing-your-ground nerve, and must never incur the goblin's
+            // holding-punish on top of it (see `resolve_awe`'s doc comment).
+            self.monsters_act_and_resolve_awe(Some(mi), Some(mi), (self.px, self.py));
             return;
         }
         if rule.enrage {
@@ -2607,7 +2628,13 @@ impl Game {
             if !self.spend_turn(0) {
                 return; // died in the dark on a give turn: lose beats anything else
             }
-            self.monsters_act_and_resolve_awe(None, None, (self.px, self.py));
+            // batch 13 T5: excluded from `resolve_awe`'s awe/punish
+            // bookkeeping (`Some(mi)`) — the enrage give is documented to
+            // land EXACTLY the failed-talk retaliation's single hit; without
+            // this exclusion, a not-yet-fled, not-yet-held goblin/ogre
+            // target would ALSO read as "held ground" (the player never
+            // moves during a give) and double the hit via the punish path.
+            self.monsters_act_and_resolve_awe(None, Some(mi), (self.px, self.py));
             return;
         }
         if rule.heal_full {
@@ -2640,7 +2667,13 @@ impl Game {
             return; // died in the dark on a give turn: lose beats anything else
         }
         // The player never moves during a give; batch 11 T2 fix round.
-        self.monsters_act_and_resolve_awe(None, None, (self.px, self.py)); // giving isn't bump-attacking
+        // batch 13 T5: `Some(mi)` also excludes the give target from
+        // `resolve_awe`'s awe/punish bookkeeping — no current row targets
+        // an awe-able kind through this ordinary branch (RAT isn't
+        // awe-able), but a future row that did would hit the same
+        // double-hit hazard the cheese/enrage branches above were fixed
+        // for, so the exclusion is applied here too, for free.
+        self.monsters_act_and_resolve_awe(None, Some(mi), (self.px, self.py)); // giving isn't bump-attacking
     }
 
     /// USE: self-applies the top of `self.held` (batch 7 T2, story §5/§9-A's
@@ -3222,72 +3255,177 @@ impl Game {
         self.compute_fov();
     }
 
-    /// Standing tall (batch 11 T2 — the diplomat's ogre answer): builds
-    /// `Monster.awe` for every awe-able monster (`MonsterDef::awe_threshold
-    /// > 0`) that's not already `calm`, once per player action, gated on
-    /// the player having HELD GROUND this turn (see the fix-round note
-    /// below) — never called directly; always via
+    /// Standing tall / giving ground (batch 11 T2 the ogre; batch 13 T5 the
+    /// goblin mirror + the paired punish hits — arc doc "Goblinoid awe —
+    /// becalm through nerve, not talk"): builds `Monster.awe` for every
+    /// awe-able monster (`MonsterDef::awe_threshold > 0`) that's not already
+    /// `calm`, once per player action — never called directly; always via
     /// `monsters_act_and_resolve_awe`. `attacked` carries the index of a
-    /// monster the player just bump-ATTACKED this turn (excluded from
-    /// building awe), or `None` from every other action — talk/give/use/
-    /// put-down/wait/a plain move/a becalmed-yield swap never attack, so
-    /// they all pass `None`.
+    /// monster EXCLUDED from both building awe and the punish hit below —
+    /// originally (batch 11) only a monster the player just bump-ATTACKED
+    /// this turn; batch 13 T2/T4 widened the same exclusion to a GIVE
+    /// target (`try_give_player`'s cheese stay-and-roll and potion-enrage
+    /// branches also pass their `mi` here) — a give is its own bribe/trap
+    /// mechanism, not a standing-your-ground nerve tactic, and must never
+    /// double up with the generic held/gave-ground read below (a give never
+    /// moves the player, so without this exclusion the target would always
+    /// read as "held ground" — the wrong move for a goblin, punished on top
+    /// of whatever the give itself already does). `None` from every other
+    /// action — talk/use/put-down/wait/a plain move/a becalmed-yield swap
+    /// pass `None` (talk is deliberately NOT excluded — talking at an
+    /// awe-able monster IS meant to read as holding ground, per batch 11
+    /// T3's "talk is a no-move action").
     ///
-    /// **Batch 11 T2 fix round** (review-found bug): the original shape
-    /// measured "cardinally adjacent" using `self.monsters[i]`'s position
-    /// AT CALL TIME — i.e. AFTER `monsters_act` had already chased the
-    /// monster back into adjacency. Consequence: a player who retreats in a
-    /// straight line from an ogre keeps it adjacent every turn (it chases
-    /// at the same speed and re-establishes adjacency), so it awe-becalmed
-    /// with the player taking zero damage — exactly the "stand tall, do
-    /// not flinch, do not retreat" canon inverted. Fixed by deciding
-    /// held-vs-fled from data that predates the chase entirely:
-    /// `pre_chase[i]` (the monster's position before `monsters_act` moved
-    /// it this turn, supplied by `monsters_act_and_resolve_awe`) and
-    /// `prev_player` (the player's own position before THIS turn's move).
-    /// A monster "holds" this turn — awe eligible — only if ALL of:
-    ///   - the player's own move did not INCREASE Manhattan distance to
-    ///     `pre_chase[i]` (comparing `prev_player` vs. `self.px/py` against
-    ///     that one fixed point — the monster's chase this same turn never
-    ///     enters the comparison, so it can't manufacture "holding ground"
-    ///     out of a retreat);
-    ///   - the player ends this turn cardinally adjacent to `pre_chase[i]`
-    ///     (Manhattan distance exactly 1 — a diagonal step can never
-    ///     satisfy this);
-    ///   - the monster wasn't bump-attacked this turn (`attacked != Some(i)`).
-    /// Held: `awe += 1`; crossing `awe_threshold` becalms it exactly like a
-    /// landed talk (`calm = true`, `Game::record_spare()`, batch 12 T2:
-    /// also feeds the torch — see that helper) — reusing the
-    /// existing becalm state rather than a parallel mechanism, so every
-    /// downstream mercy behavior (no chase/attack, yield-on-bump) works
-    /// unchanged. The log line reuses the monster's own `talk_lines`
-    /// stage-2 pool (the "crosses the threshold" stage already used by a
-    /// landed talk/give) rather than inventing new grounded copy — both
-    /// existing lines read fine without implying a conversation happened.
-    /// `CarryEvent::SpareWitnessed` fires too, the same hook every other
-    /// spare path (talk, give) already fires on becalming. Not held (fled,
-    /// approached-but-not-adjacent, never-was-adjacent, or attacked this
-    /// turn): `awe` resets to 0 — fleeing (or fighting) breaks the stare.
+    /// **Batch 11 T2 fix round** (review-found bug, preserved exactly):
+    /// held-vs-fled must be decided from data that PREDATES `monsters_act`'s
+    /// chase — `pre_chase[i]` (the monster's position before `monsters_act`
+    /// moved it this turn, supplied by `monsters_act_and_resolve_awe`) and
+    /// `prev_player` (the player's own position before THIS turn's move) —
+    /// never `self.monsters[i]`'s position AT CALL TIME (post-chase), or a
+    /// straight-line retreat at the same speed as a chasing monster
+    /// re-establishes adjacency every turn and manufactures "holding ground"
+    /// (or, for the goblin below, "never gave ground") for free.
     ///
-    /// Ordering note (unchanged from the original brief): the actual
-    /// becalm still resolves AFTER `monsters_act` runs (via
-    /// `monsters_act_and_resolve_awe`'s call order) — an ogre not yet calm
+    /// Two per-turn distance reads off that pre-chase snapshot, generic
+    /// across every awe-able kind:
+    ///   - `gave_ground`: was cardinally adjacent last turn (`old_dist == 1`)
+    ///     and the player's own move strictly INCREASED Manhattan distance
+    ///     to `pre_chase[i]` this turn — "stepped away while composed."
+    ///   - `held_adjacent`: WAS cardinally adjacent last turn (`old_dist ==
+    ///     1`, same precondition as `gave_ground`) AND the player's own
+    ///     position is UNCHANGED this turn (two T5 fix rounds — see
+    ///     `held_adjacent`'s own let-binding below for why both are
+    ///     required, not just `new_dist == 1` alone) — "stood planted." A
+    ///     fresh approach, a walk-past that merely happens to stay
+    ///     equidistant, or any other ordinary move is neither of these two
+    ///     — a neutral non-event, not scored as either move.
+    /// Both exclude a monster bump-attacked this turn (`attacked != Some(i)`
+    /// — attacking resets awe regardless, same as before batch 13).
+    ///
+    /// **batch 13 T5, the generic model**: `MonsterDef::awe_by_giving_ground`
+    /// picks which of the two IS this kind's awe move
+    /// (`did_awe_move`) and which is its mirror-opposite, punishable move
+    /// (`did_punished_move`) — `false` (the ogre, unchanged from batch 11):
+    /// awe move = `held_adjacent`, punished move = `gave_ground` (fleeing).
+    /// `true` (the goblin): awe move = `gave_ground`, punished move =
+    /// `held_adjacent` (standing your ground). Neither flag nor this
+    /// function names a specific kind — `contractor.rs`'s cartridge data
+    /// is what makes one kind "the ogre" and the other "the goblin."
+    ///
+    /// Doing the awe move: `awe += 1`; crossing `awe_threshold` becalms it
+    /// exactly like a landed talk (`calm = true`, `Game::record_spare()`,
+    /// batch 12 T2: also feeds the torch) — reusing the existing becalm
+    /// state rather than a parallel mechanism, so every downstream mercy
+    /// behavior (no chase/attack, yield-on-bump) works unchanged. The log
+    /// line reuses the monster's own `talk_lines` stage-2 pool (the
+    /// "crosses the threshold" stage already used by a landed talk/give)
+    /// rather than inventing new grounded copy. `CarryEvent::SpareWitnessed`
+    /// fires too, the same hook every other spare path already fires on
+    /// becalming.
+    ///
+    /// Doing anything else: `awe` resets to 0 (the stare/composure breaks).
+    /// If specifically the OPPOSITE, punishable move was made
+    /// (`did_punished_move`) and this kind's `MonsterDef::punish_wrong_move`
+    /// is set, it lands an explicit punishing hit on the player — the
+    /// monster's ordinary swing formula (`atk` + a `combat_rng` draw), never
+    /// a new damage path (mirrors the failed-talk/`monsters_act` player-hit
+    /// and T4's potion-enrage free swing). This hit is necessary — not
+    /// redundant with `monsters_act`'s own adjacent-attack — because the two
+    /// fire under different conditions: `monsters_act` only attacks a
+    /// monster that ends up BOTH adjacent AND not `stayed` this same turn
+    /// (e.g. a bare wait next to a goblin already takes that hit); a
+    /// STAYED monster (a landed talk) never attacks via `monsters_act`, so
+    /// holding your ground against a goblin via talk would otherwise cost
+    /// nothing — this hit closes that gap. A guaranteed-lethal punish is
+    /// handled exactly like `monsters_act`'s own attack-death and batch 11's
+    /// retaliation-death: `killer` set to this monster, no further monsters
+    /// processed this call.
+    ///
+    /// **Death guard**: if the player is already `dead` (from `monsters_act`
+    /// having just killed them earlier in this same
+    /// `monsters_act_and_resolve_awe` call), this function is a no-op —
+    /// awe/punish bookkeeping must never mutate hp/`killer` after the fatal
+    /// blow already landed and was attributed.
+    ///
+    /// Ordering note (unchanged from batch 11): the actual becalm/punish
+    /// still resolves AFTER `monsters_act` runs (via
+    /// `monsters_act_and_resolve_awe`'s call order) — a not-yet-calm monster
     /// still gets its own `monsters_act` turn (attack or chase) before this
-    /// resolves, matching "you endure its hit and your nerve builds." Only
-    /// the DATA the hold-vs-flee decision reads from is pre-chase now, not
+    /// resolves. Only the DATA the move-read decision uses is pre-chase, not
     /// the call's position in the turn sequence.
     fn resolve_awe(&mut self, attacked: Option<usize>, prev_player: (i32, i32), pre_chase: &[(i32, i32)]) {
+        if self.dead {
+            return;
+        }
         for i in 0..self.monsters.len() {
             let kind = self.monsters[i].kind;
-            let threshold = Monster::stats(kind).awe_threshold;
+            let stats = Monster::stats(kind);
+            let threshold = stats.awe_threshold;
             if threshold == 0 || self.monsters[i].calm {
                 continue; // not awe-able, or already calmed some other way
             }
             let (mx, my) = pre_chase[i];
             let old_dist = (prev_player.0 - mx).abs() + (prev_player.1 - my).abs();
             let new_dist = (self.px - mx).abs() + (self.py - my).abs();
-            let held = new_dist == 1 && new_dist <= old_dist && attacked != Some(i);
-            if held {
+            let gave_ground = old_dist == 1 && new_dist > old_dist && attacked != Some(i);
+            // batch 13 T5 fix round (found via sim measurement, same
+            // discipline as batch 11 T2's own fix round): `held_adjacent`
+            // requires `old_dist == 1` too — i.e. the player must have
+            // ALREADY been cardinally adjacent last turn, not merely have
+            // arrived at adjacency this turn by approaching from farther
+            // away. Without this, a single step that closes distance from
+            // outside melee range straight to adjacent (`old_dist > 1,
+            // new_dist == 1`) satisfies the bare `new_dist <= old_dist`
+            // reading — harmless for the ogre (approaching it was already
+            // its rewarded move pre-batch-13), but for the goblin
+            // (`held_adjacent` is now the PUNISHED move) it meant every
+            // first approach to a goblin — an unavoidable, one-time event
+            // for any route that passes it — was scored identically to
+            // "planting yourself and refusing to give ground," punishing
+            // mere proximity before the player ever had a turn to react.
+            // Measured effect before this fix: `--sim 5000 --policy
+            // tactical-pacifist` collapsed from a healthy diplomat-favors
+            // mercy result to 30/5000 wins (0.6%, deaths_combat 4965) —
+            // clearly a bug, not "diplomacy is harder now." Requiring
+            // `old_dist == 1` makes a fresh approach a neutral non-event
+            // (falls through to the `else` branch below with no punish,
+            // same as any other non-awe non-punish turn) and restores the
+            // symmetric shape with `gave_ground` above (both now require
+            // "was already toe-to-toe last turn").
+            //
+            // **Second fix round finding, also via sim measurement**: even
+            // with `old_dist == 1` required, `held_adjacent` still read
+            // "STAYED at distance <= 1" purely by the DISTANCE metric,
+            // which a player who is genuinely MOVING can satisfy for many
+            // consecutive turns — e.g. walking down a corridor that runs
+            // exactly one tile from a stationary goblin's alcove keeps
+            // Manhattan distance 1 to it turn after turn, even though the
+            // player is making real progress, not "planting" anything.
+            // `held_adjacent` must mean STANDING STILL ("a bare wait...
+            // stand planted," "the planted target" — arc doc), so it now
+            // also requires the player's own position to be UNCHANGED this
+            // turn (`(self.px, self.py) == prev_player`) — true only for a
+            // genuine no-move action (wait/talk/give/use/put-down), never
+            // an ordinary move, however the distance metric alone reads.
+            // Measured effect before this second fix: `--sim 5000 --policy
+            // tactical-pacifist` was still catastrophically down at
+            // ~150-190/5000 (versus its 2985/5000 pre-batch-13 baseline)
+            // purely from routine corridor traffic near goblins, nothing to
+            // do with any bot mistake or the punish mechanic's intended
+            // scope at all.
+            let held_adjacent =
+                old_dist == 1 && new_dist <= old_dist && attacked != Some(i) && (self.px, self.py) == prev_player;
+            // batch 13 T5 (mandatory telegraphing, arc doc §315): a legible
+            // per-kind cue whenever the player ends this turn cardinally
+            // adjacent to a not-yet-calm awe-able monster, regardless of
+            // which move they made — so the tell is seen BEFORE a
+            // wrong-move death, not only after.
+            if new_dist == 1 && !stats.awe_tell.is_empty() {
+                self.log(String::from(stats.awe_tell));
+            }
+            let did_awe_move = if stats.awe_by_giving_ground { gave_ground } else { held_adjacent };
+            let did_punished_move = if stats.awe_by_giving_ground { held_adjacent } else { gave_ground };
+            if did_awe_move {
                 self.monsters[i].awe = self.monsters[i].awe.saturating_add(1);
                 if self.monsters[i].awe >= threshold {
                     self.monsters[i].calm = true;
@@ -3299,7 +3437,21 @@ impl Game {
                     self.carry_event(CarryEvent::SpareWitnessed);
                 }
             } else {
-                self.monsters[i].awe = 0; // fleeing (or fighting) breaks the stare
+                self.monsters[i].awe = 0; // composure breaks
+                if did_punished_move && stats.punish_wrong_move {
+                    let name = self.mob_name(kind);
+                    let dmg = stats.atk + self.combat_rng.range(0, 2);
+                    self.hp -= dmg;
+                    self.fx_hit = Some((self.px, self.py));
+                    if self.hp <= 0 {
+                        self.hp = 0;
+                        self.dead = true;
+                        self.killer = Some(name);
+                        self.log(GAME.strings.killed_by.replace("{}", name));
+                        return; // mirrors monsters_act's own attack-death early return
+                    }
+                    self.log(GAME.strings.hit_by.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
+                }
             }
         }
     }

@@ -287,6 +287,10 @@ const MONSTERS: [MonsterDef; 5] = [
         // batch 12 R4 [TUNE]: cruelty to the near-harmless — the most
         // despicable kill in the roster.
         kill_valence: 0,
+        // batch 13 T5: not awe-able (threshold 0) — both fields inert.
+        awe_by_giving_ground: false,
+        punish_wrong_move: false,
+        awe_tell: "",
     },
     MonsterDef {
         hp: 6,
@@ -300,10 +304,20 @@ const MONSTERS: [MonsterDef; 5] = [
         passive: false,
         bump: BumpResponse::Fight,
         retaliation: 0,
-        awe_threshold: 0,
+        // [TUNE] batch 13 T5: the goblin's mirror of the ogre's stand-tall
+        // awe — 3 turns of GIVING GROUND (not holding) becalms it. Same
+        // starting magnitude as the ogre's, task 7 tunes both.
+        awe_threshold: 3,
         // batch 12 R4 [TUNE]: a middling threat — more forgivable than the
         // rat, still below self-defense.
         kill_valence: 15,
+        // batch 13 T5 (arc doc "Goblin -- awe by giving ground"): the
+        // goblin's awe move is the OGRE'S mirror — walk backward while
+        // composed, not hold. Standing still against it (the ogre's own
+        // correct move) is the WRONG move here and gets punished.
+        awe_by_giving_ground: true,
+        punish_wrong_move: true,
+        awe_tell: "The goblin shifts its weight, wanting you to give it room.",
     },
     MonsterDef {
         hp: 13,
@@ -326,6 +340,15 @@ const MONSTERS: [MonsterDef; 5] = [
         // — killing it reads closest to self-defense, the least despicable
         // of the three, though still below the neutral midpoint.
         kill_valence: 30,
+        // batch 13 T5 (arc doc "Ogre -- awe by holding", unchanged from
+        // batch 11's shape, now formalized alongside the goblin's mirror):
+        // the ogre's awe move is HOLDING (the default, `false`). Fleeing it
+        // is the WRONG move and gets punished — the guaranteed `retaliation`
+        // above is the price of attacking it; this is the separate price of
+        // running from it.
+        awe_by_giving_ground: false,
+        punish_wrong_move: true,
+        awe_tell: "The ogre plants itself, daring you to hold your ground.",
     },
     // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
     // construction — `passive` keeps it out of `monsters_act` entirely, and
@@ -350,6 +373,10 @@ const MONSTERS: [MonsterDef; 5] = [
         // this table) — irrelevant, kept sane rather than implying a
         // meaning.
         kill_valence: 0,
+        // batch 13 T5: not awe-able (threshold 0) — both fields inert.
+        awe_by_giving_ground: false,
+        punish_wrong_move: false,
+        awe_tell: "",
     },
     // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
     // `bump: Shove` pushes it one tile if the destination is plain floor,
@@ -374,6 +401,10 @@ const MONSTERS: [MonsterDef; 5] = [
         // batch 12 R4: un-killable by construction — irrelevant, same as
         // TRAINER above.
         kill_valence: 0,
+        // batch 13 T5: not awe-able (threshold 0) — both fields inert.
+        awe_by_giving_ground: false,
+        punish_wrong_move: false,
+        awe_tell: "",
     },
 ];
 

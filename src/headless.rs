@@ -231,6 +231,25 @@ pub(crate) fn tactical_routing_map(g: &Game) -> Vec<Tile> {
     m
 }
 
+// batch 13 T5 note: an earlier draft of this bot tried a SECOND routing view
+// here — `tactical_routing_map` plus a goblin's cardinal neighbors also
+// walled off, so the diplomat's BFS path gave every goblin a standing wide
+// berth. Measured, and dropped: it made the objective unreachable under the
+// avoidant view FAR more often than `tactical_routing_map` alone (goblins are
+// common enough that walling their neighbors too routinely sealed real
+// corridors), which repeatedly tripped the existing stall/fallback machinery
+// into the plain, fully monster-oblivious `routing_map` for long stretches —
+// net worse than not having the extra view at all. The actual fix for the
+// diplomat's near-total collapse turned out to live in the engine, not the
+// bot: see `Game::resolve_awe`'s `held_adjacent` doc comment for the two fix
+// rounds (requiring `old_dist == 1`, then requiring the player's OWN position
+// be unchanged this turn) that make ordinary approach/walk-past traffic near
+// a goblin a neutral non-event again, same as it always was pre-batch-13.
+// With those two fixes, `tactical_routing_map` (below, unchanged from batch
+// 10) is sufficient for both tactical policies — the goblin-specific
+// give-ground preference right below stays scoped to the rare, genuinely
+// forced (cornered) case, not routine travel.
+
 const SIM_TURN_CAP: u32 = 6000;
 /// Batch 12 R3: the tactical bots' rest branch never fires at or below this
 /// much light left — a bot heuristic (not a `BalanceDef` field; the engine
@@ -777,20 +796,86 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                         (nx - m.x).abs().max((ny - m.y).abs()) > 1
                     });
                     if escapes {
+                        // batch 13 T5 note: a step that already escapes needs
+                        // no goblin-specific handling — if `m` is a
+                        // give-ground kind, a step that increases Chebyshev
+                        // distance beyond 1 also increases Manhattan
+                        // distance, so it already satisfies `Game::
+                        // resolve_awe`'s `gave_ground` (the REWARDED move)
+                        // for free. If `m` is a hold-type kind (the ogre),
+                        // this does risk the new punish hit on an occasional
+                        // flee — measured as strictly cheaper than the
+                        // alternative of forcing the bot to never flee an
+                        // ogre at all (see the fix-round note below).
                         step
                     } else {
-                        // batch 10 T2 fix round: the diplomat (TacticalPacifist)
-                        // must talk, not swing, when cornered — same
-                        // never-kill invariant the ordinary pacifist `blocked`
-                        // branch below already enforces on a normal step.
-                        // `Policy::Pacifist` is included in the match for
-                        // symmetry with that branch, even though the
-                        // non-tactical greedy/pacifist bots never reach this
-                        // `tactical`-gated arm today.
-                        if matches!(policy, Policy::Pacifist | Policy::TacticalPacifist) {
-                            cornered_talk = true;
+                        // Cornered: no step escapes `m`'s melee range this
+                        // turn. batch 13 T5 (goblinoid awe): a GIVE-GROUND
+                        // kind (the goblin) needs a different answer here
+                        // than the pre-existing "hold via talk" — holding is
+                        // its PUNISHED move. Try the single, exact reverse of
+                        // `m`'s direction (deterministic, no wider search);
+                        // if that tile isn't legally walkable this turn, fall
+                        // back to the pre-existing cornered-talk (safe for a
+                        // goblin regardless, since `Game::try_talk_player`
+                        // excludes a give-ground kind from awe/punish
+                        // bookkeeping entirely — talk is its own separate,
+                        // pre-existing mercy path).
+                        //
+                        // Deliberately NOT a search over every direction
+                        // that merely increases distance (an earlier,
+                        // wider-search version of this branch): that
+                        // repeatedly abandoned the objective-seeking route
+                        // for several turns per goblin (the 3-turn awe
+                        // threshold), wandering the bot into whatever danger
+                        // happened to sit in an arbitrary "away" direction —
+                        // measured as strictly WORSE than never having a
+                        // goblin-specific override in this branch at all
+                        // (`--sim 5000 --policy tactical-pacifist`: ~19-192
+                        // wins with that wider search vs. 1939 with no
+                        // override vs. this narrow, single-direction version
+                        // — see the task-5 report for the full progression).
+                        //
+                        // An ogre-like (hold-type) threat gets NO special
+                        // case: it keeps the pre-existing "talk in place"
+                        // cornered answer unchanged, matching batch 11 T3
+                        // exactly.
+                        let stats = Monster::stats(m.kind);
+                        let give_ground_kind =
+                            stats.awe_threshold > 0 && stats.punish_wrong_move && stats.awe_by_giving_ground;
+                        let reverse_step = if give_ground_kind
+                            && matches!(policy, Policy::Pacifist | Policy::TacticalPacifist)
+                        {
+                            let (rdx, rdy) = (-tdx, -tdy);
+                            SIM_DIRS.iter().position(|&d| d == (rdx, rdy)).filter(|&b| {
+                                let (dx, dy) = SIM_DIRS[b];
+                                let (nx, ny) = (g.px + dx, g.py + dy);
+                                in_map(nx, ny)
+                                    && !matches!(g.map[idx(nx, ny)], Tile::Wall | Tile::Pit)
+                                    && step_is_live(nx, ny, dx, dy)
+                                    && !g.monsters.iter().any(|mm| mm.x == nx && mm.y == ny)
+                            })
+                        } else {
+                            None
+                        };
+                        match reverse_step {
+                            Some(b) => Some(b as u8),
+                            None => {
+                                // batch 10 T2 fix round: the diplomat
+                                // (TacticalPacifist) must talk, not swing,
+                                // when cornered — same never-kill invariant
+                                // the ordinary pacifist `blocked` branch
+                                // below already enforces on a normal step.
+                                // `Policy::Pacifist` is included in the match
+                                // for symmetry with that branch, even though
+                                // the non-tactical greedy/pacifist bots never
+                                // reach this `tactical`-gated arm today.
+                                if matches!(policy, Policy::Pacifist | Policy::TacticalPacifist) {
+                                    cornered_talk = true;
+                                }
+                                SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| b as u8)
+                            }
                         }
-                        SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| b as u8)
                     }
                 }
                 None => step,

@@ -1239,6 +1239,150 @@ mod tests {
         assert_eq!(g.spared, 0, "retreat is not standing tall — no spare should be recorded");
     }
 
+    /// Batch 13 T5 (goblinoid awe, arc doc "Goblin -- awe by giving
+    /// ground"): the goblin is the ogre's mirror -- stepping AWAY from a
+    /// cardinally-adjacent goblin, repeatedly, builds `Monster.awe` and
+    /// becalms it at `awe_threshold`, exactly like standing tall does for
+    /// an ogre.
+    #[test]
+    fn giving_ground_awes_a_goblin_into_calm() {
+        let mut g = blank_room(1);
+        let (gx, gy) = (g.px + 1, g.py); // goblin starts cardinally adjacent, to the east
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false });
+        let thr = Monster::stats(GOBLIN).awe_threshold as usize;
+        assert!(thr > 0, "goblin must be awe-able");
+        for _ in 0..thr {
+            g.apply_input(2); // WEST: step directly away from the goblin each turn
+        }
+        assert!(
+            g.monsters.iter().any(|m| m.kind == GOBLIN && m.calm),
+            "giving ground repeatedly should awe-becalm the goblin"
+        );
+        assert_eq!(g.kills, 0, "giving ground is not violence — no kill");
+    }
+
+    /// Batch 13 T5 PROBE (batch-11-style): a straight-line retreat from a
+    /// goblin that KEEPS it adjacent every turn (it chases at the same
+    /// speed) must still count as GIVING GROUND and build awe, because the
+    /// read is `old_dist == 1 && new_dist > old_dist` against the
+    /// PRE-CHASE snapshot, never the post-chase (post-monsters_act)
+    /// adjacency. This is the exact mirror of `straight_retreat_from_ogre_
+    /// does_not_awe` above, proving the SAME snapshot discipline serves
+    /// both kinds correctly even though they read the formula oppositely.
+    #[test]
+    fn straight_retreat_from_goblin_builds_awe_despite_post_chase_adjacency() {
+        let mut g = blank_room(1);
+        let (gx, gy) = (g.px + 1, g.py);
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false });
+        let thr = Monster::stats(GOBLIN).awe_threshold as usize;
+        assert!(thr > 1, "test needs room to observe partial awe before becalming");
+        for _ in 0..(thr - 1) {
+            g.apply_input(2); // WEST — straight-line retreat, chased back to adjacent every turn
+        }
+        let goblin = g.monsters.iter().find(|m| m.kind == GOBLIN).expect("goblin still present");
+        assert_eq!(
+            (g.px - goblin.x).abs() + (g.py - goblin.y).abs(),
+            1,
+            "fixture: the goblin must have re-caught up to cardinal adjacency by chasing \
+             (otherwise this test isn't probing the pre-chase-vs-post-chase distinction)"
+        );
+        assert!(
+            goblin.awe > 0,
+            "awe must have built from GIVING GROUND, read from the pre-chase snapshot, \
+             not the post-chase adjacency this fixture confirms above"
+        );
+        assert!(!goblin.calm, "should not yet be calm — one turn short of threshold");
+    }
+
+    /// Batch 13 T5: HOLDING (staying planted, a bare wait) adjacent to a
+    /// goblin is the WRONG move for it — it resets `awe` to 0 AND lands an
+    /// explicit punish hit (`MonsterDef::punish_wrong_move`), on top of the
+    /// goblin's own ordinary `monsters_act` attack (which also fires this
+    /// same turn, since the goblin is adjacent, seeing, non-calm, and not
+    /// stayed by a wait) — two separate hits this one turn, each the
+    /// goblin's own swing formula (`atk` + a `combat_rng` draw in [0,1]).
+    #[test]
+    fn holding_against_a_goblin_resets_awe_and_lands_punish_hit() {
+        let mut g = blank_room(1);
+        let (gx, gy) = (g.px + 1, g.py);
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false });
+        let hp0 = g.hp;
+        let atk = Monster::stats(GOBLIN).atk;
+        g.apply_input(4); // WAIT — stand planted, adjacent to the goblin
+        let goblin = g.monsters.iter().find(|m| m.kind == GOBLIN).expect("goblin still present");
+        assert_eq!(goblin.awe, 0, "holding against a goblin must reset its awe (the wrong move)");
+        assert!(!goblin.calm, "must not becalm from the wrong move");
+        let dmg = hp0 - g.hp;
+        assert!(
+            (2 * atk..=2 * atk + 2).contains(&dmg),
+            "expected TWO hits this turn (monsters_act's ordinary adjacent attack \
+             plus the punish hit), each in [{atk},{}], got {dmg}",
+            atk + 1
+        );
+    }
+
+    /// Batch 13 T5: the ogre is UNCHANGED from batch 11 — holding still
+    /// builds its awe (see `standing_tall_awes_an_ogre_into_calm` above,
+    /// still green). What's NEW: fleeing an adjacent ogre now lands an
+    /// explicit punish hit (`MonsterDef::punish_wrong_move`), where before
+    /// batch 13 a flee simply reset `awe` with no cost. Here the player's
+    /// own move increases distance the SAME turn, so the ogre's own
+    /// `monsters_act` attack does NOT fire (it never re-catches this same
+    /// turn) — exactly one hit, from the punish path alone.
+    #[test]
+    fn fleeing_an_ogre_lands_a_punish_hit() {
+        let mut g = blank_room(1);
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false });
+        let hp0 = g.hp;
+        let atk = Monster::stats(OGRE).atk;
+        g.apply_input(2); // WEST — step directly away (gives ground: the WRONG move for an ogre)
+        let ogre = g.monsters.iter().find(|m| m.kind == OGRE).expect("ogre still present");
+        assert_eq!(ogre.awe, 0, "fleeing must reset the ogre's awe");
+        assert!(!ogre.calm, "must not becalm from the wrong move");
+        let dmg = hp0 - g.hp;
+        assert!(
+            (atk..=atk + 1).contains(&dmg),
+            "expected exactly one punish hit (the ogre doesn't re-catch the player \
+             within this same turn), got {dmg}"
+        );
+    }
+
+    /// Batch 13 T5: the moves are opposite and mutually fatal — the SAME
+    /// player action (a bare wait, holding ground) is the CORRECT move
+    /// against an ogre (builds awe) and the WRONG move against a goblin
+    /// (resets awe, and — per the test above — is punished). One turn,
+    /// one action, both creatures present, opposite outcomes.
+    #[test]
+    fn holding_ground_is_correct_for_ogre_but_wrong_for_goblin() {
+        let mut g = blank_room(1);
+        let (ox, oy) = (g.px + 1, g.py); // ogre to the east
+        let (gx, gy) = (g.px - 1, g.py); // goblin to the west
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false });
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false });
+        g.apply_input(4); // WAIT — hold ground against both
+        let ogre = g.monsters.iter().find(|m| m.kind == OGRE).unwrap();
+        let goblin = g.monsters.iter().find(|m| m.kind == GOBLIN).unwrap();
+        assert_eq!(ogre.awe, 1, "holding is the CORRECT move against an ogre — awe should build");
+        assert_eq!(goblin.awe, 0, "holding is the WRONG move against a goblin — awe resets");
+    }
+
+    /// Batch 13 T5: a lethal punish hit is attributed exactly like any
+    /// other combat death (`monsters_act`'s own attack-death, batch 11's
+    /// retaliation-death) — `dead = true` and `killer` set to the
+    /// punishing monster's name, not left stale or blamed on the dark.
+    #[test]
+    fn lethal_punish_hit_sets_killer_to_the_punishing_monster() {
+        let mut g = blank_room(1);
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false });
+        let ogre_name = g.theme().mobs[OGRE as usize];
+        g.hp = 1; // guarantee the punish hit alone is lethal
+        g.apply_input(2); // WEST — flees the ogre, the wrong move, punished
+        assert!(g.dead, "a lethal punish hit must set dead");
+        assert_eq!(g.killer, Some(ogre_name), "killer must attribute to the punishing monster");
+    }
+
     /// Batch 12 R3 ("light as grace" — the grace half): a plain wait while
     /// hurt, with no non-calm hostile cardinally adjacent, heals
     /// `BalanceDef::rest_heal` HP (capped at `maxhp`). HP was the
