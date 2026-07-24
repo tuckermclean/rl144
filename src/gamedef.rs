@@ -267,6 +267,17 @@ pub(crate) struct MonsterDef {
     /// kind (never read — the `awe_threshold == 0` guard in `resolve_awe`
     /// skips the kind before this field would ever be reached).
     pub(crate) awe_tell: &'static str,
+    /// batch 13 T6 (the donkey-follow seed, arc doc's three-rung kindness
+    /// ladder, rung 2: "follows you (schmoozed)"): once this kind reaches
+    /// `Monster.calm` — the SAME hashed field a talk-becalm already sets, no
+    /// new state invented — it enters follow-mode in the overworld (see
+    /// `Game::overworld_follow_step`): one greedy step toward the player
+    /// every overworld turn, carried across a `Tile::ScreenLink` crossing
+    /// (`Game::cross_screen_link`/`Game::take_calm_follower`), but never
+    /// through `Tile::Hole` into the dungeon (rung 3 — loving you enough to
+    /// descend — is explicitly a later batch). `false` for every kind but
+    /// the donkey; irrelevant outside the overworld (nothing else sets it).
+    pub(crate) follows_when_calm: bool,
 }
 
 /// A monster's reaction to a player's bump-into (batch 9 T1, SIGN-OFF ASK

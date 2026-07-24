@@ -1545,6 +1545,28 @@ impl Game {
         }
     }
 
+    /// Pull a calm, `follows_when_calm` monster out of the current screen's
+    /// monster list, if there is one — the piece that lets
+    /// `Game::cross_screen_link` carry a followed monster across a screen
+    /// boundary (batch 13 T6, the donkey-follow seed's rung 2). Must run
+    /// BEFORE `Game::stash_level`: that snapshots whatever is left in
+    /// `self.monsters` verbatim into the old screen's `LevelState`, so a
+    /// follower has to be removed first or it gets left behind — which is
+    /// exactly the desired behavior for a NON-following (not yet calm)
+    /// monster, just not for a follower. Overworld-only; a no-op (and
+    /// irrelevant) anywhere else, since nothing outside the overworld
+    /// cartridge data ever sets the flag.
+    fn take_calm_follower(&mut self) -> Option<Monster> {
+        if self.world != WorldId::Overworld {
+            return None;
+        }
+        let i = self
+            .monsters
+            .iter()
+            .position(|m| m.calm && Monster::stats(m.kind).follows_when_calm)?;
+        Some(self.monsters.remove(i))
+    }
+
     /// Leave the current world for storage in `Game::worlds` (batch 6 T1):
     /// stash its live level, then write its `WorldState` into the vector —
     /// updating an existing slot in place if this world was visited (and
@@ -1824,6 +1846,10 @@ impl Game {
     /// same mechanism `return_to_source` uses for a portal's exact return
     /// tile).
     fn cross_screen_link(&mut self, row: i32, east: bool) {
+        // batch 13 T6: pull a calm follower out BEFORE the stash below
+        // snapshots the old screen's monster list, so it travels with the
+        // player instead of being left behind in that screen's `LevelState`.
+        let follower = self.take_calm_follower();
         self.stash_level();
         self.depth = if east { self.depth + 1 } else { self.depth - 1 };
         let d = self.depth as usize - 1;
@@ -1851,7 +1877,39 @@ impl Game {
                 self.compute_fov();
             }
         }
+        // batch 13 T6: drop the carried follower onto the new screen, at a
+        // free cardinal neighbor of the player's arrival tile — never onto
+        // the player, a wall, a pit, or another monster (same legality as
+        // `shove_monster_off`'s own neighbor search).
+        if let Some(mut m) = follower {
+            let (fx, fy) = self.free_neighbor_near((arrive_x, row));
+            m.x = fx;
+            m.y = fy;
+            self.monsters.push(m);
+        }
         self.log(GAME.strings.overworld_cross.replace("{}", screen.name));
+    }
+
+    /// A free cardinal neighbor of `near` (not a wall, not a pit, not the
+    /// player's own tile, not another monster's tile) — falls back to
+    /// `near` itself if every neighbor is blocked (never expected on this
+    /// batch's placeholder screens, which are wide open fields; a future,
+    /// denser screen could in principle hit it, and landing exactly on the
+    /// link's counterpart tile the player just stood on is a harmless
+    /// worst case, not a panic). Used by `cross_screen_link` to place a
+    /// carried-across follower beside, not on top of, the player.
+    fn free_neighbor_near(&self, near: (i32, i32)) -> (i32, i32) {
+        [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .iter()
+            .map(|&(dx, dy)| (near.0 + dx, near.1 + dy))
+            .find(|&(tx, ty)| {
+                in_map(tx, ty)
+                    && self.map[idx(tx, ty)] != Tile::Wall
+                    && self.map[idx(tx, ty)] != Tile::Pit
+                    && (tx, ty) != (self.px, self.py)
+                    && !self.monsters.iter().any(|m| (m.x, m.y) == (tx, ty))
+            })
+            .unwrap_or(near)
     }
 
     /// Cross a `Tile::Hole` (batch 9 T1, story §9-J prep): the overworld's
@@ -3252,7 +3310,60 @@ impl Game {
         self.monsters_act(stayed);
         self.resolve_awe(attacked, prev_player, &pre_chase);
         self.resolve_becalm_dividend();
+        self.overworld_follow_step();
         self.compute_fov();
+    }
+
+    /// Overworld-only follow step (batch 13 T6, the donkey-follow seed, rung
+    /// 2 of the arc doc's three-rung kindness ladder): every monster that is
+    /// BOTH `Monster.calm` (the SAME hashed field a talk-becalm already
+    /// sets — no new state invented) and `MonsterDef::follows_when_calm`
+    /// takes one greedy step toward the player, once per overworld turn.
+    /// Deliberately separate from `Game::monsters_act`'s own per-monster
+    /// loop (which skips a calm/passive monster outright, unconditionally,
+    /// and stays that way — this is a distinct, overworld-only movement
+    /// pass, not a change to the existing hostile-AI behavior). A no-op
+    /// outside the overworld — irrelevant there anyway, since nothing sets
+    /// the flag on a dungeon-only kind. Called from the shared
+    /// `monsters_act_and_resolve_awe` tail, so every turn-advancing action
+    /// (move/wait/talk/give/use/put-down/screen-link) carries it; never
+    /// called on a hole-crossing, since `Game::cross_into_dungeon` doesn't
+    /// route through this method at all (the follower is simply never
+    /// pulled out of the overworld's monster list — see `WorldId::Overworld`
+    /// and this batch's status-log entry for why that's the whole
+    /// "won't take the hole" mechanism, not a special case here).
+    fn overworld_follow_step(&mut self) {
+        if self.world != WorldId::Overworld {
+            return;
+        }
+        let (px, py) = (self.px, self.py);
+        for i in 0..self.monsters.len() {
+            if !self.monsters[i].calm || !Monster::stats(self.monsters[i].kind).follows_when_calm {
+                continue;
+            }
+            let (mx, my) = (self.monsters[i].x, self.monsters[i].y);
+            if (mx, my) == (px, py) {
+                continue; // defensive: never expected to already be on the player's tile
+            }
+            let (dx, dy) = ((px - mx).signum(), (py - my).signum());
+            // Diagonal step first, then each axis alone — same fallback
+            // order `monsters_act`'s own chase step uses.
+            for (tx, ty) in [(mx + dx, my + dy), (mx + dx, my), (mx, my + dy)] {
+                if (tx, ty) == (mx, my) || (tx, ty) == (px, py) {
+                    continue;
+                }
+                if in_map(tx, ty)
+                    && self.map[idx(tx, ty)] != Tile::Wall
+                    && self.map[idx(tx, ty)] != Tile::Pit
+                    && !self.monsters.iter().any(|m| m.x == tx && m.y == ty)
+                    && !self.blocks.iter().any(|&b| b == (tx, ty))
+                {
+                    self.monsters[i].x = tx;
+                    self.monsters[i].y = ty;
+                    break;
+                }
+            }
+        }
     }
 
     /// Standing tall / giving ground (batch 11 T2 the ogre; batch 13 T5 the

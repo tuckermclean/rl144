@@ -4273,4 +4273,93 @@ mod tests {
         let view2 = tactical_routing_map(&g);
         assert_ne!(view2[idx(mx, my)], Tile::Wall, "a becalmed monster tile must stay walkable");
     }
+
+    // ---------- Batch 13 T6: the donkey-follow seed (rung 2) ----------
+
+    /// An aloof (rung 1, non-calm) donkey does NOT follow — `Game::
+    /// overworld_follow_step` only moves a monster that's both `calm` AND
+    /// `follows_when_calm`, so a player move in the overworld must leave it
+    /// exactly where it was.
+    #[test]
+    fn aloof_donkey_does_not_follow_in_overworld() {
+        let mut g = blank_room(1);
+        g.world = WorldId::Overworld;
+        g.monsters.push(Monster { x: 6, y: 6, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
+        let before = (g.monsters[0].x, g.monsters[0].y);
+        g.try_move_player(1, 0);
+        assert_eq!((g.monsters[0].x, g.monsters[0].y), before, "an aloof (non-calm) donkey does not follow");
+    }
+
+    /// A `calm` donkey (rung 2, schmoozed to the top `DONKEY_TALK` rung)
+    /// steps toward the player once per overworld turn, closing distance —
+    /// even as the player's own move (a `try_move_player` step, which also
+    /// runs the follow step in the same turn) is itself moving away, the
+    /// follow step must land the donkey strictly closer to the player's NEW
+    /// position than standing still would have left it (isolates the
+    /// follow step's own contribution from the player's own move, since a
+    /// Chebyshev distance can hold steady if both moves happen to offset).
+    #[test]
+    fn calm_donkey_follows_player_in_overworld() {
+        let mut g = blank_room(1);
+        g.world = WorldId::Overworld;
+        let start = (6, 6);
+        g.monsters.push(Monster { x: start.0, y: start.1, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: true, awe: 0, dividend_paid: false });
+        g.try_move_player(1, 0); // any turn-advancing action carries the follow step
+        let dist_if_it_had_stood_still = (g.px - start.0).abs().max((g.py - start.1).abs());
+        let dist_now = (g.px - g.monsters[0].x).abs().max((g.py - g.monsters[0].y).abs());
+        assert_ne!((g.monsters[0].x, g.monsters[0].y), start, "the donkey actually moved");
+        assert!(dist_now < dist_if_it_had_stood_still, "a calm follower closes distance toward the player each overworld turn");
+    }
+
+    /// Follow never lands the donkey on the player's own tile or a wall,
+    /// across several consecutive turns of closing in.
+    #[test]
+    fn follow_step_never_lands_on_player_or_wall() {
+        let mut g = blank_room(1);
+        g.world = WorldId::Overworld;
+        g.monsters.push(Monster { x: 6, y: 6, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: true, awe: 0, dividend_paid: false });
+        for _ in 0..10 {
+            g.wait_turn();
+            assert_ne!((g.monsters[0].x, g.monsters[0].y), (g.px, g.py), "follow step never lands on the player's tile");
+            assert_ne!(g.map[idx(g.monsters[0].x, g.monsters[0].y)], Tile::Wall, "follow step never lands on a wall");
+        }
+    }
+
+    /// A calm donkey does NOT descend the hole — crossing `Tile::Hole` into
+    /// the root dungeon leaves it behind in the overworld (rung 3, loving
+    /// you enough to follow into the dark, is explicitly a later batch).
+    #[test]
+    fn calm_donkey_does_not_follow_through_the_hole() {
+        let mut g = Game::new_overworld(7);
+        let di = g.monsters.iter().position(|m| m.kind == DONKEY).expect("donkey on screen 1");
+        g.monsters[di].calm = true;
+        let (hx, hy) = (0..COLS as i32 * MAP_H as i32)
+            .map(|i| (i % COLS as i32, i / COLS as i32))
+            .find(|&(x, y)| g.map[idx(x, y)] == Tile::Hole)
+            .expect("screen 1 must have a hole");
+        step_onto(&mut g, hx, hy);
+        assert_eq!(g.world, WorldId::Seed(7), "crossing the hole enters the root dungeon");
+        assert!(!g.monsters.iter().any(|m| m.kind == DONKEY), "the donkey stays behind in the overworld, not carried into the dungeon");
+    }
+
+    /// A calm donkey DOES cross a `=` screen-link with the player — the
+    /// cross-link follow carry (`Game::take_calm_follower` +
+    /// `Game::cross_screen_link`'s reinsertion), distinct from the hole
+    /// exclusion above.
+    #[test]
+    fn calm_donkey_follows_across_a_screen_link() {
+        let mut g = Game::new_overworld(5);
+        let di = g.monsters.iter().position(|m| m.kind == DONKEY).expect("donkey on screen 1");
+        g.monsters[di].calm = true;
+        let (lx, ly) = (0..COLS as i32 * MAP_H as i32)
+            .map(|i| (i % COLS as i32, i / COLS as i32))
+            .find(|&(x, y)| matches!(g.map[idx(x, y)], Tile::ScreenLink(true)))
+            .expect("screen 1's east link");
+        step_onto(&mut g, lx, ly);
+        assert_eq!(g.depth, 2, "crossed to screen 2");
+        assert!(
+            g.monsters.iter().any(|m| m.kind == DONKEY && m.calm),
+            "the calm donkey is carried across the screen-link with the player"
+        );
+    }
 }

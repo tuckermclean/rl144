@@ -291,6 +291,7 @@ const MONSTERS: [MonsterDef; 5] = [
         awe_by_giving_ground: false,
         punish_wrong_move: false,
         awe_tell: "",
+        follows_when_calm: false,
     },
     MonsterDef {
         hp: 6,
@@ -318,6 +319,7 @@ const MONSTERS: [MonsterDef; 5] = [
         awe_by_giving_ground: true,
         punish_wrong_move: true,
         awe_tell: "The goblin shifts its weight, wanting you to give it room.",
+        follows_when_calm: false,
     },
     MonsterDef {
         hp: 13,
@@ -349,6 +351,7 @@ const MONSTERS: [MonsterDef; 5] = [
         awe_by_giving_ground: false,
         punish_wrong_move: true,
         awe_tell: "The ogre plants itself, daring you to hold your ground.",
+        follows_when_calm: false,
     },
     // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
     // construction — `passive` keeps it out of `monsters_act` entirely, and
@@ -377,6 +380,7 @@ const MONSTERS: [MonsterDef; 5] = [
         awe_by_giving_ground: false,
         punish_wrong_move: false,
         awe_tell: "",
+        follows_when_calm: false,
     },
     // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
     // `bump: Shove` pushes it one tile if the destination is plain floor,
@@ -405,6 +409,13 @@ const MONSTERS: [MonsterDef; 5] = [
         awe_by_giving_ground: false,
         punish_wrong_move: false,
         awe_tell: "",
+        // batch 13 T6 (the donkey-follow seed, arc doc rung 2): the one
+        // `true` in this table. Climbing `DONKEY_TALK` to its top rung sets
+        // the SAME `Monster.calm` a talk-becalm always sets; this flag is
+        // what makes THAT particular calm kind follow in the overworld
+        // (`Game::overworld_follow_step`) instead of just standing still
+        // the way a becalmed rat/goblin/ogre does.
+        follows_when_calm: true,
     },
 ];
 
