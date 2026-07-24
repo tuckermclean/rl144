@@ -525,6 +525,15 @@ pub(crate) struct BalanceDef {
     /// distance-0-still-fits-in-a-zero-radius-circle technicality).
     /// [TUNE] starting bands.
     pub(crate) mood_shine_tiers: &'static [(i32, i32)],
+    /// The becalm return-trip dividend (batch 13 T3, arc doc §215): light
+    /// refunded the FIRST time the player ends a turn cardinally adjacent
+    /// to a becalmed (`Monster.calm`) monster — see `Monster::dividend_paid`
+    /// and `Game::resolve_becalm_dividend`. **GUARD**: this is the exact
+    /// lever that made pacifism DOMINANT in batch 5 (the guaranteed stayed
+    /// swing, before the parley repricing) — keep this small. [TUNE]
+    /// starting value, measured against the tactical bots at batch 13 T7,
+    /// never hand-tuned to feel.
+    pub(crate) becalm_dividend: i32,
 }
 
 /// The win condition: which item ends the run, how it's carried, and where
@@ -653,4 +662,9 @@ pub(crate) struct StringsDef {
     /// `portal_arrive`'s own always-fires convention) — `{}` fills from
     /// the destination screen's name.
     pub(crate) overworld_cross: &'static str,
+    /// batch 13 T3 (the becalm return-trip dividend, arc doc §215): logged
+    /// once, the first time the player passes a becalmed-and-not-yet-paid
+    /// monster (`Game::resolve_becalm_dividend`). `{}` fills from the
+    /// monster's name.
+    pub(crate) becalm_dividend: &'static str,
 }

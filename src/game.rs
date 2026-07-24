@@ -281,6 +281,15 @@ pub(crate) struct Monster {
     /// `regard`/`calm`, NOT the presentation-only exclusion set
     /// (`killer`/`echo`/`facing`/`fx_hit`/`mcguffin_last_line_turn`).
     pub(crate) awe: u8,
+    /// The becalm return-trip dividend's once-per-monster farming guard
+    /// (batch 13 T3, arc doc §215): set true the first time the player ends
+    /// a turn cardinally adjacent to this monster while `calm`, at which
+    /// point `Game::resolve_becalm_dividend` refunds `BalanceDef::
+    /// becalm_dividend` light and never refunds this monster again. Hashed
+    /// in `save::state_hash` right beside `regard`/`calm`/`awe` — it is
+    /// run-defining (it changes future light), not the presentation-only
+    /// exclusion set.
+    pub(crate) dividend_paid: bool,
 }
 
 impl Monster {
@@ -309,7 +318,7 @@ impl Monster {
     /// duplicating this field list at every call site.
     #[allow(dead_code)] // exercised by tests only as of batch 11 T2
     pub(crate) fn spawn(kind: MKind, x: i32, y: i32) -> Monster {
-        Monster { x, y, kind, hp: GAME.monsters[kind as usize].hp, regard: 0, calm: false, awe: 0 }
+        Monster { x, y, kind, hp: GAME.monsters[kind as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false }
     }
 }
 
@@ -1048,7 +1057,7 @@ impl Game {
                     .map(|&(_, k)| k)
                     .unwrap_or(GAME.balance.monster_roll[GAME.balance.monster_roll.len() - 1].1);
                 let hp = GAME.monsters[kind as usize].hp;
-                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false, awe: 0 });
+                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
             }
         }
         /* items: deep floors are a war of attrition, so supply scales too —
@@ -1160,7 +1169,7 @@ impl Game {
                     self.items.push(Item { x: tx, y: ty, kind: ii as IKind });
                 } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                     let hp = GAME.monsters[ki].hp;
-                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0 });
+                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
                 }
             }
         }
@@ -1688,7 +1697,7 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0 });
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -1760,7 +1769,7 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0 });
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -3176,6 +3185,7 @@ impl Game {
         let pre_chase: Vec<(i32, i32)> = self.monsters.iter().map(|m| (m.x, m.y)).collect();
         self.monsters_act(stayed);
         self.resolve_awe(attacked, prev_player, &pre_chase);
+        self.resolve_becalm_dividend();
         self.compute_fov();
     }
 
@@ -3258,6 +3268,42 @@ impl Game {
             } else {
                 self.monsters[i].awe = 0; // fleeing (or fighting) breaks the stare
             }
+        }
+    }
+
+    /// The becalm return-trip dividend (batch 13 T3, arc doc §215/§"Becalm
+    /// return-trip dividend"): a becalmed monster (`Monster.calm`) that the
+    /// player ends a turn cardinally adjacent to refunds a small, ONE-TIME
+    /// light trickle — "it remembers you; it lights the way." Guarded by
+    /// the hashed per-`Monster` `dividend_paid` flag so walking back and
+    /// forth past the same becalmed monster can't farm light — this is
+    /// exactly the lever the arc doc's §215 flags as the one that made
+    /// pacifism DOMINANT in batch 5 (the guaranteed stayed swing), so the
+    /// per-monster once-only cap is load-bearing, not decorative, and the
+    /// `[TUNE]` amount (`BalanceDef::becalm_dividend`) starts small and is
+    /// measured, never hand-tuned. Called every turn via
+    /// `monsters_act_and_resolve_awe`, right after `resolve_awe` — a calm
+    /// monster never moves (`monsters_act` skips it outright), so checking
+    /// final post-move positions here is equivalent to checking pre-chase
+    /// ones; no snapshot is needed the way `resolve_awe` needs one.
+    fn resolve_becalm_dividend(&mut self) {
+        for i in 0..self.monsters.len() {
+            let (calm, paid, mx, my, kind) = {
+                let m = &self.monsters[i];
+                (m.calm, m.dividend_paid, m.x, m.y, m.kind)
+            };
+            if !calm || paid {
+                continue;
+            }
+            let dist = (self.px - mx).abs() + (self.py - my).abs();
+            if dist != 1 {
+                continue; // not cardinally adjacent this turn
+            }
+            self.monsters[i].dividend_paid = true;
+            self.light += GAME.balance.becalm_dividend;
+            let name = self.mob_name(kind);
+            let line = String::from(GAME.strings.becalm_dividend).replace("{}", name);
+            self.log(line);
         }
     }
 }

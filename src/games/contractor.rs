@@ -834,6 +834,11 @@ const BALANCE: BalanceDef = BalanceDef {
     // mood-0 brute gets no shine from her at all, preserving the pre-batch
     // "torch dead = death" outcome exactly for that carrier.
     mood_shine_tiers: &[(75, 6), (50, 4), (25, 2), (i32::MIN, 0)],
+    // batch 13 T3 (the becalm return-trip dividend, arc doc §215): [TUNE]
+    // small starting value per the guard — the exact lever that made
+    // pacifism dominant in batch 5 (guaranteed stayed swing) before the
+    // parley repricing. Re-priced at T7 against the tactical bots.
+    becalm_dividend: 2,
 };
 
 const WIN: WinDef = WinDef {
@@ -1036,6 +1041,10 @@ const STRINGS: StringsDef = StringsDef {
     shove_refuse: "The {} plants its feet and will not budge.",
     overworld_enter: "You arrive at {}.",
     overworld_cross: "You cross into {}.",
+    // batch 13 T3 (the becalm return-trip dividend): grounded — restates
+    // exactly what happened (the becalmed monster's light trickle), never
+    // invents new lore.
+    becalm_dividend: "The {} remembers you; it lights your way.",
 };
 
 /* The overworld's 3 fixed screens (batch 9 T1, story §9-J prep, SIGN-OFF

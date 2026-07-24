@@ -347,7 +347,7 @@ mod tests {
     fn push_into_monster_refuses() {
         let mut g = blank_room(1);
         g.blocks.push((11, 10));
-        g.monsters.push(Monster { x: 12, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: 12, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.try_move_player(1, 0);
         assert!(g.blocks.contains(&(11, 10)), "block must not move");
         assert_eq!((g.px, g.py), (10, 10));
@@ -734,6 +734,7 @@ mod tests {
             regard: 0,
             calm: false,
             awe: 0,
+            dividend_paid: false,
         });
         g.try_move_player(dx, dy);
         assert_eq!(g.light, l1 - 2, "bump-attack should burn 1 turn + 1 violence tax = 2 light");
@@ -762,6 +763,7 @@ mod tests {
             regard: 0,
             calm: false,
             awe: 0,
+            dividend_paid: false,
         });
         g.light = 2; // 1 (turn) + 1 (tax) lands exactly on 0
         g.try_move_player(dx, dy);
@@ -922,6 +924,7 @@ mod tests {
             regard: 0,
             calm: false,
             awe: 0,
+            dividend_paid: false,
         });
         g.monsters.push(Monster {
             x: px + bdx,
@@ -931,6 +934,7 @@ mod tests {
             regard: 0,
             calm: false,
             awe: 0,
+            dividend_paid: false,
         });
         let hp0 = g.hp;
         talk_until_landed(&mut g, adx, ady, RAT); // regard 0->1, threshold 2, not yet calm
@@ -968,6 +972,7 @@ mod tests {
             regard: 0,
             calm: false,
             awe: 0,
+            dividend_paid: false,
         });
         let spared0 = g.spared;
 
@@ -1001,14 +1006,14 @@ mod tests {
         let mut g = Game::new(1);
         g.monsters.clear();
         g.atk = 3; // Game::new's default; +6*(atk-3) term is 0
-        let fresh_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0 };
+        let fresh_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false };
         assert_eq!(receptivity(&fresh_ogre, &g), 20, "a fresh ogre should sit at exactly its BASE");
 
         // Wounded (1 of 13 hp -> wound term 40*(13-1)/13 = 36) plus a
         // strong player (atk 9 -> +6*(9-3) = 36) pushes well past 70:
         // 20 + 0 + 36 + 36 - 0 = 92.
         g.atk = 9;
-        let wounded_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0 };
+        let wounded_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false };
         let r = receptivity(&wounded_ogre, &g);
         assert!(r >= 70, "wounded ogre + high atk should land >= 70-ish, got {}", r);
         assert_eq!(r, 92, "and the exact integer math should hold");
@@ -1019,7 +1024,7 @@ mod tests {
         // (20 + 0 + 0 - 18 - 10 = -8); receptivity must still floor at 5.
         g.atk = 0;
         g.light = 1;
-        let floor_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0 };
+        let floor_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false };
         assert_eq!(receptivity(&floor_ogre, &g), 5, "receptivity must clamp at the floor of 5");
 
         // Clamp ceiling: a high-regard, badly wounded rat with a very
@@ -1027,7 +1032,7 @@ mod tests {
         // at 95.
         g.atk = 20;
         g.light = game::start_light();
-        let capped_rat = Monster { x: 0, y: 0, kind: RAT, hp: 1, regard: 10, calm: false, awe: 0 };
+        let capped_rat = Monster { x: 0, y: 0, kind: RAT, hp: 1, regard: 10, calm: false, awe: 0, dividend_paid: false };
         assert_eq!(receptivity(&capped_rat, &g), 95, "receptivity must clamp at the ceiling of 95");
     }
 
@@ -1042,7 +1047,7 @@ mod tests {
         // in the way
         let (ox, oy) = (g.px + 1, g.py);
         g.monsters.clear();
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false });
         let hp_before = g.hp;
         g.apply_input(3); // move/bump East onto the ogre
         assert!(
@@ -1069,7 +1074,7 @@ mod tests {
         // retaliation (`OGRE`'s `retaliation` in the contractor cartridge).
         let (ox, oy) = (g.px + 1, g.py);
         g.monsters.clear();
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 100, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 100, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.hp = 2;
         let ogre_name = g.theme().mobs[OGRE as usize];
         let turns_before = g.turns;
@@ -1290,7 +1295,7 @@ mod tests {
             "fixture: east of the player must be open floor"
         );
         g.monsters.clear();
-        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.hp = g.maxhp - 5;
         let hp_before = g.hp;
         let mut crng = channel(seed, &["combat"]);
@@ -1328,7 +1333,7 @@ mod tests {
             "fixture: the tile diagonally adjacent (SE) to the player must be open floor"
         );
         g.monsters.clear();
-        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.hp = g.maxhp - 5;
         let hp_before = g.hp;
         let mut crng = channel(seed, &["combat"]);
@@ -1368,6 +1373,80 @@ mod tests {
             hp_before,
             "rest must never fire on a transiting wait — the portal-footing guard"
         );
+    }
+
+    /// Batch 13 T3 (the becalm return-trip dividend, arc doc §215): the
+    /// FIRST time the player ends a turn cardinally adjacent to a becalmed
+    /// monster, `BalanceDef::becalm_dividend` light is refunded and
+    /// `Monster.dividend_paid` flips true; passing the SAME monster again
+    /// refunds nothing — the farming guard the arc doc's guard demands
+    /// (this is the exact lever that made pacifism dominant in batch 5).
+    #[test]
+    fn becalm_dividend_paid_once_per_monster() {
+        let mut g = Game::new(9);
+        let (rx, ry) = (g.px + 1, g.py);
+        assert!(
+            in_map(rx, ry) && g.map[idx(rx, ry)] != Tile::Wall,
+            "fixture: east of the player must be open floor"
+        );
+        g.monsters.clear();
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 3, regard: 0, calm: true, awe: 0, dividend_paid: false });
+
+        let light_before = g.light;
+        g.apply_input(4); // WAIT, cardinally adjacent to a becalmed rat
+        let expected_first = light_before - GAME.balance.base_burn + GAME.balance.becalm_dividend;
+        assert_eq!(
+            g.light, expected_first,
+            "the first pass by a becalmed monster should refund the dividend"
+        );
+        assert!(g.monsters[0].dividend_paid, "dividend_paid should flip true after the first refund");
+
+        let light_before2 = g.light;
+        g.apply_input(4); // WAIT again, still adjacent to the SAME monster
+        assert_eq!(
+            g.light,
+            light_before2 - GAME.balance.base_burn,
+            "passing the same becalmed monster again must not refund a second time"
+        );
+    }
+
+    /// Batch 13 T3: a HOSTILE (non-calm) monster never pays the dividend,
+    /// no matter how close the player ends the turn — only `Monster.calm`
+    /// monsters ever refund light.
+    #[test]
+    fn becalm_dividend_not_paid_for_hostile_monster() {
+        let mut g = Game::new(9);
+        let (rx, ry) = (g.px + 1, g.py);
+        assert!(
+            in_map(rx, ry) && g.map[idx(rx, ry)] != Tile::Wall,
+            "fixture: east of the player must be open floor"
+        );
+        g.monsters.clear();
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false });
+
+        let light_before = g.light;
+        g.apply_input(4); // WAIT, adjacent to a HOSTILE (non-calm) rat
+        assert_eq!(
+            g.light,
+            light_before - GAME.balance.base_burn,
+            "a hostile (non-calm) monster must never pay the dividend"
+        );
+        assert!(!g.monsters[0].dividend_paid, "dividend_paid must stay false for a hostile monster");
+    }
+
+    /// `Monster.dividend_paid` is hashed (batch 13 T3): mirrors
+    /// `monster_regard_and_calm_are_hashed` above — mutate the field on one
+    /// live monster and the hash must move, proving `save::state_hash`'s
+    /// per-monster byte list actually includes it.
+    #[test]
+    fn monster_dividend_paid_is_hashed() {
+        let mut a = Game::new(9);
+        let b = Game::new(9);
+        assert_eq!(state_hash(&a), state_hash(&b));
+        assert!(!a.monsters.is_empty(), "depth 1 of seed 9 should spawn at least one monster");
+
+        a.monsters[0].dividend_paid = true;
+        assert_ne!(state_hash(&a), state_hash(&b), "dividend_paid must be part of state_hash");
     }
 
     /// Batch 12 R7: the end-to-end dispatch — a wait that MENDS while carrying
@@ -1487,6 +1566,7 @@ mod tests {
                 regard: 0,
                 calm: false,
                 awe: 0,
+                dividend_paid: false,
             });
             let (mut saw_landed, mut saw_failed) = (false, false);
             for _ in 0..50 {
@@ -1539,6 +1619,7 @@ mod tests {
             regard: 0,
             calm: false,
             awe: 0,
+            dividend_paid: false,
         });
         let mut found = false;
         for _ in 0..200 {
@@ -1591,6 +1672,7 @@ mod tests {
                 regard: 0,
                 calm: false,
                 awe: 0,
+                dividend_paid: false,
             });
             for _ in 0..10 {
                 g.try_move_player(dx, dy);
@@ -1715,7 +1797,7 @@ mod tests {
     #[test]
     fn give_with_empty_hands_is_noop() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false });
         let before_turns = g.turns;
         assert!(g.held.is_empty(), "fixture: nothing held");
         g.apply_input(11); // give-N
@@ -1728,7 +1810,7 @@ mod tests {
     #[test]
     fn give_declined_when_no_matching_rule() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.held = vec![COAT];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -1743,7 +1825,7 @@ mod tests {
     #[test]
     fn cheese_to_rat_is_a_regard_penalty() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 1, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 1, calm: false, awe: 0, dividend_paid: false });
         g.held = vec![CHEESE];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -1782,7 +1864,7 @@ mod tests {
     #[test]
     fn cheese_to_goblin_always_stays_it_no_damage_ever() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false });
         let hp0 = g.hp;
         let pos0 = (g.monsters[0].x, g.monsters[0].y);
         for _ in 1..=200u32 {
@@ -1807,7 +1889,7 @@ mod tests {
     #[test]
     fn cheese_to_goblin_landed_becalm_sets_calm_and_spared() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false });
         let spared_before = g.spared;
         give_cheese_until_becalmed(&mut g, 11); // give-N
         assert!(g.monsters[0].calm, "a landed cheese roll must becalm the goblin outright");
@@ -1825,7 +1907,7 @@ mod tests {
         let mut saw_failed = false;
         'seeds: for seed in 1..200u64 {
             let mut g = blank_room(seed);
-            g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+            g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false });
             for _ in 1..=200u32 {
                 if g.monsters[0].calm {
                     break;
@@ -1849,7 +1931,7 @@ mod tests {
     #[test]
     fn cheese_to_ogre_declines_gracefully() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.held = vec![CHEESE];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -1867,7 +1949,7 @@ mod tests {
     #[test]
     fn cheese_give_isolated_from_combat_and_ai() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false });
         for _ in 1..=200u32 {
             if g.monsters[0].calm {
                 break;
@@ -1886,7 +1968,7 @@ mod tests {
     #[test]
     fn potion_given_heals_full_and_raises_regard() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.held = vec![POTION];
         g.apply_input(11); // give-N
         let maxhp = Monster::stats(RAT).hp;
@@ -2321,7 +2403,7 @@ mod tests {
 
         // A becalmed rat (threshold 2) east of the carrier: a spare.
         let (rx, ry) = (px1 + 1, py1);
-        g.monsters.push(Monster { kind: RAT, x: rx, y: ry, hp: 1, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { kind: RAT, x: rx, y: ry, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false });
         let mood_before_spare = g.mood();
         talk_until_landed(&mut g, 1, 0, RAT);
         talk_until_landed(&mut g, 1, 0, RAT); // crosses threshold 2: becalms
@@ -2604,15 +2686,16 @@ mod tests {
 
     /// Save back-compat (DECISION.md sign-off item 2; extended to v3 by
     /// batch 5, to v4 by batch 7 T2, to v5 by batch 8 T1, to v6 by batch 12
-    /// R4): a v1-versioned byte blob (which by construction never contains
-    /// byte 6 or bytes 7-16 — none of INPUT_RETRY/talk/give/use/put-down
-    /// existed yet) parses under today's v6-aware `parse_save` and replays
-    /// byte-identically to the same log fed straight to `replay`.
-    /// `tests/fixtures/ref.sav` (used by `make xhash`) is itself exactly
-    /// such a v1 blob, containing a byte 5 — this test is the unit-level
-    /// proof that the case `make xhash` exercises end-to-end still works.
+    /// R4, to v7 by batch 13 T3): a v1-versioned byte blob (which by
+    /// construction never contains byte 6 or bytes 7-16 — none of
+    /// INPUT_RETRY/talk/give/use/put-down existed yet) parses under today's
+    /// v7-aware `parse_save` and replays byte-identically to the same log
+    /// fed straight to `replay`. `tests/fixtures/ref.sav` (used by `make
+    /// xhash`) is itself exactly such a v1 blob, containing a byte 5 — this
+    /// test is the unit-level proof that the case `make xhash` exercises
+    /// end-to-end still works.
     #[test]
-    fn v1_save_replays_under_v6_parsing() {
+    fn v1_save_replays_under_v7_parsing() {
         let seed0 = 123u64;
         let log = vec![0u8, 1, 2, 3, 4, INPUT_RESTART, 0, 1, 2, 3, 4];
         let mut v1_bytes = Vec::new();
@@ -2637,7 +2720,7 @@ mod tests {
     /// save v3/v4/v5), so it too must replay byte-identically under today's
     /// parser.
     #[test]
-    fn v2_save_replays_under_v6_parsing() {
+    fn v2_save_replays_under_v7_parsing() {
         let seed0 = 321u64;
         let log = vec![0u8, 1, INPUT_RETRY, 2, 3, 4];
         let mut v2_bytes = Vec::new();
@@ -2659,7 +2742,7 @@ mod tests {
     /// bytes (7-10) but never give/use/put-down (11-16, save v4/v5) — it too
     /// must replay byte-identically under today's parser.
     #[test]
-    fn v3_save_replays_under_v6_parsing() {
+    fn v3_save_replays_under_v7_parsing() {
         let seed0 = 654u64;
         let log = vec![0u8, 7, 1, 8, 2, 9, 3, 10, 4];
         let mut v3_bytes = Vec::new();
@@ -2681,7 +2764,7 @@ mod tests {
     /// give/use bytes (11-15) but never put-down (16, save v5) — it too
     /// must replay byte-identically under today's parser.
     #[test]
-    fn v4_save_replays_under_v6_parsing() {
+    fn v4_save_replays_under_v7_parsing() {
         let seed0 = 987u64;
         let log = vec![0u8, 1, 11, 2, 12, 3, 15, 4];
         let mut v4_bytes = Vec::new();
@@ -2699,13 +2782,13 @@ mod tests {
         assert_eq!(state_hash(&from_v4), state_hash(&direct));
     }
 
-    /// Save v5 back-compat (batch 8 T1's own version, now one behind
-    /// current): a v5-versioned blob may carry put-down (16) but nothing
-    /// past it (save v6, batch 12 R4, added no new input byte at all — see
-    /// this module's header comment — so there's nothing a v5 log could
-    /// contain that v6 parsing wouldn't already handle identically).
+    /// Save v5 back-compat (batch 8 T1's own version): a v5-versioned blob
+    /// may carry put-down (16) but nothing past it (save v6, batch 12 R4,
+    /// added no new input byte at all — see this module's header comment —
+    /// so there's nothing a v5 log could contain that v7 parsing wouldn't
+    /// already handle identically).
     #[test]
-    fn v5_save_replays_under_v6_parsing() {
+    fn v5_save_replays_under_v7_parsing() {
         let seed0 = 741u64;
         let log = vec![0u8, 1, 16, 2, 16, 3, 4];
         let mut v5_bytes = Vec::new();
@@ -2723,19 +2806,44 @@ mod tests {
         assert_eq!(state_hash(&from_v5), state_hash(&direct));
     }
 
+    /// Save v6 back-compat (batch 12 R4's own version, now one behind
+    /// current): a v6-versioned blob may carry any byte through put-down
+    /// (16) but nothing past it (save v7, batch 13 T3, the becalm
+    /// return-trip dividend, added no new input byte at all either — see
+    /// this module's header comment — so there's nothing a v6 log could
+    /// contain that v7 parsing wouldn't already handle identically).
+    #[test]
+    fn v6_save_replays_under_v7_parsing() {
+        let seed0 = 852u64;
+        let log = vec![0u8, 1, 16, 2, 7, 3, 4];
+        let mut v6_bytes = Vec::new();
+        v6_bytes.extend_from_slice(b"RL14");
+        v6_bytes.push(6); // v6
+        v6_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v6_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v6_bytes).expect("v6 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v6 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v6), state_hash(&direct));
+    }
+
     /// Put-down byte (16, batch 8 T1) round-trips through save -> parse ->
     /// replay identically, same proof shape as the version back-compat
     /// tests above: a log containing byte 16 survives `save_bytes` (which
-    /// now writes v6) -> `parse_save` -> `replay` producing the exact same
+    /// now writes v7) -> `parse_save` -> `replay` producing the exact same
     /// state as replaying the original log directly.
     #[test]
     fn put_down_byte_round_trips_through_save_parse_replay() {
         let seed0 = 246u64;
         let log = vec![0u8, 1, 16, 2, 3, 16, 4];
         let bytes = save_bytes(seed0, &log);
-        assert_eq!(bytes[4], 6, "save_bytes must write the current version (6)");
+        assert_eq!(bytes[4], 7, "save_bytes must write the current version (7)");
 
-        let (s, parsed_log) = parse_save(&bytes).expect("v6 blob must parse");
+        let (s, parsed_log) = parse_save(&bytes).expect("v7 blob must parse");
         assert_eq!(s, seed0);
         assert_eq!(parsed_log, log);
 
@@ -2744,8 +2852,8 @@ mod tests {
         assert_eq!(state_hash(&from_saved), state_hash(&direct));
     }
 
-    /// `save_bytes` writes the current version (6, batch 12 R4) and a
-    /// version outside 1..=6 is rejected by `parse_save` — the "old binary
+    /// `save_bytes` writes the current version (7, batch 13 T3) and a
+    /// version outside 1..=7 is rejected by `parse_save` — the "old binary
     /// must reject a newer save cleanly" half of every save-version bump's
     /// rationale (this bump's other half is simply keeping the version
     /// label in lockstep with the hashed-state addition — see this
@@ -2753,11 +2861,11 @@ mod tests {
     #[test]
     fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
         let bytes = save_bytes(7, &[0, 1, 2]);
-        assert_eq!(bytes[4], 6, "save_bytes must write the current version");
+        assert_eq!(bytes[4], 7, "save_bytes must write the current version");
         assert!(parse_save(&bytes).is_some());
 
         let mut future = bytes.clone();
-        future[4] = 7;
+        future[4] = 8;
         assert!(parse_save(&future).is_none(), "an unknown version must be rejected");
 
         let mut zero = bytes;
@@ -3036,7 +3144,7 @@ mod tests {
         assert_eq!(bloody_line, "Back already? Happens. I don't ask. You don't ask.", "must be TRA_007 verbatim");
 
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.last_life_bloody = Some(true);
         g.try_talk_player(1, 0);
         assert!(g.last_life_greeting_spoken, "setup: seed 1's first parley roll must land");
@@ -3050,7 +3158,7 @@ mod tests {
         );
 
         let mut h = blank_room(3);
-        h.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0 });
+        h.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
         h.last_life_bloody = Some(false);
         h.try_talk_player(1, 0);
         assert!(h.last_life_greeting_spoken, "setup: seed 3's first parley roll must land");
@@ -3060,7 +3168,7 @@ mod tests {
         // batch) must never speak either line, even with the memory set —
         // the graceful no-op, same invariant as `carry_event`'s empty pool.
         let mut r = blank_room(4);
-        r.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
+        r.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false });
         r.last_life_bloody = Some(true);
         r.try_talk_player(1, 0);
         assert!(!r.msgs.iter().any(|m| m == bloody_line), "a kind with no resurrection_lines row must never speak one");
@@ -3866,7 +3974,7 @@ mod tests {
     #[test]
     fn passive_monster_never_chases_or_attacks() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 12, y: 11, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: 12, y: 11, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
         let hp_before = g.hp;
         for _ in 0..20 {
             g.wait_turn();
@@ -3883,7 +3991,7 @@ mod tests {
     #[test]
     fn bump_fight_kind_attacks_unchanged() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.try_move_player(1, 0);
         assert_eq!((g.px, g.py), (10, 10), "attacking doesn't move the player");
         assert!(g.monsters.is_empty() || g.monsters[0].hp < 3, "the rat takes damage or dies");
@@ -3896,7 +4004,7 @@ mod tests {
     fn bump_yield_kind_swaps_without_damage() {
         let mut g = blank_room(1);
         let full_hp = GAME.monsters[TRAINER as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.try_move_player(1, 0);
         assert_eq!((g.px, g.py), (11, 10), "player swaps into the trainer's tile");
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (10, 10), "trainer swaps back to the player's old tile");
@@ -3909,7 +4017,7 @@ mod tests {
     fn bump_shove_kind_pushes_onto_floor() {
         let mut g = blank_room(1);
         let full_hp = GAME.monsters[DONKEY as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.try_move_player(1, 0);
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (12, 10), "donkey shoved one tile");
         assert_eq!((g.px, g.py), (11, 10), "player advances into the vacated tile");
@@ -3923,7 +4031,7 @@ mod tests {
         let mut g = blank_room(1);
         g.map[idx(12, 10)] = Tile::Wall;
         let full_hp = GAME.monsters[DONKEY as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0 });
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false });
         let before_turns = g.turns;
         g.try_move_player(1, 0);
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (11, 10), "donkey plants, does not move");
