@@ -232,6 +232,13 @@ pub(crate) fn tactical_routing_map(g: &Game) -> Vec<Tile> {
 }
 
 const SIM_TURN_CAP: u32 = 6000;
+/// Batch 12 R3: the tactical bots' rest branch never fires at or below this
+/// much light left — a bot heuristic (not a `BalanceDef` field; the engine
+/// itself imposes no light floor on `wait`), so it never trades its own
+/// margin away one HP at a time. Comfortably below the cartridge's
+/// `start_light` (2000) and well above zero — a wait still only burns
+/// `base_burn` (1) per turn, so this is a generous reserve, not a tight one.
+const REST_LIGHT_RESERVE: i32 = 150;
 /// Fixed neighbor order for tie-breaking the greedy step: N, S, W, E — this
 /// is also the apply_input byte order (0..=3), so the index IS the move.
 const SIM_DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
@@ -301,12 +308,15 @@ impl Policy {
 /// the bot drives the game exclusively through `apply_input` with move
 /// bytes 0-3 (talk bytes 7-10 for `Policy::Pacifist`, and USE byte 15 for
 /// both policies once batch 7 T2's half-HP-and-holding-a-potion rule fires
-/// — see the doc comment at that check's call site) — it NEVER emits wait
-/// (byte 4) or GIVE (11-14, unused by either policy this batch), the only
-/// input that can transit a portal (see
-/// `game::Game::wait_turn`'s doc comment) — so this should always come back
-/// `WorldId::Seed(seed)` (still the root world). `sim_main` ignores it;
-/// `bot_never_transits` (main.rs) is the test that actually checks it,
+/// — see the doc comment at that check's call site) — plus, as of batch 12
+/// R3, wait (byte 4) for BOTH tactical policies' rest branch (see that
+/// check's own doc comment). GIVE (11-14) stays unused by every policy this
+/// batch. Byte 4 is the only input that can transit a portal (see
+/// `game::Game::wait_turn`'s doc comment), so the rest branch carries its
+/// own explicit `Tile::Portal` guard — this function should still always
+/// come back `WorldId::Seed(seed)` (never leaving the root world) for every
+/// policy. `sim_main` ignores the returned `WorldId`; `bot_never_transits`
+/// (main.rs) is the test that actually checks it for all four policies,
 /// which is the whole reason it's threaded out here instead of asserted
 /// silently inside this function.
 pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
@@ -386,12 +396,46 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // keep the <=1/2 rule so their frozen bands don't move. The 2/3 value
         // is the initial measured baseline (tune in batch 11), not a felt
         // constant. Same potion-on-top guard, same USE byte.
+        let tactical = matches!(policy, Policy::Tactical | Policy::TacticalPacifist);
         let heal_now = match policy {
             Policy::Tactical | Policy::TacticalPacifist => 3 * g.hp <= 2 * g.maxhp,
             Policy::Greedy | Policy::Pacifist => 2 * g.hp <= g.maxhp,
         };
         if heal_now && g.held.last() == Some(&GAME.balance.loot_potion_item) {
             g.apply_input(15);
+            turns += 1;
+            continue;
+        }
+        // batch 12 R3 ("light as grace" — the grace half): rest
+        // (`Game::rest_heal`) heals slowly while hurt and safe — this is
+        // the tactical bots' fallback when `heal_now` is true but no
+        // potion is on top of `held`. Deliberately SYMMETRIC between
+        // Tactical and TacticalPacifist (identical branch, both policies)
+        // per the brief: outcome asymmetry must come from the economy
+        // (mercy/violence's differing light math), never from bot code —
+        // Greedy/Pacifist don't get this branch at all, so their frozen
+        // bands (`tests/sim-band.json`/`tests/pacifist-band.json`) can't
+        // move. The cardinal-adjacency check mirrors `Game::rest_heal`'s
+        // own gate exactly (no live, non-calm, fight-capable monster N/S/
+        // E/W) so the bot only ever waits when the engine would actually
+        // grant the heal — never a wasted turn. `REST_LIGHT_RESERVE` keeps
+        // the bot from resting itself into the dark (a wait still burns a
+        // turn of light like any other action). The `Tile::Portal` check
+        // is CRITICAL, not a nicety: `Game::wait_turn` transits while
+        // standing on a portal (batch 6) — see its doc comment — and this
+        // bot must NEVER emit wait there, or `bot_never_transits` breaks.
+        if tactical
+            && heal_now
+            && g.light > REST_LIGHT_RESERVE
+            && g.map[idx(g.px, g.py)] != Tile::Portal
+            && !g.monsters.iter().any(|m| {
+                !m.calm
+                    && !Monster::stats(m.kind).passive
+                    && ((m.x == g.px && (m.y - g.py).abs() == 1)
+                        || (m.y == g.py && (m.x - g.px).abs() == 1))
+            })
+        {
+            g.apply_input(4);
             turns += 1;
             continue;
         }
@@ -410,7 +454,7 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         // batch 10: tactical policies PREFER a monster-free path (route around
         // fights); if that view leaves the objective unreachable this turn, the
         // `player_d < 0` fallback below re-runs on the ordinary `routing_map`.
-        let tactical = matches!(policy, Policy::Tactical | Policy::TacticalPacifist);
+        // `tactical` itself is computed once, above, ahead of the rest branch.
         let rmap = if tactical { tactical_routing_map(&g) } else { routing_map(&g) };
         let objective = if g.has_objective {
             find_tile(&g.map, Tile::UpStairs)

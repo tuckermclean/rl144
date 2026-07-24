@@ -1223,6 +1223,103 @@ mod tests {
         assert_eq!(g.spared, 0, "retreat is not standing tall — no spare should be recorded");
     }
 
+    /// Batch 12 R3 ("light as grace" — the grace half): a plain wait while
+    /// hurt, with no non-calm hostile cardinally adjacent, heals
+    /// `BalanceDef::rest_heal` HP (capped at `maxhp`). HP was the
+    /// diplomat's real bottleneck, not light — this is the fix.
+    #[test]
+    fn resting_heals_when_no_hostile_adjacent() {
+        let mut g = Game::new(1);
+        g.monsters.clear();
+        assert!(
+            g.map[idx(g.px, g.py)] != Tile::Portal,
+            "fixture: player must not start standing on a portal"
+        );
+        g.hp = g.maxhp - 5;
+        let hp_before = g.hp;
+        g.apply_input(4); // WAIT
+        assert_eq!(
+            g.hp,
+            (hp_before + GAME.balance.rest_heal).min(g.maxhp),
+            "resting with no hostile adjacent should heal rest_heal HP"
+        );
+    }
+
+    /// Batch 12 R3: resting is capped at `maxhp` — waiting at full HP is a
+    /// no-op for `Game::rest_heal` (the `self.hp >= self.maxhp` guard),
+    /// same "don't heal a corpse [or the already-topped-up]" spirit as the
+    /// dead/won early return at the top of `wait_turn`.
+    #[test]
+    fn resting_does_not_overheal_past_maxhp() {
+        let mut g = Game::new(1);
+        g.monsters.clear();
+        assert_eq!(g.hp, g.maxhp, "fixture: a fresh game starts at full HP");
+        g.apply_input(4); // WAIT
+        assert_eq!(g.hp, g.maxhp, "resting at full HP must never exceed maxhp");
+    }
+
+    /// Batch 12 R3: the REQUIRED gate — waiting cardinally adjacent to a
+    /// live, non-calm, fight-capable monster must NOT heal, so rest and
+    /// awe-holding (`resolve_awe`, batch 11 T2 — "stand tall while an ogre
+    /// pummels you") stay two distinct acts. The adjacent monster still
+    /// gets its ordinary `monsters_act` attack this same turn (waiting
+    /// isn't a talk, so it's never `stayed`) — the fixture precomputes that
+    /// exact combat roll from the SAME `combat` channel `Game::new` seeds
+    /// (the first-ever `combat_rng` draw in this run, since nothing else
+    /// touches it before this turn), so the assertion proves the heal did
+    /// NOT land on top of the hit, not merely that the net change is
+    /// negative (which a partially-offset heal could still satisfy).
+    #[test]
+    fn resting_does_not_heal_adjacent_to_hostile() {
+        let seed = 1;
+        let mut g = Game::new(seed);
+        let (rx, ry) = (g.px + 1, g.py);
+        assert!(
+            in_map(rx, ry) && g.map[idx(rx, ry)] != Tile::Wall,
+            "fixture: east of the player must be open floor"
+        );
+        g.monsters.clear();
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0 });
+        g.hp = g.maxhp - 5;
+        let hp_before = g.hp;
+        let mut crng = channel(seed, &["combat"]);
+        let expected_dmg = crate::game::Monster::stats(RAT).atk + crng.range(0, 2);
+        g.apply_input(4); // WAIT
+        assert!(!g.dead, "fixture: the player must survive the rat's hit");
+        assert_eq!(
+            g.hp,
+            hp_before - expected_dmg,
+            "an adjacent live hostile still attacks on a wait, but rest must not also heal that same turn"
+        );
+    }
+
+    /// Batch 12 R3: `Game::wait_turn`'s portal-footing guard — rest is only
+    /// ever attempted from the non-transiting branch, so a wait while
+    /// standing on a portal must transit exactly as before (batch 6) AND
+    /// never apply a heal on that same turn (the clean rule chosen over
+    /// entangling the two: a transiting turn ends the level/world, so
+    /// healing it has no meaning).
+    #[test]
+    fn resting_does_not_fire_on_a_transiting_wait() {
+        let mut g = Game::new(1);
+        g.depth = 2;
+        g.gen_level();
+        let (px, py, _dest) = g.portal.expect("fixture: seed 1 depth 2 has a portal");
+        g.monsters.clear();
+        g.px = px;
+        g.py = py;
+        g.hp = g.maxhp - 5; // hurt, so an (incorrect) rest would be observable
+        let hp_before = g.hp;
+        let world_before = g.world;
+        g.wait_turn();
+        assert!(g.world != world_before, "waiting while standing on a portal must still transit");
+        assert_eq!(
+            g.hp,
+            hp_before,
+            "rest must never fire on a transiting wait — the portal-footing guard"
+        );
+    }
+
     /// Landed-vs-failed determinism (batch 5 addendum): two independent
     /// live games from the same seed, talked at the same fresh goblin the
     /// same number of times, produce an identical `state_hash` — whether
@@ -2358,25 +2455,33 @@ mod tests {
         assert!(tac >= base, "tactical-diplomat {tac} should win >= pacifist {base} over 300 seeds");
     }
 
-    /// Batch 6 T1: neither sim policy ever emits the wait byte (4) — the
-    /// only input that can transit a portal (`game::Game::wait_turn`'s doc
-    /// comment) — so a bot run must never leave the root world, regardless
-    /// of how many portals its route happens to walk over (walking ONTO one
-    /// only logs, per `Game::land_on_tile`'s `Tile::Portal` arm). Checked
-    /// over a range wide enough to almost certainly cross at least one
+    /// Batch 6 T1 (extended batch 12 R3): the only input that can transit a
+    /// portal is wait (byte 4, `game::Game::wait_turn`'s doc comment) — so a
+    /// bot run must never leave the root world, regardless of how many
+    /// portals its route happens to walk over (walking ONTO one only logs,
+    /// per `Game::land_on_tile`'s `Tile::Portal` arm). Greedy/Pacifist never
+    /// emit wait at all (unchanged since batch 6). Batch 12 R3 gave BOTH
+    /// tactical policies a rest branch that DOES emit wait — its own
+    /// explicit `Tile::Portal` guard (`headless::sim_seed`) is what this
+    /// test actually proves holds, for all four policies now, not just the
+    /// two that structurally can't transit by construction. Checked over a
+    /// range wide enough to almost certainly cross at least one
     /// portal-bearing depth (~1/4 chance each, per `Game::gen_level`'s
-    /// portal-placement comment) for both policies.
+    /// portal-placement comment).
     #[test]
     fn bot_never_transits() {
         for seed in 0..100u64 {
-            let (_, world) = sim_seed(seed, Policy::Greedy);
-            assert!(world == WorldId::Seed(seed), "greedy bot left the root world on seed {}", seed);
-            let (_, world) = sim_seed(seed, Policy::Pacifist);
-            assert!(
-                world == WorldId::Seed(seed),
-                "pacifist bot left the root world on seed {}",
-                seed
-            );
+            for policy in
+                [Policy::Greedy, Policy::Pacifist, Policy::Tactical, Policy::TacticalPacifist]
+            {
+                let (_, world) = sim_seed(seed, policy);
+                assert!(
+                    world == WorldId::Seed(seed),
+                    "{} bot left the root world on seed {}",
+                    policy.name(),
+                    seed
+                );
+            }
         }
     }
 

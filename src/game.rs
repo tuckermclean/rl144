@@ -2417,6 +2417,16 @@ impl Game {
             self.transit();
             return; // arriving world: monsters don't get a free hit, same courtesy as stairs
         }
+        // batch 12 R3 ("light as grace" — the grace half): rest, gated on a
+        // clear moment. Portal-footing guard: this call site is only
+        // reached when `transiting` is false — a wait on a portal tile
+        // ALWAYS transits (see above) and returns before ever reaching
+        // here, so rest never entangles with transit; that's the clean
+        // rule (a transiting turn ends the level/world, so healing it has
+        // no meaning). Sequenced before `carry_event`/`monsters_act` so the
+        // heal reads the adjacency state the player actually decided to
+        // wait in, not a state monsters have since chased into.
+        self.rest_heal();
         // batch 8 T1: a plain wait (not a portal transit) while carrying is
         // the McGuffin's chance to comment on standing still.
         self.carry_event(CarryEvent::Idle);
@@ -2424,6 +2434,42 @@ impl Game {
         // adjacent to an awe-able monster without attacking it. The player
         // never moves during a wait; batch 11 T2 fix round.
         self.monsters_act_and_resolve_awe(None, None, (self.px, self.py));
+    }
+
+    /// Rest (batch 12 R3, "light as grace"): waiting while hurt heals
+    /// `BalanceDef::rest_heal` HP, but ONLY when no non-calm monster is
+    /// cardinally adjacent (N/S/E/W — the same shape a bump-attack or talk
+    /// can resolve in one move). That gate is REQUIRED, not an
+    /// optimization: it's what keeps rest and awe-holding
+    /// (`resolve_awe`, batch 11 T2 — "stand tall while an ogre pummels
+    /// you") as two distinct acts. Awe-holding needs sustained adjacency to
+    /// an awe-able threat; rest needs the opposite, a genuinely clear
+    /// moment, so a player can't earn both from the same stationary turn.
+    /// A calm monster never attacks, so it doesn't block rest. Only ever
+    /// called from `wait_turn`'s non-transiting branch — see the
+    /// portal-footing note there for why a wait on a portal tile can never
+    /// reach this call at all.
+    fn rest_heal(&mut self) {
+        if self.hp >= self.maxhp {
+            return; // don't heal a corpse... or anyone already topped up
+        }
+        // `passive` (TRAINER/DONKEY, batch 9 T1) monsters never fight —
+        // same exclusion `monsters_act` already applies before its own
+        // attack/chase decision — so one standing cardinally adjacent
+        // isn't a "hostile" for this gate's purposes and doesn't block
+        // rest. A `calm` monster is excluded for the same reason (a
+        // becalmed monster never attacks either); only a live, non-calm,
+        // fight-capable monster in melee range blocks the heal.
+        let hostile_adjacent = self.monsters.iter().any(|m| {
+            !m.calm
+                && !Monster::stats(m.kind).passive
+                && ((m.x == self.px && (m.y - self.py).abs() == 1)
+                    || (m.y == self.py && (m.x - self.px).abs() == 1))
+        });
+        if hostile_adjacent {
+            return;
+        }
+        self.hp = (self.hp + GAME.balance.rest_heal).min(self.maxhp);
     }
 
     /// Shared tail for any player action that LANDS the player on

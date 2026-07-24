@@ -433,6 +433,14 @@ pub(crate) struct BalanceDef {
     /// Light lost each time the player kills — the McGuffin recoils; the
     /// violence half of light-as-grace [batch 12].
     pub(crate) kill_light_penalty: i32,
+    /// HP regained on a plain wait (byte 4, `Game::rest_heal`) while hurt
+    /// and with no non-calm hostile cardinally adjacent — batch 12 R3,
+    /// "light as grace": HP, not light, was the diplomat's real bottleneck.
+    /// [TUNE] starting value; see `Game::rest_heal`'s doc comment for the
+    /// full gate (the adjacency guard keeps this a distinct act from
+    /// awe-holding) and the portal-footing rule (never fires on a
+    /// transiting wait).
+    pub(crate) rest_heal: i32,
 }
 
 /// The win condition: which item ends the run, how it's carried, and where
