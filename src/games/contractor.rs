@@ -196,11 +196,20 @@ const OGRE_TALK: [[&str; 2]; 4] = [
    other kind's table gets. `receptivity_base: 90` was already high enough
    that this costs at most one extra landed talk in practice — the trainer
    is a passive, un-killable, unlimited-attempts NPC, so there's no failure
-   cost to a slower ladder, unlike a hostile monster's threshold tuning. */
+   cost to a slower ladder, unlike a hostile monster's threshold tuning.
+
+   batch 12 R7 (the depth-5 telegraphing pass): stage-0 variant-1 was revised
+   to carry the pickup-verdict warning — "What's below keeps a tally" grounds
+   to the mood anchor `Game::pickup` reads from the descent's kill/spare
+   record (see `BalanceDef::mood_anchor_weight` and `Game::mood`), and the
+   trainer has "been down there. Twice" (TRA_002), so he plausibly knows.
+   This is the batch's guaranteed pre-pickup warning that she will judge how
+   you came down; the FULL trainer-memory (reading your last life) is the
+   deferred batch-13 hook, but the warning itself lands here. */
 const TRAINER_TALK: [[&str; 2]; 4] = [
     [
         "Rule one: kill five rats. Warms up the sword arm. Everyone does it.",
-        "You're in the yard now. Ask away. Opinions are free; rats aren't.",
+        "Opinions are free in the yard. What's below keeps a tally, though. Mind it.",
     ],
     [
         "Bring cheese. Rats love cheese. I've been down there. Twice.",
@@ -831,11 +840,17 @@ const MCG_KILL_WITNESSED: [&str; 4] = [
     "In the ballads, the sword is a last resort. This is a lot of resorts.", // MCG_052
     "It had a face, is all. I knew the face. Carry on.", // MCG_053
 ];
-// MCG_060 ("There. A little of mine...") held on the grounding review
-// (batch 8 T2): it reads as bestowing the §9-E mood->light gift, which is
-// not wired this batch — revive it verbatim once §9-E lands. MCG_062
-// ("Take the next step on me.") held for the same reason; MCG_063 (the
-// coat-monster claim) held because that monster does not exist yet.
+// MCG_060 ("There. A little of mine...") was held on the batch-8 T2
+// grounding review because it reads as bestowing the §9-E mood->light gift,
+// unwired then. Batch 12's second-lantern design IS that mechanic (her shine
+// radius = f(mood)), so per that hold's own instruction ("revive verbatim
+// once §9-E lands") it is REVIVED VERBATIM below in MCG_RESTED_DIM: at a low
+// mood her ring is small (radius 2), so only "a little" of her light reaches
+// you while she tends a rest — grounded exactly. MCG_062 ("Take the next
+// step on me.") stays held: it is now grounded by the same shine, but it is
+// a STEPPING line, a mismatch for a rest-in-place beat — it awaits a future
+// climb/shine hook, not this rest pool. MCG_063 (the coat-monster claim)
+// stays held because that monster still does not exist.
 const MCG_SPARE_WITNESSED: [&str; 1] = [
     "I've decided your footsteps have a rhythm. I've named it.", // MCG_061
 ];
@@ -845,8 +860,26 @@ const MCG_PUT_DOWN: [&str; 4] = [
     "Hello? Legs? ...Anyone with legs?", // MCG_072
     "(to the floor) He'll return. He's the returning type. I cast him.", // MCG_073
 ];
+// batch 12 R7: the McGuffin tends a rest that mends (see `CarryEvent::
+// RestedBright`/`RestedDim` and `Game::wait_turn`'s dispatch). BRIGHT fires
+// when her shine radius >= 4 (mood >= 50) — she has light to spare and keeps
+// a wide ring against the dark; both lines are grounded in that visible ring
+// plus the fact that a wait heals. Register: tending, not economy.
+const MCG_RESTED_BRIGHT: [&str; 2] = [
+    "I've light to spare. Rest; I'll keep the dark off you.",
+    "Lean here. I'll hold a bright ring around you a while.",
+];
+// DIM fires when she has gone dim (radius < 4): rest still heals — the
+// mending doesn't need her shine — so these are grounded even when her ring
+// is small or dark. First line is MCG_060, revived verbatim (see the held-
+// note above MCG_SPARE_WITNESSED): at a low mood only "a little" of her
+// light reaches you, which is exactly what the line says.
+const MCG_RESTED_DIM: [&str; 2] = [
+    "There. A little of mine. Don't mention it. Mention it a little.", // MCG_060
+    "I've gone dim. Rest anyway; the mending doesn't need me.",
+];
 
-const CARRIED_LINES: [(CarryEvent, &[&str]); 7] = [
+const CARRIED_LINES: [(CarryEvent, &[&str]); 9] = [
     (CarryEvent::PickedUpBloody, &MCG_PICKED_UP_BLOODY),
     (CarryEvent::PickedUpMerciful, &MCG_PICKED_UP_MERCIFUL),
     (CarryEvent::PickedBackUp, &MCG_PICKED_BACK_UP),
@@ -854,6 +887,8 @@ const CARRIED_LINES: [(CarryEvent, &[&str]); 7] = [
     (CarryEvent::KillWitnessed, &MCG_KILL_WITNESSED),
     (CarryEvent::SpareWitnessed, &MCG_SPARE_WITNESSED),
     (CarryEvent::PutDown, &MCG_PUT_DOWN),
+    (CarryEvent::RestedBright, &MCG_RESTED_BRIGHT),
+    (CarryEvent::RestedDim, &MCG_RESTED_DIM),
 ];
 
 /* batch 8 T2 (story §9-C, the pickup register): the fixed, always-fires

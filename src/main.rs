@@ -1370,6 +1370,75 @@ mod tests {
         );
     }
 
+    /// Batch 12 R7: the end-to-end dispatch — a wait that MENDS while carrying
+    /// speaks a mood-keyed rest line, `RestedBright` when her ring is wide
+    /// (radius >= 4, mood >= 50) and `RestedDim` otherwise. This is the
+    /// "does the feature actually fire in play" guard (this repo has shipped
+    /// features that were computed but silently never surfaced), proving the
+    /// `wait_turn` branch reaches the right pool, not just that the pools
+    /// exist. A wait that heals nothing must NOT speak a rest line.
+    #[test]
+    fn resting_speaks_mood_keyed_line_while_carrying() {
+        let pool_for = |ev: CarryEvent| {
+            GAME.carried_lines
+                .iter()
+                .find(|(e, _)| *e == ev)
+                .expect("rest pool must exist")
+                .1
+        };
+        let spoke_from = |g: &Game, before: usize, pool: &[&str]| {
+            g.msgs[before..].iter().any(|m| pool.contains(&m.as_str()))
+        };
+
+        // BRIGHT: mood 100 -> radius 6 -> a wide ring.
+        let mut g = Game::new(1);
+        g.monsters.clear();
+        assert!(g.map[idx(g.px, g.py)] != Tile::Portal, "fixture: not on a portal");
+        g.has_objective = true;
+        g.hp = g.maxhp - 5;
+        g.mood_sum = 100;
+        g.mood_count = 1;
+        let before = g.msgs.len();
+        g.apply_input(4); // WAIT
+        assert!(g.hp > g.maxhp - 5, "fixture: the wait must actually mend");
+        assert!(
+            spoke_from(&g, before, pool_for(CarryEvent::RestedBright)),
+            "a mending wait at a bright mood must speak a RestedBright line"
+        );
+        assert!(
+            !spoke_from(&g, before, pool_for(CarryEvent::RestedDim)),
+            "must not also speak the dim line"
+        );
+
+        // DIM: mood 0 -> radius 0 -> gone dark, but rest still heals.
+        let mut g = Game::new(1);
+        g.monsters.clear();
+        g.has_objective = true;
+        g.hp = g.maxhp - 5;
+        g.mood_sum = 0;
+        g.mood_count = 1;
+        let before = g.msgs.len();
+        g.apply_input(4); // WAIT
+        assert!(g.hp > g.maxhp - 5, "fixture: the wait must actually mend");
+        assert!(
+            spoke_from(&g, before, pool_for(CarryEvent::RestedDim)),
+            "a mending wait at a dim mood must speak a RestedDim line"
+        );
+
+        // A wait that heals NOTHING (already full HP) speaks no rest line.
+        let mut g = Game::new(1);
+        g.monsters.clear();
+        g.has_objective = true;
+        assert_eq!(g.hp, g.maxhp, "fixture: fresh game is full HP");
+        let before = g.msgs.len();
+        g.apply_input(4); // WAIT
+        assert!(
+            !spoke_from(&g, before, pool_for(CarryEvent::RestedBright))
+                && !spoke_from(&g, before, pool_for(CarryEvent::RestedDim)),
+            "a wait that mends nothing must speak no rest line"
+        );
+    }
+
     /// Landed-vs-failed determinism (batch 5 addendum): two independent
     /// live games from the same seed, talked at the same fresh goblin the
     /// same number of times, produce an identical `state_hash` — whether
@@ -1879,6 +1948,8 @@ mod tests {
             CarryEvent::SpareWitnessed,
             CarryEvent::TierCrossed,
             CarryEvent::Idle,
+            CarryEvent::RestedBright,
+            CarryEvent::RestedDim,
         ] {
             let mut g = blank_room(1);
             g.has_objective = true;

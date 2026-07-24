@@ -121,6 +121,18 @@ pub(crate) struct OverworldDef {
 /// branch; `Idle` fires from a plain `Game::wait_turn` (not a portal
 /// transit).
 ///
+/// `RestedBright`/`RestedDim` (batch 12 R7, "light as grace"): a wait that
+/// actually MENDS (`Game::rest_heal` returned true — hp rose, no hostile
+/// adjacent) is the McGuffin's chance to tend you, keyed to her mood via her
+/// visible shine radius — `RestedBright` when `mood_shine_radius(self.mood())
+/// >= 4` (mood >= 50, she casts a wide ring and has light to spare),
+/// `RestedDim` otherwise (she has gone dim, but rest heals regardless of her
+/// shine — the mending doesn't need her). Dispatched from `Game::wait_turn`'s
+/// non-transit branch INSTEAD of `Idle` on a mending turn; a wait that heals
+/// nothing (full hp, or a hostile blocking the rest) still falls to `Idle`.
+/// Rate-limited like every non-pickup event (resting many turns in a row
+/// won't spam), so they are NOT in `carry_event`'s `always_speaks` arm.
+///
 /// `PickedUpBloody`/`PickedUpMerciful` (batch 8 T1 fix-round, story §9-C):
 /// split from a single flat `PickedUp` so the McGuffin's reaction to being
 /// picked up can be keyed to the carrier's kill/spare record — `Game::
@@ -148,6 +160,8 @@ pub(crate) enum CarryEvent {
     SpareWitnessed,
     TierCrossed,
     Idle,
+    RestedBright,
+    RestedDim,
 }
 
 /// One monster kind's complete definition. `glyph` doubles as both the

@@ -2632,10 +2632,23 @@ impl Game {
         // no meaning). Sequenced before `carry_event`/`monsters_act` so the
         // heal reads the adjacency state the player actually decided to
         // wait in, not a state monsters have since chased into.
-        self.rest_heal();
-        // batch 8 T1: a plain wait (not a portal transit) while carrying is
-        // the McGuffin's chance to comment on standing still.
-        self.carry_event(CarryEvent::Idle);
+        let mended = self.rest_heal();
+        // batch 8 T1 / batch 12 R7: a plain wait (not a portal transit) while
+        // carrying is the McGuffin's chance to speak. A wait that actually
+        // MENDS is her tending you, mood-keyed by her visible shine: a wide
+        // ring (radius >= 4, mood >= 50) is `RestedBright` ("light to spare");
+        // a dim/dark McGuffin is `RestedDim` (she has little glow left, yet
+        // rest heals regardless of her shine). A wait that heals nothing
+        // (full hp, or a hostile blocking the rest) falls to the plain
+        // standing-still `Idle` comment. `carry_event` no-ops unless carrying,
+        // so this whole branch is silent before pickup.
+        if mended && mood_shine_radius(self.mood()) >= 4 {
+            self.carry_event(CarryEvent::RestedBright);
+        } else if mended {
+            self.carry_event(CarryEvent::RestedDim);
+        } else {
+            self.carry_event(CarryEvent::Idle);
+        }
         // batch 11 T2: this is the standard "stand tall" turn — waiting
         // adjacent to an awe-able monster without attacking it. The player
         // never moves during a wait; batch 11 T2 fix round.
@@ -2664,9 +2677,15 @@ impl Game {
     /// check saw no hostile neighbor and healed anyway — free healing under
     /// a live attacker, defeating the whole point of the gate. Fixed to use
     /// the identical Chebyshev formula `monsters_act` uses.
-    fn rest_heal(&mut self) {
+    /// Returns true iff the rest actually mended hp (batch 12 R7: the caller
+    /// in `wait_turn` uses this to decide whether the McGuffin tends you with
+    /// a mood-keyed `RestedBright`/`RestedDim` line, vs the plain `Idle`
+    /// standing-still comment — a rest that heals nothing earns no tending
+    /// line). `rest_heal > 0` and the `hp < maxhp` guard above together mean
+    /// a return past both early-outs always raised hp, so `true` is exact.
+    fn rest_heal(&mut self) -> bool {
         if self.hp >= self.maxhp {
-            return; // don't heal a corpse... or anyone already topped up
+            return false; // don't heal a corpse... or anyone already topped up
         }
         // `passive` (TRAINER/DONKEY, batch 9 T1) monsters never fight —
         // same exclusion `monsters_act` already applies before its own
@@ -2682,9 +2701,10 @@ impl Game {
                 && (m.x - self.px).abs().max((m.y - self.py).abs()) == 1
         });
         if hostile_adjacent {
-            return;
+            return false;
         }
         self.hp = (self.hp + GAME.balance.rest_heal).min(self.maxhp);
+        true
     }
 
     /// Shared tail for any player action that LANDS the player on
