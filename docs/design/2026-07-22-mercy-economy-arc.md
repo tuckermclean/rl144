@@ -175,6 +175,16 @@ has a target" below).
 
 ## The batch arc
 
+> **RENUMBER NOTE (2026-07-24, human redesign — see the "Engine 2 — light as grace" amendment):**
+> item 3 below was originally ONE batch that bundled the light-as-grace keystone WITH the
+> ride-along texture (goblin awe, cheese→goblin, becalm dividend, potion biology, trainer-memory,
+> donkey-follow). The redesign split it: **batch 12 = the light-as-grace / second-lantern keystone
+> alone** (DONE, merged — it flipped diplomacy above violence), and **batch 13 = the ride-alongs**
+> (DONE — diplomat 51.0% > violent 33.9%, the flip held through harder per-creature diplomacy).
+> That pushes **portal ROI (item 4) to batch 14**, and the donkey-companion reveal (item 5) and
+> scale/journey (item 6) shift accordingly. The item numbers below are the ORIGINAL plan; trust
+> this note and `git log` for what actually shipped and in which batch.
+
 1. **Batch 10 — tactical bots + band re-anchor.** Measurement infra; ships nothing
    player-facing; establishes the real difficulty and the two target numbers. Hard
    dependency of all economy work.
@@ -195,7 +205,7 @@ has a target" below).
    trainer-reads-your-last-life reaction + the donkey-follow **seed** (rungs 1–2). The
    economic unification; the balance / `START_LIGHT` MAJOR. (Ogre awe moved to batch 11 —
    see above.)
-4. **Batch 13 — portal ROI.** Loot tables scaled to risk (light caches, unique items,
+4. **Batch 14 — portal ROI** (renumbered from batch 13 by the split note above). Loot tables scaled to risk (light caches, unique items,
    otherwise-unreachable lore); the price telegraphed at the threshold in engine facts (the
    portal already knows its destination). Shallow dives +EV for the attentive; deep dives are
    the gamble. The multiverse becomes the pilgrimage light-rich pacifists can afford and
