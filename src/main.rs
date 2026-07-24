@@ -771,6 +771,24 @@ mod tests {
         assert!(g.killer.is_none(), "a darkness death has no combat killer");
     }
 
+    /// Light-as-grace (batch 12 T1, the violence half): killing a monster
+    /// dims the player's light by `kill_light_penalty`, on top of the
+    /// ordinary attack-turn burn (base_burn + violence_tax) `spend_turn`
+    /// applies afterward.
+    #[test]
+    fn killing_dims_light() {
+        let mut g = Game::new(7);
+        let (ox, oy) = (g.px + 1, g.py);
+        g.monsters.clear();
+        g.monsters.push(crate::game::Monster { kind: RAT, x: ox, y: oy, hp: 1, ..crate::game::Monster::spawn(RAT, ox, oy) });
+        let light_before = g.light;
+        g.apply_input(3); // bump East, kill the 1-hp rat
+        assert!(g.monsters.iter().all(|m| !(m.x == ox && m.y == oy)), "rat should be dead");
+        let ordinary = GAME.balance.base_burn + GAME.balance.violence_tax;
+        assert_eq!(g.light, light_before - ordinary - GAME.balance.kill_light_penalty,
+            "a kill must dim light by kill_light_penalty on top of the ordinary attack-turn burn");
+    }
+
     /// Running out of light on the exit tile is a LOSE, not a win.
     #[test]
     fn lose_beats_win_at_zero_light() {

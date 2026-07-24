@@ -1870,6 +1870,16 @@ impl Game {
             if killed {
                 self.monsters.remove(mi);
                 self.kills += 1;
+                // batch 12 T1 (light-as-grace, the violence half): a kill
+                // recoils on the player's own light, on top of the ordinary
+                // per-turn burn + violence tax that `spend_turn` applies
+                // later this same turn. No separate death check here — the
+                // single `light <= 0` dark-death check lives in
+                // `spend_turn`, reached below on every path out of this
+                // block (the fall-through attack-path tail, or the
+                // retal-killed branch's own `spend_turn` call) — confirmed
+                // by reading both call sites, not assumed.
+                self.light -= GAME.balance.kill_light_penalty;
                 self.log(GAME.strings.slay.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
                 self.carry_event(CarryEvent::KillWitnessed);
             } else {

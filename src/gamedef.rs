@@ -430,6 +430,9 @@ pub(crate) struct BalanceDef {
     /// A torch-tier at or below this FOV radius triggers the torch penalty.
     pub(crate) receptivity_torch_radius_threshold: i32,
     pub(crate) receptivity_clamp: (i32, i32),
+    /// Light lost each time the player kills — the McGuffin recoils; the
+    /// violence half of light-as-grace [batch 12].
+    pub(crate) kill_light_penalty: i32,
 }
 
 /// The win condition: which item ends the run, how it's carried, and where

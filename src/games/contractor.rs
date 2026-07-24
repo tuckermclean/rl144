@@ -721,6 +721,9 @@ const BALANCE: BalanceDef = BalanceDef {
     receptivity_torch_penalty: 10,
     receptivity_torch_radius_threshold: 4,
     receptivity_clamp: (5, 95),
+    // batch 12 T1 (story "light as grace" — the violence half): [TUNE]
+    // starting value, priced later against the balance sim re-baseline.
+    kill_light_penalty: 8,
 };
 
 const WIN: WinDef = WinDef {
