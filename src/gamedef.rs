@@ -395,6 +395,25 @@ pub(crate) struct GiveRule {
     /// distracted" message) the instant the becalm roll lands. `None` skips
     /// the extra line (a `stay_and_roll` row should normally set this).
     pub(crate) line_becalmed: Option<&'static str>,
+    /// Batch 13 T4 (story "potion is mammal-medicine"): a third distinct
+    /// outcome shape, mutually exclusive with `stay_and_roll` — used by the
+    /// potion's non-mammal rows (goblin/ogre). When set,
+    /// `Game::try_give_player` takes a separate branch that applies
+    /// `regard_delta` as a CRASH (never checked against
+    /// `Monster::talk_threshold` — a give-as-poison can never accidentally
+    /// becalm its target), logs `line`, consumes per `consumes`, and then
+    /// runs the ordinary post-give monster turn with the target NOT stayed
+    /// (`monsters_act_and_resolve_awe(None, ..)`, identical to the plain
+    /// regard_delta/heal_full branch below) — which is exactly the failed-
+    /// talk retaliation path: an adjacent, non-calm, seeing monster that
+    /// isn't `stayed` swings normally in `monsters_act` (monster ATK +
+    /// `combat_rng`, entirely independent of the player's own ATK). The
+    /// potion never damages the monster on this branch (`heal_full` is not
+    /// read here, by construction) — the danger is only the hit it invites.
+    /// `stay_and_roll` and `enrage` rows must never both be set on the same
+    /// row (they're deliberately opposite shapes: guaranteed stay+gambled
+    /// grace vs. no stay+guaranteed swing).
+    pub(crate) enrage: bool,
 }
 
 /// One theme's complete authored identity: label, the run's win-condition

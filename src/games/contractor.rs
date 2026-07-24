@@ -392,6 +392,12 @@ const CHEESE_USE_LINE: &str = "You burn the cheese. Cheese is, technically, fuel
 const POTION_GIVE_LINE: &str = "You offer the potion. This is not what potions are for. It works."; // NAR_035, verbatim
 const COAT_PICKUP_LINE: &str = "You find a coat. It is a normal coat for one normal monster."; // NAR_036, verbatim
 const TOWEL_PICKUP_LINE: &str = "You find a towel. You cannot imagine who needs it. You will."; // NAR_037, verbatim
+// batch 13 T4 (story "potion is mammal-medicine" / arc doc): potion is human
+// medicine -- it heals mammals (POTION_GIVE_LINE, rat) and poisons anything
+// else. Grounded: restates only the engine fact (it sickens the target, the
+// target lashes out) -- no invented lore, ASCII, under the 78-char log-row
+// budget.
+const POTION_GIVE_ENRAGE_LINE: &str = "The potion sickens the {M} instead of healing it. It lashes out!";
 // batch 13 T2 (story §12.14 / arc doc "Cheese has a target"): the human's
 // positive cheese give-target, resolved. Always logged (stay, distracted,
 // eating -- grounded, no invented history); the becalm line is a second,
@@ -497,11 +503,13 @@ const ITEMS: [ItemDef; 9] = [
 ];
 
 /* GIVE table (batch 7 T2, story §5/§9-A; cheese -> goblin row added batch
-   13 T2). Row order doesn't matter for correctness (`Game::try_give_player`
-   scans for the first match and this batch never lists two rows for the
-   same item + specific-kind pair), but is kept cheese-rat, potion,
+   13 T2; the blanket potion -> any row replaced with per-kind biology-coded
+   rows batch 13 T4, story "potion is mammal-medicine"). Row order doesn't
+   matter for correctness (`Game::try_give_player` scans for the first match
+   and this batch never lists two rows for the same item + specific-kind
+   pair), but is kept cheese-rat, potion-rat, potion-goblin, potion-ogre,
    cheese-goblin to match the items table's cheese/potion order above. */
-const GIVE_TABLE: [GiveRule; 3] = [
+const GIVE_TABLE: [GiveRule; 5] = [
     // cheese -> rat: measured regard PENALTY [TUNE -2] (story §4: "everyone
     // knows rats want cheese... offering cheese: measured regard PENALTY").
     // `line: None` reuses the rat's own stage-3 ("unmoved") talk line via
@@ -517,20 +525,57 @@ const GIVE_TABLE: [GiveRule; 3] = [
         consumes: true,
         stay_and_roll: false,
         line_becalmed: None,
+        enrage: false,
     },
-    // potion -> any monster: the single biggest regard event in the game
-    // [TUNE +3] (story §5: "Potion, given... undoing the wound after it
-    // made them listen"). `heal_full` undoes whatever wound made the
-    // target listen; NAR_035 verbatim.
+    // potion -> rat (batch 13 T4: a mammal): the single biggest regard
+    // event in the game [TUNE +3] (story §5: "Potion, given... undoing the
+    // wound after it made them listen"). `heal_full` undoes whatever wound
+    // made the target listen; NAR_035 verbatim. UNCHANGED behavior from the
+    // pre-batch-13 blanket row, now keyed specifically to the one kind it
+    // actually makes biological sense for — a bad trade by design (a whole
+    // scarce potion for a rat), the most self-sacrificing mercy in the game.
     GiveRule {
         item: POTION,
-        monster: None,
+        monster: Some(RAT),
         regard_delta: 3,
         line: Some(POTION_GIVE_LINE),
         heal_full: true,
         consumes: true,
         stay_and_roll: false,
         line_becalmed: None,
+        enrage: false,
+    },
+    // potion -> goblin (batch 13 T4: NOT a mammal): ENRAGE (see
+    // `GiveRule::enrage`'s doc comment). Regard crash [TUNE -10, saturating
+    // — well past any threshold, so this can never accidentally becalm];
+    // no heal; the target lands its own free swing at the player this same
+    // turn (monster ATK + combat_rng, never the player's ATK) via the exact
+    // failed-talk retaliation path. Purely a trap — the potion never
+    // damages the monster, so this is never a useful weapon, only a
+    // read-the-bestiary mistake.
+    GiveRule {
+        item: POTION,
+        monster: Some(GOBLIN),
+        regard_delta: -10,
+        line: Some(POTION_GIVE_ENRAGE_LINE),
+        heal_full: false,
+        consumes: true,
+        stay_and_roll: false,
+        line_becalmed: None,
+        enrage: true,
+    },
+    // potion -> ogre (batch 13 T4: NOT a mammal): same enrage shape as
+    // potion -> goblin above.
+    GiveRule {
+        item: POTION,
+        monster: Some(OGRE),
+        regard_delta: -10,
+        line: Some(POTION_GIVE_ENRAGE_LINE),
+        heal_full: false,
+        consumes: true,
+        stay_and_roll: false,
+        line_becalmed: None,
+        enrage: true,
     },
     // cheese -> goblin (batch 13 T2, story §12.14 / arc doc "Cheese has a
     // target", human-assigned): the reserved positive cheese give-target.
@@ -557,6 +602,7 @@ const GIVE_TABLE: [GiveRule; 3] = [
         consumes: true,
         stay_and_roll: true,
         line_becalmed: Some(CHEESE_GOBLIN_BECALM_LINE),
+        enrage: false,
     },
 ];
 

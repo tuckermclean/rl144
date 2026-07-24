@@ -1963,10 +1963,13 @@ mod tests {
         }
     }
 
-    /// Give the potion to a wounded monster: heals it to full AND raises
-    /// regard (story §5: "the single biggest regard event in the game").
+    /// Give the potion to a wounded RAT (a mammal): heals it to full AND
+    /// raises regard (story §5: "the single biggest regard event in the
+    /// game"). Batch 13 T4: this row is now rat-specific ("potion is
+    /// mammal-medicine") rather than the old blanket any-monster row, but
+    /// the mechanics for the one kind it still applies to are UNCHANGED.
     #[test]
-    fn potion_given_heals_full_and_raises_regard() {
+    fn potion_given_to_rat_heals_full_and_raises_regard() {
         let mut g = blank_room(1);
         g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false });
         g.held = vec![POTION];
@@ -1975,6 +1978,62 @@ mod tests {
         assert_eq!(g.monsters[0].hp, maxhp, "potion-gift must heal the target to full");
         assert_eq!(g.monsters[0].regard, 3, "potion-gift must apply the +3 [TUNE] regard bonus");
         assert!(g.held.is_empty(), "the potion must be consumed by a landed give");
+    }
+
+    /// Batch 13 T4 (story "potion is mammal-medicine"): potion -> GOBLIN
+    /// (not a mammal) enrages instead of healing. Regard crashes, the
+    /// goblin takes NO damage (its hp is untouched), the potion is
+    /// consumed, and the player takes exactly the goblin's own free swing
+    /// (ATK + combat_rng in [0,1], per `monsters_act`'s attack formula) —
+    /// the same hit shape a failed talk's retaliation uses.
+    #[test]
+    fn potion_given_to_goblin_enrages_no_monster_damage() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 2, calm: false, awe: 0, dividend_paid: false });
+        g.held = vec![POTION];
+        let hp0 = g.hp;
+        let atk = Monster::stats(GOBLIN).atk;
+        g.apply_input(11); // give-N
+        assert_eq!(g.monsters[0].hp, 6, "the potion must deal no damage to the goblin");
+        assert_eq!(g.monsters[0].regard, 0, "an enrage give must crash regard (saturating)");
+        assert!(!g.monsters[0].calm, "an enrage give must never becalm its target");
+        assert!(g.held.is_empty(), "the potion must be consumed even on an enrage give");
+        let dmg = hp0 - g.hp;
+        assert!((atk..=atk + 1).contains(&dmg), "expected a free swing of {}..={} HP, got {}", atk, atk + 1, dmg);
+    }
+
+    /// Batch 13 T4: potion -> OGRE (not a mammal) is the same enrage shape
+    /// as potion -> goblin above.
+    #[test]
+    fn potion_given_to_ogre_enrages_no_monster_damage() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 2, calm: false, awe: 0, dividend_paid: false });
+        g.held = vec![POTION];
+        let hp0 = g.hp;
+        let atk = Monster::stats(OGRE).atk;
+        g.apply_input(11); // give-N
+        assert_eq!(g.monsters[0].hp, 13, "the potion must deal no damage to the ogre");
+        assert_eq!(g.monsters[0].regard, 0, "an enrage give must crash regard (saturating)");
+        assert!(!g.monsters[0].calm, "an enrage give must never becalm its target");
+        assert!(g.held.is_empty(), "the potion must be consumed even on an enrage give");
+        let dmg = hp0 - g.hp;
+        assert!((atk..=atk + 1).contains(&dmg), "expected a free swing of {}..={} HP, got {}", atk, atk + 1, dmg);
+    }
+
+    /// Batch 13 T4: the enrage hit is the monster's own ATK stat, never the
+    /// player's — a weak (zero-ATK) player still triggers the full enrage
+    /// swing when potioning an ogre.
+    #[test]
+    fn potion_enrage_hit_not_tied_to_player_atk() {
+        let mut g = blank_room(1);
+        g.atk = 0; // weak-ATK player
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 2, calm: false, awe: 0, dividend_paid: false });
+        g.held = vec![POTION];
+        let hp0 = g.hp;
+        let atk = Monster::stats(OGRE).atk;
+        g.apply_input(11); // give-N
+        let dmg = hp0 - g.hp;
+        assert!(dmg >= atk, "a weak-ATK player must still take the full monster swing ({}), got {}", atk, dmg);
     }
 
     /// USE with nothing held: no-op, no turn.

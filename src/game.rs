@@ -2513,6 +2513,11 @@ impl Game {
     /// -> goblin, story §12.14) takes a separate branch entirely — see
     /// `GiveRule::stay_and_roll`'s doc comment for the guaranteed-stay +
     /// gambled-becalm shape, and below for the mechanics.
+    ///
+    /// **Exception, batch 13 T4**: a `GiveRule::enrage` row (potion ->
+    /// goblin/ogre, "potion is mammal-medicine") also takes a separate
+    /// branch — see `GiveRule::enrage`'s doc comment for the regard-crash +
+    /// un-stayed-swing shape.
     pub(crate) fn try_give_player(&mut self, dx: i32, dy: i32) {
         self.fx_hit = None;
         if self.dead || self.won {
@@ -2575,6 +2580,34 @@ impl Game {
             // stayed here regardless of landed/failed (batch 13 T2's whole
             // point — the stay is the guaranteed half of the bargain).
             self.monsters_act_and_resolve_awe(Some(mi), None, (self.px, self.py));
+            return;
+        }
+        if rule.enrage {
+            // Batch 13 T4 (story "potion is mammal-medicine"): the potion
+            // sickens a non-mammal instead of healing it. Regard CRASHES
+            // (saturating sub, never checked against `talk_threshold` —
+            // this branch can never becalm) and NO heal is applied,
+            // regardless of `heal_full` (unread here, by construction). The
+            // target is left un-stayed (`None` below), so it swings
+            // normally in `monsters_act`'s adjacent+sees branch this same
+            // turn — the exact failed-talk retaliation path, monster ATK +
+            // `combat_rng` only, never touching the player's own ATK.
+            let before = self.monsters[mi].regard;
+            self.monsters[mi].regard = if rule.regard_delta >= 0 {
+                before.saturating_add(rule.regard_delta as u8)
+            } else {
+                before.saturating_sub((-rule.regard_delta) as u8)
+            };
+            if let Some(t) = rule.line {
+                self.log(t.replace("{M}", name));
+            }
+            if rule.consumes {
+                self.held.pop();
+            }
+            if !self.spend_turn(0) {
+                return; // died in the dark on a give turn: lose beats anything else
+            }
+            self.monsters_act_and_resolve_awe(None, None, (self.px, self.py));
             return;
         }
         if rule.heal_full {
