@@ -5,6 +5,7 @@
 
 use crate::content::theme_for;
 use crate::game::{COLS, Game, MAP_H, Monster, Tile, WorldId, bfs_dist, idx, in_map, max_depth};
+use crate::gamedef::ItemEffect;
 use crate::games::GAME;
 use crate::rng::fnv_bytes;
 
@@ -1105,4 +1106,67 @@ pub(crate) fn dump_overworld() -> String {
         out.push_str(&level_dump(&g));
     }
     out
+}
+
+/// Batch 14 T2 (portal ROI): the geometric dive-cost probe behind each
+/// authored floor's light-cache value. Mirrors `solve_seed`'s round-trip
+/// BFS shape, but the round trip here is walk-to-the-cache-and-back-to-the-
+/// entrance, not carry-the-objective-out-x2 like `solve_seed` — a light
+/// cache isn't heavy the way the win-condition item is, so there is no x3
+/// multiplier, just plain there-and-back: dive cost in light = 2 *
+/// bfs_dist(entry `<` -> cache tile), since light burns 1/turn
+/// (`BalanceDef::base_burn`). Instantiates the floor directly
+/// (`Game::instantiate_floor`, the same seed-independent zero-RNG parse
+/// `dump_overworld` above already calls directly for the overworld's
+/// screens) rather than transiting through a rigged portal, since an
+/// authored floor needs no seed/world-state setup at all. Panics if the
+/// floor has no light-cache item — a probe call on a barren floor is a
+/// caller bug (a future barren floor, e.g. T4's telegraph-contrast case,
+/// simply should never be passed to this fn).
+///
+/// See `games::contractor::AUTHORED_FLOORS`'s doc comment and the
+/// `LIGHT_CACHE` `ItemEffect::LightCache` value's doc comment in
+/// `contractor.rs` for the derivation this measures: floor 0 = 12, floor 1
+/// = 14 (the worse dive), value = 14 + 14/2 = 21.
+pub(crate) fn floor_dive_cost(floor_index: u8) -> i32 {
+    let mut g = Game::new(0);
+    g.instantiate_floor(floor_index);
+    let entry = (g.px, g.py);
+    let cache = g
+        .items
+        .iter()
+        .find(|it| matches!(GAME.items[it.kind as usize].effect, ItemEffect::LightCache(_)))
+        .map(|it| (it.x, it.y))
+        .unwrap_or_else(|| panic!("floor_dive_cost({}): floor has no light-cache item", floor_index));
+    2 * bfs_dist(&g.map, entry)[idx(cache.0, cache.1)]
+}
+
+/// `--probe-floors`: prints each authored floor's round-trip dive cost next
+/// to the derived cache value, so the batch-14 T2 derivation is
+/// reproducible/eyeballable headlessly (house style, like `--solve
+/// --report`) rather than only checkable by reading source. Purely a
+/// reporting surface — exits 0 unconditionally, no gate.
+pub(crate) fn probe_floors_main() {
+    // All `$` caches share one `ItemDef` (see the derivation comment on its
+    // `ItemEffect::LightCache` value in `contractor.rs`), so there's one
+    // value to report regardless of which floor's cache it came from.
+    let value = GAME
+        .items
+        .iter()
+        .find_map(|it| match it.effect {
+            ItemEffect::LightCache(n) => Some(n),
+            _ => None,
+        })
+        .expect("--probe-floors: no LightCache item defined in this cartridge");
+    for i in 0..GAME.authored_floors.len() as u8 {
+        let cost = floor_dive_cost(i);
+        println!(
+            "floor {} ({}): round-trip dive cost = {}, cache value = {} (margin {})",
+            i,
+            GAME.authored_floors[i as usize].name,
+            cost,
+            value,
+            value - cost
+        );
+    }
 }

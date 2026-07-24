@@ -1687,7 +1687,13 @@ impl Game {
     /// sequence of rooms). Authored floors place no further portals this
     /// batch (see `Game::portal`'s doc comment) and carry no lore items
     /// (see `AuthoredFloorDef`'s doc comment).
-    fn instantiate_floor(&mut self, i: u8) {
+    ///
+    /// `pub(crate)` (batch 14 T2): `headless::floor_dive_cost`'s probe calls
+    /// this directly, the same way `headless::dump_overworld` already calls
+    /// `instantiate_overworld_screen` directly — a floor is fully authored,
+    /// zero-RNG ASCII, so instantiating it needs no seed/world-state setup
+    /// at all, and no portal-transit fixture dance either.
+    pub(crate) fn instantiate_floor(&mut self, i: u8) {
         self.map = vec![Tile::Wall; COLS * MAP_H];
         self.seen = vec![false; COLS * MAP_H];
         self.vis = vec![false; COLS * MAP_H];
@@ -3167,7 +3173,9 @@ impl Game {
                     self.log(line);
                 }
                 ItemEffect::LightCache(n) => {
-                    // [value DERIVED in batch 14 T2 — placeholder here]
+                    // value DERIVED in batch 14 T2 (see the cartridge's
+                    // `ItemEffect::LightCache(21)` doc comment for the
+                    // geometric dive-cost derivation).
                     // [CAPPED in batch 14 T3 — uncapped here]
                     self.light += n;
                     self.log(GAME.strings.light_cache_found.replace("{}", &n.to_string()));

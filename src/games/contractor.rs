@@ -71,9 +71,13 @@ pub(crate) const TOWEL: crate::game::IKind = 8;
 // authored-floor portal destinations (never in a root-world depth, so it
 // never touches the root goldens). Glyph `$` — not used by any existing
 // tile/item/monster/vault/overworld legend character (checked against
-// `headless::level_dump`'s legend and every other item's glyph). Nothing
-// places it yet: batch 14 T4 stamps it into `AUTHORED_FLOORS`' maps once its
-// value is derived (T2) and capped (T3) — `#[allow(dead_code)]` until then.
+// `headless::level_dump`'s legend and every other item's glyph). batch 14
+// T2 stamped it into both `AUTHORED_FLOORS` maps (see that const's doc
+// comment for each floor's `$` position and dive cost) and derived its
+// value below; the cap lands in T3. `#[allow(dead_code)]` stays — like
+// COAT/TOWEL above, placement is glyph-driven (the map ASCII's `$` byte
+// matches `ITEMS[LIGHT_CACHE].glyph` at parse time), so no production code
+// ever reads this named index, only `main.rs`'s tests do.
 #[allow(dead_code)]
 pub(crate) const LIGHT_CACHE: crate::game::IKind = 9;
 
@@ -561,13 +565,31 @@ const ITEMS: [ItemDef; 10] = [
     // pre-batch-7 walk-over heal. `pickup_line` is "" here (ignored for
     // `Consume` rows per `ItemDef::on_pickup`'s doc comment) — the actual
     // message comes from `StringsDef::light_cache_found`, read at
-    // `Game::pickup`'s `LightCache` match arm. `100` is a placeholder value
-    // [DERIVED in batch 14 T2 from the geometric dive-cost probe — not yet
-    // tied to any floor's actual round-trip cost].
+    // `Game::pickup`'s `LightCache` match arm.
+    //
+    // Value DERIVED in batch 14 T2, `START_LIGHT`-comment style (never
+    // hand-picked): both `AUTHORED_FLOORS` caches share this ONE `ItemDef`
+    // (there is only one `$` item row), so the value is derived from the
+    // WORSE of the two floors' round-trip dive costs, ensuring every
+    // floor's cache clears its own cost with margin. Per-floor figures (see
+    // `AUTHORED_FLOORS`'s doc comment for each dive's BFS trace):
+    //   floor 0 "a quiet shrine"      -> round-trip dive cost 12
+    //   floor 1 "a cramped loot vault" -> round-trip dive cost 14 (worse)
+    // value = worst_cost + worst_cost/2 (a flat 50% margin over the worse
+    // dive) = 14 + 7 = 21. This makes floor 1's cache the tight case (a 7-
+    // light, ~50% profit over its own 14-light cost — the guarded floor's
+    // gamble) and floor 0's the comfortable one (a 9-light, 75% profit over
+    // its cheaper 12-light cost — the safe floor's easy win), matching the
+    // sign-off's "shallow floor clears with healthy margin, deep/guarded
+    // floor is the tighter gamble" shape without needing a second `ItemDef`
+    // row. Pinned by `main.rs`'s `authored_floor_dive_costs_match_
+    // derivation` and `light_cache_value_matches_derivation` tests — a
+    // future map edit or a third floor re-derives this value deliberately,
+    // never by feel.
     ItemDef {
         glyph: b'$',
         color: 0xFFE080,
-        effect: ItemEffect::LightCache(100),
+        effect: ItemEffect::LightCache(21),
         on_pickup: PickupBehavior::Consume,
         pickup_line: "",
         on_use: None,
@@ -838,27 +860,44 @@ const VAULTS: [&str; 5] = [
 /* A portal's destination may be an authored, singular place instead of a
    derived world: hand-built, one level, no RNG at all. Legend, an extended
    vault-style subset: '#' wall, '.' floor, '<' the return portal, '!'
-   potion, ')' sword, 'r'/'g'/'O' monster of that stat row. See
-   `gamedef::AuthoredFloorDef`'s doc comment for the engine-side contract. */
+   potion, ')' sword, 'r'/'g'/'O' monster of that stat row, '$' the
+   light-cache reward (batch 14 T2, portal ROI — see the derivation comment
+   on `LIGHT_CACHE`'s `ItemEffect::LightCache` value below). See
+   `gamedef::AuthoredFloorDef`'s doc comment for the engine-side contract.
+   Each floor's `$` position and its geometric round-trip dive cost (BFS
+   from `<` to `$` and back, light burns 1/turn) is documented at the glyph
+   below; both figures are pinned by `main.rs`'s
+   `authored_floor_dive_costs_match_derivation` test, so a future map edit
+   that moves either `<` or `$` fails loudly instead of silently drifting
+   the derivation this cartridge's cache value is built on. */
 const AUTHORED_FLOORS: [AuthoredFloorDef; 2] = [
-    // a quiet lore shrine: nothing hunts here, two flasks and the portal home
+    // a quiet lore shrine: nothing hunts here, two flasks, a light cache in
+    // the far corner, and the portal home. `<` sits at (col 5, row 3); `$`
+    // at (col 1, row 1) is BFS-distance 6 away through the open room (no
+    // interior walls, so BFS distance here is exactly the Manhattan
+    // distance: |5-1| + |3-1| = 6) -> round-trip dive cost 12.
     AuthoredFloorDef {
         name: "a quiet shrine",
         describe: "Nothing hunts here. Two flasks wait on cold stone, untouched.",
         map: "###########\n\
-              #.........#\n\
+              #$........#\n\
               #....!....#\n\
               #....<....#\n\
               #....!....#\n\
               #.........#\n\
               ###########",
     },
-    // a small hazard/loot room: four guards ring one blade
+    // a small hazard/loot room: four guards ring one blade, plus a light
+    // cache tucked past the near guard pair. `<` sits at (col 6, row 5); `$`
+    // at (col 9, row 1) is BFS-distance 7 away (Manhattan: |6-9| + |5-1| =
+    // 7, again no interior walls) -> round-trip dive cost 14 — the worse
+    // (guarded) of this cartridge's two dives, see the derivation comment
+    // on `LIGHT_CACHE`'s `ItemEffect::LightCache` value below.
     AuthoredFloorDef {
         name: "a cramped loot vault",
         describe: "Four guards ring a single blade. Someone thought it worth that many.",
         map: "#############\n\
-              #r.........r#\n\
+              #r.......$.r#\n\
               #...........#\n\
               #.....).....#\n\
               #...........#\n\

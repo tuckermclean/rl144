@@ -27,7 +27,7 @@ mod backend_minifb;
 mod backend_term;
 
 use game::Game;
-use headless::{Policy, dump, dump_overworld, sim_main, solve_main};
+use headless::{Policy, dump, dump_overworld, probe_floors_main, sim_main, solve_main};
 use rng::h64;
 use save::{parse_save, replay, state_hash};
 
@@ -45,7 +45,7 @@ use games::GAME;
 #[cfg(test)]
 use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, OGRE, POTION, RAT, TOWEL, TRAINER};
 #[cfg(test)]
-use headless::{level_dump, sim_seed, solve_seed};
+use headless::{floor_dive_cost, level_dump, sim_seed, solve_seed};
 #[cfg(test)]
 use render::scale;
 #[cfg(test)]
@@ -133,6 +133,13 @@ fn main() {
     // order between them doesn't matter.
     if args.iter().any(|a| a == "--dump-overworld") {
         print!("{}", dump_overworld());
+        return;
+    }
+    // batch 14 T2 (portal ROI): reports each authored floor's geometric
+    // dive-cost probe next to the derived cache value — see
+    // `headless::probe_floors_main`'s doc comment.
+    if args.iter().any(|a| a == "--probe-floors") {
+        probe_floors_main();
         return;
     }
     // --render-frame: render one initial frame straight to stdout and exit,
@@ -2260,7 +2267,10 @@ mod tests {
 
     /// Walking onto a light-cache (`ItemEffect::LightCache`) raises `light`
     /// by exactly its authored value, and the item is consumed (walk-over,
-    /// not held) — placeholder T1 value, uncapped (T3 adds the per-run cap).
+    /// not held) — reads the value dynamically off `GAME` rather than
+    /// hardcoding it, so this stays true whether that value is T1's
+    /// placeholder or T2's derived figure. Still uncapped (T3 adds the
+    /// per-run cap).
     #[test]
     fn light_cache_walkover_raises_light_and_is_consumed() {
         let mut g = blank_room(1);
@@ -2288,6 +2298,96 @@ mod tests {
         let def = &GAME.items[LIGHT_CACHE as usize];
         assert!(def.on_pickup == PickupBehavior::Consume, "the light-cache must be a walk-over Consume item");
         assert!(matches!(def.effect, ItemEffect::LightCache(_)), "the light-cache's effect must be LightCache");
+    }
+
+    // ---------- Derived cache values (batch 14 T2, portal ROI) ----------
+
+    /// TDD test 1 (batch-14-T2 brief): instantiating each authored floor
+    /// places exactly one light-cache item, at the exact position
+    /// documented in `AUTHORED_FLOORS`'s doc comment (expressed as a
+    /// (dx, dy) offset from the floor's own entry `<`, so this doesn't need
+    /// to know the floor's centering offset within the 80x25 grid).
+    #[test]
+    fn authored_floor_cache_placed_at_expected_position() {
+        // (floor_index, expected (cache_x - entry_x, cache_y - entry_y))
+        let expected: [(u8, (i32, i32)); 2] = [(0, (-4, -2)), (1, (3, -4))];
+        for (fi, (dx, dy)) in expected {
+            let mut g = Game::new(0);
+            g.instantiate_floor(fi);
+            let entry = (g.px, g.py);
+            let caches: Vec<(i32, i32)> = g
+                .items
+                .iter()
+                .filter(|it| matches!(GAME.items[it.kind as usize].effect, ItemEffect::LightCache(_)))
+                .map(|it| (it.x, it.y))
+                .collect();
+            assert_eq!(caches.len(), 1, "floor {} must place exactly one light-cache item", fi);
+            assert_eq!(
+                caches[0],
+                (entry.0 + dx, entry.1 + dy),
+                "floor {} cache must sit at the documented offset from its entry",
+                fi
+            );
+        }
+    }
+
+    /// TDD test 2: the round-trip geometric dive cost for each authored
+    /// floor (2 * bfs_dist(entry -> cache)) matches the figure documented
+    /// at `AUTHORED_FLOORS` and at `headless::floor_dive_cost`'s doc
+    /// comment — this is what keeps the derivation honest against a future
+    /// map edit.
+    #[test]
+    fn authored_floor_dive_costs_match_derivation() {
+        assert_eq!(floor_dive_cost(0), 12, "floor 0 (the quiet shrine) dive cost");
+        assert_eq!(floor_dive_cost(1), 14, "floor 1 (the cramped loot vault) dive cost");
+    }
+
+    /// TDD test 3: the shared `LIGHT_CACHE` value = the WORSE of the two
+    /// floors' round-trip dive costs, plus a documented 50% margin — never
+    /// a magic number. Recomputes the expected value from the same
+    /// `floor_dive_cost` probe the derivation comment cites, so this test
+    /// fails (rather than silently passing) if either floor's geometry
+    /// drifts without the cartridge's authored value being re-derived
+    /// alongside it.
+    #[test]
+    fn light_cache_value_matches_derivation() {
+        let worst = (0..GAME.authored_floors.len() as u8).map(floor_dive_cost).max().unwrap();
+        let expected = worst + worst / 2;
+        let value = match GAME.items[LIGHT_CACHE as usize].effect {
+            ItemEffect::LightCache(n) => n,
+            _ => panic!("LIGHT_CACHE should carry an ItemEffect::LightCache"),
+        };
+        assert_eq!(value, expected, "cache value must be the worst dive cost plus its documented 50% margin");
+    }
+
+    /// TDD test 4: walking onto the cache INSIDE an actual authored floor
+    /// (not a synthetic blank room) refunds light end-to-end, building on
+    /// T1's walk-over effect — proves the placement (this task) and the
+    /// effect (T1) compose correctly in the real destination a portal dive
+    /// lands you in.
+    #[test]
+    fn authored_floor_cache_walkover_refunds_light() {
+        let mut g = Game::new(0);
+        g.instantiate_floor(0); // "a quiet shrine"
+        let cache = g
+            .items
+            .iter()
+            .find(|it| matches!(GAME.items[it.kind as usize].effect, ItemEffect::LightCache(_)))
+            .map(|it| (it.x, it.y))
+            .expect("fixture: floor 0 must have a light-cache item");
+        let value = match GAME.items[LIGHT_CACHE as usize].effect {
+            ItemEffect::LightCache(n) => n,
+            _ => panic!("LIGHT_CACHE should carry an ItemEffect::LightCache"),
+        };
+        let light_before = g.light;
+        let items_before = g.items.len();
+        step_onto(&mut g, cache.0, cache.1);
+        assert_eq!(
+            g.light,
+            light_before + value - GAME.balance.base_burn,
+            "walking onto the floor's cache must add its value, then pay the ordinary per-turn burn"
+        );
+        assert_eq!(g.items.len(), items_before - 1, "the floor's cache must be consumed on walk-over");
     }
 
     // ---------- PUT DOWN / CarryEvent (batch 8 T1, story §9-B/C/D) ----------
@@ -3968,7 +4068,7 @@ mod tests {
             for (j, row) in rows.iter().enumerate() {
                 assert_eq!(row.len(), w, "floor {} row {} ragged", fi, j);
                 for (i, c) in row.bytes().enumerate() {
-                    assert!(b"#.<!)rgO".contains(&c), "floor {} bad char {}", fi, c as char);
+                    assert!(b"#.<!)rgO$".contains(&c), "floor {} bad char {}", fi, c as char);
                     if c == b'<' {
                         lt_count += 1;
                     }
