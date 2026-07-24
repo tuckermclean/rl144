@@ -560,6 +560,14 @@ fn render_end(g: &Game, cells: &mut [Cell]) {
         row += 2;
         let cause = match g.killer {
             Some(name) => format!("Slain by the {}.", name),
+            // batch 12 R5 ("light as grace"): distinguishes a plain
+            // darkness death from one where the McGuffin WAS shining
+            // somewhere but her light never reached the player — see
+            // `Game::died_out_of_her_light`'s doc comment for exactly
+            // when this is set.
+            None if g.died_out_of_her_light => {
+                String::from("The dark took you, though her light was somewhere else.")
+            }
             None => String::from("The dark took you."),
         };
         put_centered(cells, row, &cause, PAL_STATUS);

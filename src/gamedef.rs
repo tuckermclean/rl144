@@ -467,6 +467,19 @@ pub(crate) struct BalanceDef {
     /// becalm (`Game::record_spare`) — the diplomat's counterpart to
     /// `MonsterDef::kill_valence`. [TUNE] starting value.
     pub(crate) mood_spare_valence: i32,
+    /// batch 12 R5 ("light as grace"): the McGuffin's own shine radius,
+    /// tiered off `Game::mood` (`0..=100`) exactly the way `fov_tiers`
+    /// tiers the torch off `light` — `(mood_threshold_exclusive, radius)`
+    /// pairs, checked in order, first tier whose threshold `mood` exceeds
+    /// wins; the last entry's threshold should be low enough (or
+    /// `i32::MIN`) to always match. **CRITICAL**: the lowest band's radius
+    /// MUST be `0` — a mood-0 carrier gives no light at all, so a
+    /// dead-torch brute dies exactly as it did before this batch (see
+    /// `Game::mood_shine_radius`/`Game::mcguffin_light`, which both treat
+    /// radius `0` as "she does not shine," full stop, not as a
+    /// distance-0-still-fits-in-a-zero-radius-circle technicality).
+    /// [TUNE] starting bands.
+    pub(crate) mood_shine_tiers: &'static [(i32, i32)],
 }
 
 /// The win condition: which item ends the run, how it's carried, and where

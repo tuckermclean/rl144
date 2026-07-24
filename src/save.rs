@@ -120,17 +120,19 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// level. If two replays of one save ever hash differently, channel
 /// discipline broke somewhere.
 ///
-/// `g.killer`, `g.echo`, `g.facing`, `g.fx_hit`, and (batch 8 T1) `g.
-/// mcguffin_last_line_turn` are all deliberately NOT hashed: every one of
-/// them is presentation-only (the End screen's cause-of-death line; the
-/// retry-echo tile; the player sprite's facing; the screen-feel
-/// flash/squash tile; the McGuffin-chatter rate-limit tracker,
-/// respectively), none affects anything replay needs to reproduce, and
-/// each is fully determined by state that IS hashed anyway (the same
-/// move/attack/death/turn sequence that produces `dead`/`px`/`py`/the
-/// monster-hp deltas/`turns` itself). See each field's own doc comment in
-/// `game.rs` for the field-specific rationale; this is the one place that
-/// enumerates them together as a set.
+/// `g.killer`, `g.echo`, `g.facing`, `g.fx_hit`, (batch 8 T1) `g.
+/// mcguffin_last_line_turn`, and (batch 12 R5) `g.died_out_of_her_light`
+/// are all deliberately NOT hashed: every one of them is presentation-only
+/// (the End screen's cause-of-death line; the retry-echo tile; the player
+/// sprite's facing; the screen-feel flash/squash tile; the McGuffin-chatter
+/// rate-limit tracker; the End screen's "out of her light" death-message
+/// variant, respectively), none affects anything replay needs to
+/// reproduce, and each is fully determined by state that IS hashed anyway
+/// (the same move/attack/death/turn sequence that produces `dead`/`px`/
+/// `py`/the monster-hp deltas/`turns`/`mood_sum`/`mood_count` itself). See
+/// each field's own doc comment in `game.rs` for the field-specific
+/// rationale; this is the one place that enumerates them together as a
+/// set.
 ///
 /// `g.speech_attempts` and `g.objective_dropped` (batch 8 T1) are, by
 /// contrast, hashed below alongside `held`/`spared`/etc — both are

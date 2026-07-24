@@ -749,6 +749,12 @@ const BALANCE: BalanceDef = BalanceDef {
     // mood_anchor_weight`'s doc comment.
     mood_anchor_weight: 20,
     mood_spare_valence: 100,
+    // batch 12 R5 ("light as grace"): [TUNE] starting bands. mood 76-100 ->
+    // radius 6 (a max-shine diplomat's light matches the torch's own top
+    // tier); 51-75 -> 4; 26-50 -> 2; 0-25 -> radius 0, the DARK tier — a
+    // mood-0 brute gets no shine from her at all, preserving the pre-batch
+    // "torch dead = death" outcome exactly for that carrier.
+    mood_shine_tiers: &[(75, 6), (50, 4), (25, 2), (i32::MIN, 0)],
 };
 
 const WIN: WinDef = WinDef {

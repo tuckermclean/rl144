@@ -35,8 +35,8 @@ use save::{parse_save, replay, state_hash};
 use content::ghost_label_idx;
 #[cfg(test)]
 use game::{
-    COLS, Dest, Item, MAP_H, MAX_PUSH_CHAIN, MKind, Monster, Tile, WorldId, bfs_dist, idx, in_map,
-    receptivity,
+    COLS, Dest, Item, MAP_H, MAX_PUSH_CHAIN, MKind, Monster, Tile, WorldId, bfs_dist, fov_radius, idx,
+    in_map, mood_shine_radius, receptivity,
 };
 #[cfg(test)]
 use gamedef::CarryEvent;
@@ -823,6 +823,17 @@ mod tests {
     fn lose_beats_win_at_zero_light() {
         let mut g = Game::new(7);
         g.has_objective = true;
+        // batch 12 R5 ("light as grace"): `has_objective = true` here is a
+        // test shortcut that bypasses `Game::pickup` — in real play that
+        // path always seeds the mood anchor in the same branch, so
+        // `mood_count` is never 0 while `has_objective` is true. Pin a
+        // genuine dark-tier (pure-brute) mood explicitly so this test
+        // still exercises "she does not shine" rather than accidentally
+        // reading `Game::mood`'s `mood_count == 0` neutral-50 fallback,
+        // which would land in a non-dark shine tier and survive the
+        // darkness this test means to prove is still fatal for a brute.
+        g.mood_sum = 0;
+        g.mood_count = 1;
         g.light = 2; // burn of 2 lands exactly on 0
         // step off the entrance and back onto it
         let (ex, ey) = (g.px, g.py);
@@ -2180,6 +2191,129 @@ mod tests {
 
         a.mood_count = 5;
         assert_ne!(state_hash(&a), state_hash(&b), "mood_count must be hashed");
+    }
+
+    // ---------- Batch 12 R5: "light as grace" — her shine + the death rewrite ----------
+
+    /// `mood_shine_radius`'s own tier table: the CRITICAL invariant is that
+    /// the dark tier (mood 0-25) reads as radius 0 — "she does not shine,"
+    /// full stop — while every band above it shines with a positive radius,
+    /// topping out at the torch's own top-tier radius for a max-mood
+    /// diplomat.
+    #[test]
+    fn mood_shine_radius_tiers() {
+        assert_eq!(mood_shine_radius(0), 0, "dark tier: no shine at all");
+        assert_eq!(mood_shine_radius(25), 0, "dark tier's own upper edge");
+        assert_eq!(mood_shine_radius(26), 2);
+        assert_eq!(mood_shine_radius(50), 2, "this band's own upper edge");
+        assert_eq!(mood_shine_radius(51), 4);
+        assert_eq!(mood_shine_radius(75), 4, "this band's own upper edge");
+        assert_eq!(mood_shine_radius(76), 6);
+        assert_eq!(mood_shine_radius(100), 6, "max mood: brightest tier");
+    }
+
+    /// A max-shine McGuffin carries the run through a torch that hits
+    /// exactly 0 — "the flip": a diplomat's carrier walks in her light once
+    /// the torch itself is spent.
+    #[test]
+    fn carried_bright_mcguffin_survives_dead_torch() {
+        let mut g = blank_room(401);
+        g.has_objective = true;
+        g.mood_sum = 100;
+        g.mood_count = 1; // mood() == 100 -> bright tier, radius 6
+        g.light = 1; // any turn's carry_burn (>=1) lands this at/below 0
+        g.wait_turn();
+        assert_eq!(g.light, 0, "setup: the torch itself must actually hit zero");
+        assert!(!g.dead, "her bright shine must carry the run through a dead torch");
+    }
+
+    /// A mood-0 (dark tier, radius 0) carrier is nerfed exactly like a
+    /// pre-batch-12-R5 attempt: her shine is `None` for this carrier, so a
+    /// dead torch still kills — the T1 nerf this batch does not undo.
+    #[test]
+    fn dark_tier_mcguffin_dies_on_dead_torch() {
+        let mut g = blank_room(402);
+        g.has_objective = true;
+        g.mood_sum = 0;
+        g.mood_count = 1; // mood() == 0 -> dark tier, radius 0: no shine
+        g.light = 1;
+        g.wait_turn();
+        assert_eq!(g.light, 0, "setup: the torch itself must actually hit zero");
+        assert!(g.dead, "a mood-0 brute must still die in the dark, unchanged from before this batch");
+    }
+
+    /// Before the objective is ever claimed (not carried, not put down),
+    /// she isn't "yours" and doesn't shine for you at all — a dead torch
+    /// kills exactly as it always has.
+    #[test]
+    fn no_mcguffin_dies_on_dead_torch() {
+        let mut g = blank_room(403);
+        assert!(!g.has_objective && !g.objective_dropped, "setup: she hasn't been claimed yet");
+        g.light = 1;
+        g.wait_turn();
+        assert_eq!(g.light, 0, "setup: the torch itself must actually hit zero");
+        assert!(g.dead, "with no claim on her at all, a dead torch is still fatal");
+    }
+
+    /// The put-down shuttle (batch 8 byte 16, now genuine strategy): her
+    /// light stays exactly where she was set down. Standing within her
+    /// radius with a dead torch survives; straying beyond it with a dead
+    /// torch is fatal — "park / scout / return" is intended play, and this
+    /// is exactly the self-limiting risk that makes it a choice.
+    #[test]
+    fn put_down_then_stray_dies_in_dark() {
+        // Radius-2 (mood 26-50) shine, parked at the drop tile.
+        let mut within = blank_room(404);
+        within.has_objective = true;
+        within.mood_sum = 50;
+        within.mood_count = 1; // mood() == 50 -> radius 2
+        let (dropx, dropy) = (within.px, within.py);
+        within.put_down();
+        assert!(within.objective_dropped, "setup: she must actually be on the ground");
+        within.try_move_player(1, 0);
+        within.try_move_player(1, 0); // now 2 tiles east: exactly at the radius edge
+        assert_eq!((within.px - dropx, within.py - dropy), (2, 0));
+        within.light = 1;
+        within.wait_turn();
+        assert_eq!(within.light, 0, "setup: the torch itself must actually hit zero");
+        assert!(!within.dead, "standing at the edge of her parked light with a dead torch must survive");
+
+        let mut beyond = blank_room(405);
+        beyond.has_objective = true;
+        beyond.mood_sum = 50;
+        beyond.mood_count = 1; // mood() == 50 -> radius 2
+        let (dropx, dropy) = (beyond.px, beyond.py);
+        beyond.put_down();
+        assert!(beyond.objective_dropped, "setup: she must actually be on the ground");
+        beyond.try_move_player(1, 0);
+        beyond.try_move_player(1, 0);
+        beyond.try_move_player(1, 0); // now 3 tiles east: past the radius-2 edge
+        assert_eq!((beyond.px - dropx, beyond.py - dropy), (3, 0));
+        beyond.light = 1;
+        beyond.wait_turn();
+        assert_eq!(beyond.light, 0, "setup: the torch itself must actually hit zero");
+        assert!(beyond.dead, "straying beyond her parked light with a dead torch must be fatal");
+    }
+
+    /// The composition half of R5: her shine actually extends `vis`/`seen`
+    /// in `compute_fov`, not just the death check — a tile the torch alone
+    /// can't reach becomes visible once her (brighter) radius covers it.
+    #[test]
+    fn her_shine_extends_fov_past_the_torch_alone() {
+        let mut g = blank_room(406);
+        g.has_objective = true;
+        g.mood_sum = 100;
+        g.mood_count = 1; // mood() == 100 -> radius 6
+        g.light = 40; // deep in the torch's own lowest tier
+        let torch_r = fov_radius(g.light);
+        let her_r = mood_shine_radius(g.mood());
+        assert!(torch_r < 4 && her_r >= 4, "setup: the torch alone must not reach a tile 4 out, her shine must");
+        let (fx, fy) = (g.px + 4, g.py); // 4 tiles east, still inside blank_room's open floor
+        assert_eq!(g.map[idx(fx, fy)], Tile::Floor, "setup: the probed tile must be open floor");
+        g.wait_turn();
+        assert_eq!(fov_radius(g.light), torch_r, "setup: still in the torch's lowest tier after the burn");
+        assert!(g.vis[idx(fx, fy)], "a tile past the torch's own radius must be lit by her shine");
+        assert!(g.seen[idx(fx, fy)]);
     }
 
     /// `speech_attempts`/`objective_dropped` are run-defining, hashed state.

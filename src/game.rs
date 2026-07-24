@@ -72,6 +72,23 @@ pub(crate) fn fov_radius(light: i32) -> i32 {
     2
 }
 
+/// The McGuffin's own shine radius, tiered off her mood (batch 12 R5,
+/// "light as grace") — mirrors `fov_radius`'s threshold-table convention
+/// exactly, just against `GameDef::mood_shine_tiers` instead of
+/// `fov_tiers`, and against the raw `0..=100` mood value rather than a
+/// percent-of-start_light. `0` is a legitimate, load-bearing result (the
+/// dark tier — see that field's doc comment for why it must stay `0`), so
+/// the safe fallback below is `0`, not a positive radius like
+/// `fov_radius`'s torch-floor `2`.
+pub(crate) fn mood_shine_radius(mood: i32) -> i32 {
+    for &(threshold, radius) in GAME.balance.mood_shine_tiers {
+        if mood > threshold {
+            return radius;
+        }
+    }
+    0
+}
+
 // ---------- Map ----------
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Tile {
@@ -446,6 +463,22 @@ pub(crate) struct Game {
     /// `facing`/`fx_hit` — see `save::state_hash`'s doc comment) rather
     /// than being hashed.
     pub(crate) mcguffin_last_line_turn: Option<u32>,
+    /// batch 12 R5 ("light as grace"): set `true` in the dark-death branch
+    /// of `Game::spend_turn` exactly when the McGuffin had a lit radius
+    /// SOMEWHERE at the moment of death (`Game::mcguffin_light().is_some()`
+    /// — she's yours and her mood tier shines) but it didn't reach the
+    /// player's own tile (`lit_by_mcguffin` already failed, or this branch
+    /// wouldn't run at all). Lets the End screen distinguish "the dark took
+    /// you" from "the dark took you, though her light was somewhere else"
+    /// without a new hashed field — it's fully derived from state that's
+    /// already hashed (`mood_sum`/`mood_count`/`has_objective`/
+    /// `objective_dropped`/`px`/`py`/the item list), same rationale as
+    /// `killer`/`echo`/`facing`/`fx_hit`/`mcguffin_last_line_turn` (see
+    /// `save::state_hash`'s doc comment for the shared exclusion-list
+    /// rationale) — presentation-only, deliberately NOT hashed. Stays at
+    /// its default `false` on any non-darkness death or while alive; only
+    /// meaningful when `dead && killer.is_none()`.
+    pub(crate) died_out_of_her_light: bool,
     /// Whether the player currently holds the run's win-condition item
     /// (`ItemEffect::Objective` — see `Game::pickup`). Doubles the per-turn
     /// light burn (`WinDef::carry_burn`, it is heavy) and is the second of
@@ -640,6 +673,7 @@ impl Game {
             facing: Facing::S,
             fx_hit: None,
             mcguffin_last_line_turn: None,
+            died_out_of_her_light: false,
             has_objective: false,
             held: Vec::new(),
             speech_attempts: 0,
@@ -1123,26 +1157,95 @@ impl Game {
     }
 
     // ---------- FOV: raycast to every tile within radius ----------
+    /// Torch FOV, composed with the McGuffin's own shine (batch 12 R5,
+    /// "light as grace") when she's yours and her mood tier actually
+    /// shines — a tile is visible if it's within the torch's circle OR
+    /// within hers (`Game::mcguffin_light`), each independently raycast
+    /// via the shared `light_circle` helper so the two sources use
+    /// IDENTICAL distance/LOS semantics. While carried, her circle is
+    /// centered on the player's own tile too (a bigger, concentric torch,
+    /// walked in); while put down, it's centered wherever she was left —
+    /// the "park / scout / return" shuttle is exactly this, no separate
+    /// code path.
     fn compute_fov(&mut self) {
         let r = fov_radius(self.light);
         self.vis.iter_mut().for_each(|v| *v = false);
-        self.vis[idx(self.px, self.py)] = true;
-        self.seen[idx(self.px, self.py)] = true;
+        let (px, py) = (self.px, self.py);
+        self.light_circle(px, py, r);
+        if let Some(((cx, cy), rr)) = self.mcguffin_light() {
+            self.light_circle(cx, cy, rr);
+        }
+    }
+
+    /// Mark every tile within Euclidean-circle distance `r` of `(cx, cy)`
+    /// that also has line-of-sight to `(cx, cy)` as `vis`/`seen` — the one
+    /// raycast loop shared by the torch and the McGuffin's own shine (batch
+    /// 12 R5), so the two light sources can never silently disagree on
+    /// what "within radius" or "unobstructed" means.
+    fn light_circle(&mut self, cx: i32, cy: i32, r: i32) {
+        self.vis[idx(cx, cy)] = true;
+        self.seen[idx(cx, cy)] = true;
         for dy in -r..=r {
             for dx in -r..=r {
                 if dx * dx + dy * dy > r * r {
                     continue;
                 }
-                let (tx, ty) = (self.px + dx, self.py + dy);
+                let (tx, ty) = (cx + dx, cy + dy);
                 if !in_map(tx, ty) {
                     continue;
                 }
-                if self.los(self.px, self.py, tx, ty) {
+                if self.los(cx, cy, tx, ty) {
                     self.vis[idx(tx, ty)] = true;
                     self.seen[idx(tx, ty)] = true;
                 }
             }
         }
+    }
+
+    /// Her current position + shine radius, IFF she is currently "yours"
+    /// (carried — `has_objective`, at the player's own tile — or put down
+    /// after a first pickup — `objective_dropped`, at wherever `Game::
+    /// put_down` re-entered her into `self.items`) AND her mood tier
+    /// actually shines (`mood_shine_radius(self.mood()) > 0`). `None`
+    /// whenever: she hasn't been claimed yet at all (on the floor,
+    /// `!has_objective && !objective_dropped` — she isn't "yours" and
+    /// doesn't shine for you), OR her mood tier is the darkest band
+    /// (radius `0`) — this second case is the CRITICAL nerf-preservation
+    /// path: a mood-0 carrier must read as "she does not shine," full
+    /// stop, never as "she shines with radius 0," which — because
+    /// `light_circle`/`lit_by_mcguffin` both still mark/test her own tile
+    /// unconditionally at distance 0 — would otherwise quietly save a
+    /// brute a dead-torch death the story's own T1 nerf already priced.
+    fn mcguffin_light(&self) -> Option<((i32, i32), i32)> {
+        let pos = if self.has_objective {
+            Some((self.px, self.py))
+        } else if self.objective_dropped {
+            self.items.iter().find(|it| it.kind == GAME.win.objective_item).map(|it| (it.x, it.y))
+        } else {
+            None
+        }?;
+        let r = mood_shine_radius(self.mood());
+        if r > 0 {
+            Some((pos, r))
+        } else {
+            None
+        }
+    }
+
+    /// The "no light reaches you" half of the death check (batch 12 R5):
+    /// whether the PLAYER's own tile currently falls inside the
+    /// McGuffin's shine — same Euclidean-circle-distance-AND-LOS test
+    /// `light_circle` uses to decide any other tile, so this predicate can
+    /// never disagree with what `compute_fov` actually lit the player's
+    /// tile with (a Chebyshev or distance-only test here could diverge
+    /// from the circle at the boundary, letting the death check and the
+    /// render disagree about whether the player's own tile is lit).
+    fn lit_by_mcguffin(&self) -> bool {
+        let Some(((cx, cy), r)) = self.mcguffin_light() else {
+            return false;
+        };
+        let (dx, dy) = (self.px - cx, self.py - cy);
+        dx * dx + dy * dy <= r * r && self.los(cx, cy, self.px, self.py)
     }
 
     /// Bresenham line-of-sight; target tile itself may be a wall (so walls are visible).
@@ -1187,9 +1290,21 @@ impl Game {
     /// Burn the torch for one player turn: `base_burn` light, or
     /// `WinDef::carry_burn` while carrying the objective (it is heavy),
     /// plus `extra` (the violence tax on attack turns; 0 for
-    /// movement/waiting). Light 0 is death in the dark — checked once,
-    /// after the combined deduction, before any win condition,
-    /// golem-style. Returns false if the player died.
+    /// movement/waiting). Checked once, after the combined deduction,
+    /// before any win condition, golem-style.
+    ///
+    /// Batch 12 R5 ("light as grace") rewrites what "light 0" means: the
+    /// torch hitting zero is no longer automatically fatal. Death is now
+    /// **no light reaches you** — torch dead (`light <= 0`) AND the
+    /// McGuffin's own shine doesn't reach the player's tile either
+    /// (`Game::lit_by_mcguffin`, `None` whenever she isn't yours yet or her
+    /// mood tier is the dark band). Consequences, all intended: a
+    /// max-shine diplomat finishes the climb after the torch dies, walking
+    /// in her light; a mood-zero brute dies exactly as before this batch
+    /// (her shine is `None` for that carrier, full stop). Lose-before-win
+    /// ordering and the single-deduction-then-check shape are both
+    /// unchanged; only what counts as "the dark got you" changed. Returns
+    /// false if the player died.
     fn spend_turn(&mut self, extra: i32) -> bool {
         self.turns += 1;
         // batch 9 T1 (story §9-J prep): the overworld has no torch clock —
@@ -1206,10 +1321,22 @@ impl Game {
         self.light -= base + extra;
         if self.light <= 0 {
             self.light = 0;
-            self.dead = true;
-            self.log(String::from(GAME.strings.dark_death));
-            self.compute_fov();
-            return false;
+            // batch 12 R5: torch-dead alone is no longer fatal — only if
+            // her light ALSO doesn't reach the player this turn.
+            if !self.lit_by_mcguffin() {
+                self.dead = true;
+                // Presentation-only (see the field's own doc comment):
+                // distinguishes the End screen's "she was shining
+                // somewhere, but not here" line from a plain darkness
+                // death, without needing a new hashed field — `mcguffin_
+                // light().is_some()` is exactly "she has a lit radius
+                // right now, it's just not reaching the player," since
+                // `lit_by_mcguffin` already just failed above.
+                self.died_out_of_her_light = self.mcguffin_light().is_some();
+                self.log(String::from(GAME.strings.dark_death));
+                self.compute_fov();
+                return false;
+            }
         }
         let after = fov_radius(self.light);
         if after < before {
@@ -1266,13 +1393,12 @@ impl Game {
     /// state (`mood_sum`/`mood_count` — see their doc comment on `Game` for
     /// the full seeding/update model). `50` (neutral) whenever
     /// `mood_count == 0` — before the objective's first pickup, there is no
-    /// average to report yet, and the McGuffin's shine (a later task) has
-    /// no opinion to shine with. Will drive her shine radius once that
-    /// task lands; this task only needs the value. No caller yet outside
-    /// tests (the shine-radius consumer is the next task) — same
-    /// no-caller-yet status as `save::Ghost`/`save::parse_ghost`, `#[allow(
-    /// dead_code)]` for the same reason.
-    #[allow(dead_code)]
+    /// average to report yet, and the McGuffin's shine has no opinion to
+    /// shine with (`mcguffin_light` guards on `has_objective`/
+    /// `objective_dropped` regardless, so this default is never actually
+    /// consulted before a first pickup anyway). Batch 12 R5 gave this its
+    /// first non-test caller: `Game::mcguffin_light` feeds it straight into
+    /// `mood_shine_radius`.
     pub(crate) fn mood(&self) -> i32 {
         if self.mood_count == 0 { 50 } else { (self.mood_sum / self.mood_count).clamp(0, 100) }
     }
