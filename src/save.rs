@@ -13,7 +13,7 @@ use crate::rng::{fnv_bytes, h64};
 // ---------- Save / replay: state is deltas (seed + input log) ----------
 /* A save is the original seed plus one byte per input; the world is
    reconstructed by replaying. Byte format, no serde:
-     "RL14" | version u8 (=1..=8) | seed u64 LE | input bytes...
+     "RL14" | version u8 (=1..=9) | seed u64 LE | input bytes...
    Inputs: 0=N 1=S 2=W 3=E 4=wait 5=restart(reroll to a new seed)
    6=retry(same seed, save v2 — see INPUT_RETRY) 7=talk-N 8=talk-S 9=talk-W
    10=talk-E (save v3, batch 5, DECISION.md item 3 — the Henson ruling;
@@ -22,26 +22,28 @@ use crate::rng::{fnv_bytes, h64};
    direction order mirrors talk's/move's exactly, see
    `game::Game::apply_input`) 16=put-down (save v5, batch 8 T1, story
    §9-D — self-apply like use, no direction). Tens of bytes per save.
-   `save_bytes` always writes v8; `parse_save` accepts v1 through v8 — a
+   `save_bytes` always writes v9; `parse_save` accepts v1 through v9 — a
    v1/v2/v3/v4 log never contains byte 16 (put-down didn't exist yet), and
    NO version's log contains a byte for the batch-12 R4 mood mechanic, the
-   batch-13 T3 becalm return-trip dividend, or the batch-14 T3 cache-light
-   cap (none of these has one: `mood_sum`/`mood_count`, `Monster.
-   dividend_paid`, and `Game.cache_light_collected` are all pure derived
-   state — see `state_hash`'s doc comment — with no new entry in the input
-   vocabulary at all), so every older version replays byte-identical under
-   v8 parsing (see the `v1_save_replays_under_v7_parsing`/
-   `v2_save_replays_under_v7_parsing`/`v3_save_replays_under_v7_parsing`/
-   `v4_save_replays_under_v7_parsing`/`v5_save_replays_under_v7_parsing`/
-   `v6_save_replays_under_v7_parsing`/`v7_save_replays_under_v8_parsing`
-   tests in main.rs). SAVE_VERSION still bumps on this batch (7->8), per the
-   brief, even though the byte vocabulary itself didn't grow this time —
-   kept in lockstep with every hashed-state addition regardless of whether
-   THIS particular one needed the bump to replay correctly, so the version
-   number stays a trustworthy label for "what state_hash covers" rather
-   than something that only moves when a new input byte forces it. */
+   batch-13 T3 becalm return-trip dividend, the batch-14 T3 cache-light
+   cap, or the batch-15 T1 goblin talk-gate (none of these has one:
+   `mood_sum`/`mood_count`, `Monster.dividend_paid`, `Game.
+   cache_light_collected`, and `Monster.struck_player`/`Monster.yielded`
+   are all pure derived state — see `state_hash`'s doc comment — with no
+   new entry in the input vocabulary at all), so every older version
+   replays byte-identical under v9 parsing (see the
+   `v1_save_replays_under_v7_parsing`/`v2_save_replays_under_v7_parsing`/
+   `v3_save_replays_under_v7_parsing`/`v4_save_replays_under_v7_parsing`/
+   `v5_save_replays_under_v7_parsing`/`v6_save_replays_under_v7_parsing`/
+   `v7_save_replays_under_v8_parsing`/`v8_save_replays_under_v9_parsing`
+   tests in main.rs). SAVE_VERSION still bumps on this batch (8->9), per
+   the same standing rule as batch 8's own comment here: kept in lockstep
+   with every hashed-state addition regardless of whether THIS particular
+   one needed the bump to replay correctly, so the version number stays a
+   trustworthy label for "what state_hash covers" rather than something
+   that only moves when a new input byte forces it. */
 const SAVE_MAGIC: &[u8; 4] = b"RL14";
-const SAVE_VERSION: u8 = 8;
+const SAVE_VERSION: u8 = 9;
 pub(crate) const INPUT_RESTART: u8 = 5;
 /// Save v2 (batch 4 task 2, DECISION.md sign-off item 2): reconstruct
 /// `Game::new_overworld(g.seed)` (batch 9 T3 — see `replay`'s doc comment)
@@ -62,7 +64,7 @@ pub(crate) fn save_bytes(seed0: u64, inputs: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn parse_save(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
-    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=8).contains(&bytes[4]) {
+    if bytes.len() < 13 || &bytes[..4] != SAVE_MAGIC || !(1..=9).contains(&bytes[4]) {
         return None;
     }
     let mut s = [0u8; 8];
@@ -171,6 +173,12 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// max_cache_light_per_run` and `Game::pickup`'s `LightCache` arm), so it's
 /// run-defining, not presentation — hashed alongside `mood_sum`/
 /// `mood_count` below.
+/// `Monster.struck_player`/`Monster.yielded` (batch 15 T1, the goblin
+/// talk-gate playtest fix) are the same story a fifth time: both change
+/// whether a FUTURE talk can ever becalm this monster (`struck_player`
+/// permanently, `yielded` turn-to-turn), so they're run-defining, not
+/// presentation — hashed per-monster beside `regard`/`calm`/`awe`/
+/// `dividend_paid` above.
 /// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
 /// in (batch 6 T1): current world, provenance, and every stored
 /// `WorldState`'s own id.
@@ -314,8 +322,9 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         }
         for m in monsters {
             // regard/calm (batch 5, DECISION.md item 3), awe (batch 11 T2,
-            // the stand-tall becalm), and dividend_paid (batch 13 T3, the
-            // becalm return-trip dividend) are all hashed — mercy is
+            // the stand-tall becalm), dividend_paid (batch 13 T3, the
+            // becalm return-trip dividend), and struck_player/yielded
+            // (batch 15 T1, the goblin talk-gate) are all hashed — mercy is
             // run-defining state, not presentation-only like the
             // killer/echo/facing/fx_hit exclusion set below.
             h = fnv_bytes(
@@ -329,6 +338,8 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
                     m.calm as u8,
                     m.awe,
                     m.dividend_paid as u8,
+                    m.struck_player as u8,
+                    m.yielded as u8,
                 ],
             );
         }

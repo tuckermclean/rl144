@@ -844,9 +844,37 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                         let stats = Monster::stats(m.kind);
                         let give_ground_kind =
                             stats.awe_threshold > 0 && stats.punish_wrong_move && stats.awe_by_giving_ground;
-                        let reverse_step = if give_ground_kind
-                            && matches!(policy, Policy::Pacifist | Policy::TacticalPacifist)
-                        {
+                        let is_diplomat = matches!(policy, Policy::Pacifist | Policy::TacticalPacifist);
+                        // batch 15 T1 (the playtest fix — talk-gated awe):
+                        // a silent retreat no longer builds awe by itself,
+                        // it only ARMS `Monster.yielded`; the actual awe
+                        // increment now needs a SUBSEQUENT talk while still
+                        // armed. So the retreat-then-talk rhythm becomes two
+                        // distinct bot turns: if this monster is already
+                        // armed (from an earlier retreat, cornered or not)
+                        // and hasn't struck the player (a struck goblin can
+                        // never be awed again — retreating further is
+                        // pointless for THIS mercy path), consume the arm
+                        // by talking in place instead of retreating again.
+                        // Otherwise, fall through to the pre-existing
+                        // single-reverse-step retreat (which now only ARMS
+                        // the flag rather than building awe directly) —
+                        // the next time this monster corners the bot, the
+                        // branch above will see it's armed and talk.
+                        let consume_yielded = give_ground_kind && is_diplomat && m.yielded && !m.struck_player;
+                        // batch 15 T1: once THIS monster has struck the
+                        // player, the awe path is permanently closed (see
+                        // `Monster::struck_player`'s doc comment) — a
+                        // further retreat only delays engagement for no
+                        // benefit. A competent diplomat gives up the
+                        // give-ground dance at that point and falls
+                        // straight to the ordinary talk-regard mercy path
+                        // (`cornered_talk` below, `Monster::talk_threshold`
+                        // — unaffected by `struck_player`), every turn,
+                        // rather than wasting half its turns retreating
+                        // from a monster it can never awe again.
+                        let awe_hopeless = give_ground_kind && m.struck_player;
+                        let reverse_step = if give_ground_kind && is_diplomat && !consume_yielded && !awe_hopeless {
                             let (rdx, rdy) = (-tdx, -tdy);
                             SIM_DIRS.iter().position(|&d| d == (rdx, rdy)).filter(|&b| {
                                 let (dx, dy) = SIM_DIRS[b];
@@ -859,22 +887,27 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
                         } else {
                             None
                         };
-                        match reverse_step {
-                            Some(b) => Some(b as u8),
-                            None => {
-                                // batch 10 T2 fix round: the diplomat
-                                // (TacticalPacifist) must talk, not swing,
-                                // when cornered — same never-kill invariant
-                                // the ordinary pacifist `blocked` branch
-                                // below already enforces on a normal step.
-                                // `Policy::Pacifist` is included in the match
-                                // for symmetry with that branch, even though
-                                // the non-tactical greedy/pacifist bots never
-                                // reach this `tactical`-gated arm today.
-                                if matches!(policy, Policy::Pacifist | Policy::TacticalPacifist) {
-                                    cornered_talk = true;
+                        if consume_yielded {
+                            cornered_talk = true;
+                            SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| b as u8)
+                        } else {
+                            match reverse_step {
+                                Some(b) => Some(b as u8),
+                                None => {
+                                    // batch 10 T2 fix round: the diplomat
+                                    // (TacticalPacifist) must talk, not swing,
+                                    // when cornered — same never-kill invariant
+                                    // the ordinary pacifist `blocked` branch
+                                    // below already enforces on a normal step.
+                                    // `Policy::Pacifist` is included in the match
+                                    // for symmetry with that branch, even though
+                                    // the non-tactical greedy/pacifist bots never
+                                    // reach this `tactical`-gated arm today.
+                                    if is_diplomat {
+                                        cornered_talk = true;
+                                    }
+                                    SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| b as u8)
                                 }
-                                SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| b as u8)
                             }
                         }
                     }
