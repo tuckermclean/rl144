@@ -205,7 +205,7 @@ has a target" below).
    trainer-reads-your-last-life reaction + the donkey-follow **seed** (rungs 1–2). The
    economic unification; the balance / `START_LIGHT` MAJOR. (Ogre awe moved to batch 11 —
    see above.)
-4. **Batch 14 — portal ROI** (renumbered from batch 13 by the split note above). Loot tables scaled to risk (light caches, unique items,
+4. **Batch 14 — portal ROI** (renumbered from batch 13 by the split note above). **DONE 2026-07-24/25 as the authored-floors MVP** (human sign-off: NOT a worldgen MAJOR — the reward lives in authored-floor portal destinations only, root goldens untouched; bots don't dive so it's sim-orthogonal). Shipped: a light-cache item with dive-cost-DERIVED values (`--probe-floors`), a per-run anti-brute-bailout cap sized from the slaughter-route self-burn, and a threshold telegraph grounded against actual cache presence. **Dest::World enrichment** (procedural destinations' loot) is the pre-approved follow-on needing its OWN worldgen MAJOR sign-off, now armable with this batch's probe data; no portal-diving bot yet. Original scope text: Loot tables scaled to risk (light caches, unique items,
    otherwise-unreachable lore); the price telegraphed at the threshold in engine facts (the
    portal already knows its destination). Shallow dives +EV for the attentive; deep dives are
    the gamble. The multiverse becomes the pilgrimage light-rich pacifists can afford and
