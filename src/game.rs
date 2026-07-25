@@ -89,6 +89,25 @@ pub(crate) fn mood_shine_radius(mood: i32) -> i32 {
     0
 }
 
+/// batch 14 T4 (portal ROI, the grounded threshold telegraph): whether an
+/// authored floor's own map ASCII actually contains a light-cache reward —
+/// found generically (no hardcoded glyph literal): the one `GameDef::items`
+/// row whose effect is the engine-primitive `ItemEffect::LightCache`,
+/// wherever the active cartridge places it, and whether ITS glyph byte
+/// appears anywhere in `map`. A cartridge that ships no `LightCache` item at
+/// all, or an authored floor whose map never stamps that glyph, correctly
+/// reads as false — never a guess, never hardcoded per-floor. Takes a plain
+/// `&str` rather than a floor index so a test can probe it directly against
+/// a synthetic barren map string, without needing a real `AuthoredFloorDef`
+/// fixture. See `Game::portal_describe`'s `Dest::Floor` arm, the only
+/// caller, for how this gates the telegraph.
+pub(crate) fn map_has_cache_reward(map: &str) -> bool {
+    GAME.items
+        .iter()
+        .find(|d| matches!(d.effect, ItemEffect::LightCache(_)))
+        .is_some_and(|d| map.as_bytes().contains(&d.glyph))
+}
+
 // ---------- Map ----------
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Tile {
@@ -2049,6 +2068,16 @@ impl Game {
     /// enum's doc comment); output is unchanged since it's the same pure
     /// function of the same seed, just computed once instead of on every
     /// step-on.
+    ///
+    /// batch 14 T4 (portal ROI, the grounded threshold telegraph, addition
+    /// #3 of the sign-off): a `Dest::Floor` line names the light-cache
+    /// reward (`portal_describe_floor_cache`) ONLY when
+    /// `map_has_cache_reward` proves the destination's own authored map
+    /// actually contains one — the portal already knows its destination
+    /// (it's a zero-RNG `AuthoredFloorDef`, fully determined at compile
+    /// time), so it can truthfully preview the reward without generating
+    /// anything; a floor with no cache glyph in its map falls through to
+    /// the plain `portal_describe_floor` line, same as before this batch.
     fn portal_describe(&self, dest: Dest) -> String {
         match dest {
             Dest::World(seed, whash) => GAME
@@ -2056,7 +2085,15 @@ impl Game {
                 .portal_describe_world
                 .replacen("{}", theme_for(seed, 1).label, 1)
                 .replacen("{}", &format!("{:016x}", whash), 1),
-            Dest::Floor(i) => GAME.strings.portal_describe_floor.replace("{}", GAME.authored_floors[i as usize].name),
+            Dest::Floor(i) => {
+                let floor = &GAME.authored_floors[i as usize];
+                let tmpl = if map_has_cache_reward(floor.map) {
+                    GAME.strings.portal_describe_floor_cache
+                } else {
+                    GAME.strings.portal_describe_floor
+                };
+                tmpl.replace("{}", floor.name)
+            }
         }
     }
 

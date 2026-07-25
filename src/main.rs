@@ -36,7 +36,7 @@ use content::ghost_label_idx;
 #[cfg(test)]
 use game::{
     COLS, Dest, Item, MAP_H, MAX_PUSH_CHAIN, MKind, Monster, Tile, WorldId, bfs_dist, fov_radius, idx,
-    in_map, mood_shine_radius, receptivity,
+    in_map, map_has_cache_reward, mood_shine_radius, receptivity,
 };
 #[cfg(test)]
 use gamedef::{CarryEvent, ItemEffect, PickupBehavior};
@@ -2479,6 +2479,64 @@ mod tests {
             "a single cache below the cap must refund its full authored value, uncapped"
         );
         assert_eq!(g.cache_light_collected, value, "cache_light_collected must equal the full grant");
+    }
+
+    // ---------- The grounded threshold telegraph (batch 14 T4, portal ROI) ----------
+
+    /// `map_has_cache_reward` (the presence check `Game::portal_describe`
+    /// gates the telegraph on) is generic, not per-floor hardcoding: it must
+    /// read true against a synthetic map string that contains the
+    /// cartridge's actual light-cache glyph, and false against a barren map
+    /// with no such glyph at all — the barren case both current authored
+    /// floors can't exercise end-to-end (batch 14 T2 placed a cache in
+    /// both), so this unit test is what proves the gate reads real presence
+    /// rather than always firing true.
+    #[test]
+    fn map_has_cache_reward_reads_actual_presence() {
+        let glyph = GAME
+            .items
+            .iter()
+            .find(|d| matches!(d.effect, ItemEffect::LightCache(_)))
+            .expect("fixture: the cartridge must ship a LightCache item")
+            .glyph;
+        let with_cache = format!("###\n#.{}#\n###", glyph as char);
+        let barren = "###\n#..#\n###";
+        assert!(map_has_cache_reward(&with_cache), "a map containing the cache glyph must read as having a cache");
+        assert!(!map_has_cache_reward(barren), "a map with no cache glyph at all must read as barren");
+    }
+
+    /// Walking onto a portal whose `Dest::Floor` destination actually holds
+    /// a light-cache (floor 0, "a quiet shrine" — see `AUTHORED_FLOORS`'s
+    /// doc comment) logs the cache-promising telegraph
+    /// (`portal_describe_floor_cache`), not the plain `portal_describe_
+    /// floor` line — the portal previews the reward truthfully because the
+    /// destination is fully authored, zero-RNG content it already knows.
+    #[test]
+    fn portal_describe_telegraphs_cache_when_floor_has_one() {
+        assert!(
+            map_has_cache_reward(GAME.authored_floors[0].map),
+            "fixture: floor 0 must have a cache (batch 14 T2 placed one)"
+        );
+        let mut g = blank_room(1);
+        let (tx, ty) = (g.px + 1, g.py);
+        g.map[idx(tx, ty)] = Tile::Portal;
+        g.portal = Some((tx, ty, Dest::Floor(0)));
+        step_onto(&mut g, tx, ty);
+        let expected = GAME.strings.portal_describe_floor_cache.replace("{}", GAME.authored_floors[0].name);
+        assert!(
+            g.msgs.iter().any(|m| *m == expected),
+            "expected the cache telegraph {:?}, got {:?}",
+            expected,
+            g.msgs
+        );
+        // Grounding, negative half: the PLAIN line (without the cache
+        // clause) must NOT also be logged verbatim for this destination —
+        // exactly one of the two templates fires, never both.
+        let plain = GAME.strings.portal_describe_floor.replace("{}", GAME.authored_floors[0].name);
+        assert!(
+            !g.msgs.iter().any(|m| *m == plain),
+            "the plain (no-cache) telegraph must not fire for a floor that actually has a cache"
+        );
     }
 
     // ---------- PUT DOWN / CarryEvent (batch 8 T1, story §9-B/C/D) ----------

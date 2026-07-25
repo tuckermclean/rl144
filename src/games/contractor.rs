@@ -1215,6 +1215,14 @@ const STRINGS: StringsDef = StringsDef {
     // cache "was" or where it came from — that's the portal's threshold
     // telegraph's job in T4, gated on actual cache presence).
     light_cache_found: "A cache of light! Your torch flares. (+{} light)",
+    // batch 14 T4 (portal ROI, the grounded threshold telegraph): used only
+    // when `Game::portal_describe` proves the destination floor's authored
+    // map actually holds a light-cache reward (see that fn's doc comment) —
+    // grounded, restates only that a cache is there, nothing about its
+    // value or position. Fits the 78-char log row against both current
+    // floor names (`portal_describe_floor_cache_fits_log_row`); a barren
+    // floor instead gets the plain `portal_describe_floor` line above.
+    portal_describe_floor_cache: "Beyond it: {}. A light-cache waits there too.",
 };
 
 /* The overworld's 3 fixed screens (batch 9 T1, story §9-J prep, SIGN-OFF

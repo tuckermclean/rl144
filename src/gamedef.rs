@@ -759,4 +759,13 @@ pub(crate) struct StringsDef {
     /// `LightCache`. `{}` fills from the amount of light actually
     /// refilled (post-cap as of batch 14 T3; uncapped through T2).
     pub(crate) light_cache_found: &'static str,
+    /// batch 14 T4 (portal ROI, the grounded threshold telegraph): the
+    /// `Dest::Floor` describe line used INSTEAD of `portal_describe_floor`
+    /// when `Game::portal_describe` proves the destination floor's authored
+    /// map actually contains a light-cache reward (see that fn's doc
+    /// comment for the presence check) — the portal already knows its
+    /// destination, so it may truthfully preview the reward; a barren floor
+    /// must never get this line. `{}` fills from the destination floor's
+    /// name, same as `portal_describe_floor`.
+    pub(crate) portal_describe_floor_cache: &'static str,
 }
