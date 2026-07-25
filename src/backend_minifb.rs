@@ -6,6 +6,7 @@
 
 use crate::content::ghost_label_idx;
 use crate::game::{COLS, Game, ROWS};
+use crate::games::GAME;
 use crate::headless::world_hash;
 use crate::render::{CELLS, Cell, Screen, render_cells};
 use crate::rng::h64;
@@ -164,6 +165,25 @@ fn write_ghost(game: &Game, whash: u64, attempt_log: &[u8]) {
     let _ = std::fs::write(ghost_filename(whash), bytes);
 }
 
+/// Build the use-selector's one-line menu, e.g. `Use: 1:o x2  2:~ x1  (any
+/// other key cancels)` (batch 15 T2). Named by GLYPH, not a game noun —
+/// `ItemDef::glyph` is the item's existing visual identity (the same byte
+/// the map/vault legend already draws), so this stays grep-clean of item
+/// nouns exactly like the rest of this file's cartridge doctrine requires,
+/// while still being genuinely informative (a player already knows what
+/// `o`/`~`/etc. mean from seeing them on the floor). `summary` is
+/// `Game::held_summary`'s output, so index `i` here is exactly the digit
+/// key `i+1` that selects it.
+fn use_menu_line(summary: &[(u8, usize)]) -> String {
+    let mut s = String::from("Use: ");
+    for (i, &(kind, count)) in summary.iter().enumerate() {
+        let glyph = GAME.items[kind as usize].glyph as char;
+        s.push_str(&format!("{}:{} x{}  ", i + 1, glyph, count));
+    }
+    s.push_str("(any other key cancels)");
+    s
+}
+
 /// Run the minifb window loop: input -> Game::apply-equivalent calls,
 /// render_cells -> rasterize -> present. Owns everything platform-specific
 /// (window, key polling, save-file I/O, title). `seed0`/`input_log`/`game`
@@ -233,9 +253,33 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
     // give chord (batch 7 T2, story §5/§9-A): `g` arms this flag exactly
     // like `t` arms `talk_armed` above (edge-triggered, re-arm-safe,
     // any-non-direction-key disarms); the next direction key produces one
-    // give byte (11-14) instead of a move byte. `u` needs no chord — it's
-    // self-apply (byte 15), one key.
+    // give byte (11-14) instead of a move byte. `u` needs no chord when
+    // nothing (or only one kind) is held — see `use_armed` below for when
+    // it does.
     let mut give_armed = false;
+    // use-selector chord (batch 15 T2, the item-use selector): `u` arms this
+    // flag ONLY when `Game::held_summary` is non-empty (an empty `held` still
+    // self-applies byte 15 directly, unchanged one-key behavior, since
+    // there's nothing to choose between). While armed, a digit key 1..9
+    // completes the chord by emitting `17 + kind` for the Nth
+    // `held_summary` entry (see `use_digits` below); any other key
+    // (including a re-press of `u`, which just re-logs the menu and stays
+    // armed, same re-arm convention as `talk_armed`/`give_armed`) disarms
+    // silently — no fallback byte, matching this project's established
+    // "any non-completing key cancels a chord with no log" convention for
+    // this backend (the terminal backend logs a cancel line instead because
+    // it reads one byte at a time and can't let another handler fire on
+    // the same byte; this backend polls a whole frame's keys, so the
+    // "other key" simply never got its own action this frame either).
+    let mut use_armed = false;
+    // Up to 9 held-item kinds are selectable per menu (Key1..Key9) — the
+    // cartridge realistically never holds anywhere near that many distinct
+    // kinds at once; a 10th+ kind would just be unreachable via digit
+    // select this batch (not a crash, just outside the menu).
+    let use_digits: [Key; 9] = [
+        Key::Key1, Key::Key2, Key::Key3, Key::Key4, Key::Key5, Key::Key6, Key::Key7, Key::Key8,
+        Key::Key9,
+    ];
     // The CURRENT attempt's input bytes only (cleared on every R/N), as
     // opposed to `input_log` which is the whole session across attempts —
     // this is what a captured ghost should replay, not the full history
@@ -327,6 +371,12 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                             give_armed = false;
                             give_consumed = true;
                         }
+                    } else if use_armed {
+                        // Use-selector armed (batch 15 T2): moves are
+                        // suppressed while a digit selection is pending — a
+                        // direction key here doesn't match any selector key,
+                        // so it falls through to the cancel check below
+                        // exactly like any other non-digit key would.
                     } else if window.is_key_pressed(key, KeyRepeat::Yes) {
                         input_log.push(dir);
                         attempt_log.push(dir);
@@ -354,14 +404,57 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                         give_armed = false;
                     }
                 }
-                // `u`: USE (byte 15, batch 7 T2) — self-apply, no chord.
+                // `u`: USE. Batch 15 T2 opens the digit-select menu
+                // whenever ANYTHING is held — even a single distinct kind,
+                // deliberately not special-cased, so "how many kinds are
+                // held" never changes what a keypress does. Only a
+                // genuinely EMPTY `held` still self-applies byte 15
+                // directly (batch 7 T2's original one-key behavior, kept
+                // for the "empty hands" feedback line).
                 if window.is_key_pressed(Key::U, KeyRepeat::No) {
-                    input_log.push(15);
-                    attempt_log.push(15);
-                    game.apply_input(15);
-                    confirm_armed = false;
+                    let summary = game.held_summary();
+                    if summary.is_empty() {
+                        input_log.push(15);
+                        attempt_log.push(15);
+                        game.apply_input(15);
+                        confirm_armed = false;
+                    } else {
+                        use_armed = true;
+                        game.log(use_menu_line(&summary));
+                    }
                     talk_armed = false;
                     give_armed = false;
+                }
+                // Use-selector digit completion (batch 15 T2): while armed,
+                // the FIRST matching digit key this frame (1..9, mirroring
+                // the chord-completion "only the first match counts"
+                // convention above) selects that `held_summary` index and
+                // emits `17 + kind`. A digit past the menu's actual entry
+                // count, like any other non-completing key, falls through
+                // to the disarm-silently check below (no byte, no log —
+                // same convention `talk_armed`/`give_armed` already use).
+                let mut use_consumed = false;
+                if use_armed {
+                    for (i, &key) in use_digits.iter().enumerate() {
+                        if !use_consumed && window.is_key_pressed(key, KeyRepeat::No) {
+                            use_consumed = true;
+                            let summary = game.held_summary();
+                            if let Some(&(kind, _)) = summary.get(i) {
+                                let b = 17 + kind;
+                                input_log.push(b);
+                                attempt_log.push(b);
+                                game.apply_input(b);
+                                confirm_armed = false;
+                            }
+                            use_armed = false;
+                        }
+                    }
+                }
+                if use_armed && !use_consumed {
+                    let pressed = window.get_keys_pressed(KeyRepeat::No);
+                    if pressed.iter().any(|&k| k != Key::U) {
+                        use_armed = false;
+                    }
                 }
                 // `p`: PUT DOWN (byte 16, batch 8 T1, story §9-D) —
                 // self-apply, no chord, same convention as `u`. NEEDS
@@ -374,6 +467,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     confirm_armed = false;
                     talk_armed = false;
                     give_armed = false;
+                    use_armed = false;
                 }
                 if window.is_key_pressed(Key::Period, KeyRepeat::Yes) {
                     input_log.push(4);
@@ -388,6 +482,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     // into a talk/give instead of a move. Disarm explicitly.
                     talk_armed = false;
                     give_armed = false;
+                    use_armed = false;
                 }
                 // F1: identify the world. Log-only — consumes no turn, no
                 // input byte, and touches no RNG channel, so replay is
@@ -448,6 +543,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     // primary case this closes.
                     talk_armed = false;
                     give_armed = false;
+                    use_armed = false;
                     screen = Screen::Play;
                 }
                 if window.is_key_pressed(Key::N, KeyRepeat::No) {
@@ -464,6 +560,7 @@ pub(crate) fn run(seed0: u64, mut input_log: Vec<u8>, mut game: Game, daily: boo
                     confirm_armed = false;
                     talk_armed = false;
                     give_armed = false;
+                    use_armed = false;
                     screen = Screen::Play;
                 }
                 if window.is_key_pressed(Key::Q, KeyRepeat::No) {

@@ -21,6 +21,7 @@
 
 use crate::content::ghost_label_idx;
 use crate::game::{COLS, Game, ROWS};
+use crate::games::GAME;
 use crate::headless::world_hash;
 use crate::render::{CELLS, Cell, Screen, render_cells};
 use crate::rng::h64;
@@ -170,7 +171,13 @@ enum Input {
     /// GIVE (batch 7 T2, story §5/§9-A): carries the resolved 11-14
     /// `apply_input` byte, same convention as `Talk`. See `read_give_chord`.
     Give(u8),
-    /// USE (batch 7 T2): byte 15, no chord — a single key.
+    /// USE (batch 7 T2): a single `u` keypress. When nothing is held, this
+    /// still self-applies byte 15 directly, unchanged (the "empty hands"
+    /// feedback line, one key, no follow-up read). When anything IS held,
+    /// batch 15 T2's item-use selector takes over instead: the Play arm
+    /// logs a `Game::held_summary` menu and blocks for one more raw byte —
+    /// a digit `1..9` emits `17 + kind` for that entry, anything else
+    /// cancels (see the Play arm's `Input::Use` match).
     Use,
     /// PUT DOWN (batch 8 T1, story §9-D): byte 16, no chord — a single key,
     /// same convention as `Use`.
@@ -236,7 +243,9 @@ fn read_escape_seq() -> Input {
 /// (same seed) and 'n' a new world (reroll) — both are only acted on by the
 /// End screen, matching the minifb backend's R/N keys — 'q'/lone-ESC/Ctrl-C
 /// quit, 't' begins the talk chord (batch 5, see `read_talk_chord`), 'g'
-/// begins the give chord, 'u' is USE, 'p' is PUT DOWN (batch 8 T1). Unknown
+/// begins the give chord, 'u' is USE (batch 15 T2: opens the item-use
+/// selector when anything is held, resolved in the Play arm — see
+/// `Input::Use`'s doc comment), 'p' is PUT DOWN (batch 8 T1). Unknown
 /// bytes are ignored.
 fn read_input(raw: Termios) -> Input {
     let Some(b) = raw_read_byte() else { return Input::Quit }; // EOF (stdin closed)
@@ -258,7 +267,10 @@ fn read_input(raw: Termios) -> Input {
         b'n' => Input::NewWorld,
         b't' => read_talk_chord(raw),
         // batch 7 T2: `g` begins the give chord (mirrors `t`'s talk chord
-        // exactly — see `read_give_chord`); `u` is USE, no chord needed.
+        // exactly — see `read_give_chord`); `u` is USE — a single key here,
+        // but batch 15 T2's item-use selector may still block for one more
+        // byte once the Play arm sees what's held (see `Input::Use`'s doc
+        // comment).
         b'g' => read_give_chord(raw),
         b'u' => Input::Use,
         // batch 8 T1: `p` is PUT DOWN (byte 16, story §9-D), no chord
@@ -478,6 +490,21 @@ pub(crate) fn frame_bytes(cells: &[Cell], prev: Option<&[Cell]>, ascii: bool) ->
     out
 }
 
+/// Build the use-selector's one-line menu — identical shape and rationale
+/// to `backend_minifb`'s own `use_menu_line` (named by GLYPH, not a game
+/// noun, so this stays grep-clean of item nouns per the cartridge
+/// doctrine): duplicated rather than shared, same convention this file's
+/// `write_ghost` already follows for backend-local helpers.
+fn use_menu_line(summary: &[(u8, usize)]) -> String {
+    let mut s = String::from("Use: ");
+    for (i, &(kind, count)) in summary.iter().enumerate() {
+        let glyph = GAME.items[kind as usize].glyph as char;
+        s.push_str(&format!("{}:{} x{}  ", i + 1, glyph, count));
+    }
+    s.push_str("(any other key cancels)");
+    s
+}
+
 // ---------- headless entry point ----------
 
 /// `--render-frame`: render one initial frame (Game::new(seed), turn 0) and
@@ -608,13 +635,50 @@ pub(crate) fn run(
                     Input::GiveCancelled => {
                         game.log(String::from("Give cancelled."));
                     }
-                    // USE (batch 7 T2): byte 15, no chord, same
-                    // input_log/attempt_log/apply_input/confirm_armed
-                    // discipline as Wait.
+                    // USE (batch 7 T2 byte 15 / batch 15 T2 item-use
+                    // selector). Empty `held`: unchanged one-key self-apply
+                    // of byte 15 (the "empty hands" feedback line). Anything
+                    // held: log the `held_summary` menu, render it (a
+                    // manual mid-arm render+write — this arm blocks for one
+                    // MORE raw byte below, so the prompt must reach the
+                    // screen before that blocking read, unlike every other
+                    // arm here which relies on the loop's own
+                    // render-at-the-bottom), then read one byte: a digit
+                    // `1..9` selects that `held_summary` entry and emits
+                    // `17 + kind`; anything else (including an out-of-range
+                    // digit) cancels — logged, same rationale as
+                    // `TalkCancelled`/`GiveCancelled` above (this backend
+                    // reads one byte at a time and can't let some other
+                    // handler fire on the same consumed byte, so silence
+                    // would read as "my keypress vanished," not "cancelled
+                    // on purpose").
                     Input::Use => {
-                        input_log.push(15);
-                        attempt_log.push(15);
-                        game.apply_input(15);
+                        let summary = game.held_summary();
+                        if summary.is_empty() {
+                            input_log.push(15);
+                            attempt_log.push(15);
+                            game.apply_input(15);
+                        } else {
+                            game.log(use_menu_line(&summary));
+                            render_cells(&game, screen, &mut cells);
+                            raw_write(&frame_bytes(&cells, Some(&prev), ascii));
+                            prev.copy_from_slice(&cells);
+                            match raw_read_byte() {
+                                Some(b @ b'1'..=b'9') => {
+                                    let sel = (b - b'1') as usize;
+                                    match summary.get(sel) {
+                                        Some(&(kind, _)) => {
+                                            let byte = 17 + kind;
+                                            input_log.push(byte);
+                                            attempt_log.push(byte);
+                                            game.apply_input(byte);
+                                        }
+                                        None => game.log(String::from("Use cancelled.")),
+                                    }
+                                }
+                                _ => game.log(String::from("Use cancelled.")),
+                            }
+                        }
                         confirm_armed = false;
                     }
                     // PUT DOWN (batch 8 T1, story §9-D): byte 16, no chord,

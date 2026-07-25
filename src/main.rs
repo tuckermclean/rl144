@@ -2432,6 +2432,131 @@ mod tests {
         assert!(g.held.is_empty());
     }
 
+    // ---------- Item-use selector (batch 15 T2) ----------
+
+    /// `use_item_kind(potion)` heals via the potion's authored `UseEffect`
+    /// and pops exactly one potion off `held` — with TWO potions held,
+    /// using once leaves exactly one, proving this acts on a single entry
+    /// of the chosen kind, not the whole run of them.
+    #[test]
+    fn use_item_kind_heals_via_potion_and_pops_one() {
+        let mut g = blank_room(1);
+        g.hp = 1;
+        g.held = vec![POTION, POTION];
+        let heal = match GAME.items[POTION as usize].on_use {
+            Some(crate::gamedef::UseEffect::Heal(n)) => n,
+            _ => panic!("potion should have a Heal on_use"),
+        };
+        let expected = 1 + heal.min(g.maxhp - 1);
+        g.use_item_kind(POTION);
+        assert_eq!(g.hp, expected, "use_item_kind must apply the potion's authored heal");
+        assert_eq!(g.held, vec![POTION], "using one potion must leave exactly one behind");
+    }
+
+    /// `use_item_kind` finds the TOPMOST occurrence of the chosen kind, not
+    /// necessarily `held.last()` — a different kind sitting above it in the
+    /// LIFO stack is left completely untouched.
+    #[test]
+    fn use_item_kind_reaches_past_a_different_kind_on_top() {
+        let mut g = blank_room(1);
+        g.hp = 1;
+        g.held = vec![POTION, CHEESE]; // cheese is held.last(), potion sits below it
+        let light_before = g.light;
+        g.use_item_kind(POTION);
+        assert_eq!(g.held, vec![CHEESE], "the buried potion must be consumed, the cheese on top left alone");
+        assert!(g.hp > 1, "the potion's heal must still land even though it wasn't held.last()");
+        assert_eq!(
+            g.light,
+            light_before - GAME.balance.base_burn,
+            "cheese's own +8 [TUNE] light USE effect must not fire — only the ordinary per-turn burn applies"
+        );
+    }
+
+    /// `use_item_kind` on a kind not held at all: graceful no-op (no turn,
+    /// item list unchanged, the same `use_empty_hands` feedback `use_item`
+    /// uses for empty hands).
+    #[test]
+    fn use_item_kind_not_held_is_noop() {
+        let mut g = blank_room(1);
+        g.held = vec![CHEESE];
+        let before_turns = g.turns;
+        g.use_item_kind(POTION); // held has cheese, not potion
+        assert_eq!(g.turns, before_turns, "no held item of this kind must cost no turn");
+        assert_eq!(g.held, vec![CHEESE], "held must be untouched");
+    }
+
+    /// `use_item_kind` on a held kind with no self-use (coat/towel): graceful
+    /// no-op, no turn, item stays held — mirrors `use_on_no_effect_item_is_noop`.
+    #[test]
+    fn use_item_kind_no_effect_is_noop() {
+        let mut g = blank_room(1);
+        g.held = vec![TOWEL];
+        let before_turns = g.turns;
+        g.use_item_kind(TOWEL);
+        assert_eq!(g.turns, before_turns);
+        assert_eq!(g.held, vec![TOWEL], "a no-effect use-by-kind must not consume the item");
+    }
+
+    /// `apply_input(17 + kind)` is exactly `use_item_kind(kind)` — same
+    /// resulting state either way, for the potion kind specifically.
+    #[test]
+    fn apply_input_17_plus_kind_routes_to_use_item_kind() {
+        let mut a = blank_room(1);
+        a.hp = 1;
+        a.held = vec![POTION];
+        a.apply_input(17 + POTION);
+
+        let mut b = blank_room(1);
+        b.hp = 1;
+        b.held = vec![POTION];
+        b.use_item_kind(POTION);
+
+        assert_eq!(a.hp, b.hp, "apply_input(17+kind) must match use_item_kind(kind) exactly");
+        assert_eq!(a.held, b.held);
+        assert_eq!(a.turns, b.turns);
+    }
+
+    /// A `17+kind` byte past the cartridge's real item count is silently
+    /// ignored by `apply_input` (the same `_ => {}` catch-all treatment as
+    /// any other unrecognized byte) rather than indexing out of bounds.
+    #[test]
+    fn apply_input_use_by_kind_out_of_range_is_ignored() {
+        let mut g = blank_room(1);
+        let before_turns = g.turns;
+        let out_of_range = 17 + GAME.items.len() as u8;
+        g.apply_input(out_of_range);
+        assert_eq!(g.turns, before_turns, "an out-of-range use-by-kind byte must be a pure no-op");
+    }
+
+    /// `held_summary` groups by kind and counts correctly: holding
+    /// potion, potion, cheese groups into exactly the (kind, count) pairs
+    /// `[(POTION, 2), (CHEESE, 1)]`, in first-appearance order.
+    #[test]
+    fn held_summary_groups_and_counts() {
+        let mut g = blank_room(1);
+        g.held = vec![POTION, POTION, CHEESE];
+        assert_eq!(g.held_summary(), vec![(POTION, 2), (CHEESE, 1)]);
+    }
+
+    /// `held_summary` on an empty `held` is an empty summary.
+    #[test]
+    fn held_summary_empty_when_nothing_held() {
+        let g = blank_room(1);
+        assert!(g.held_summary().is_empty());
+    }
+
+    /// Byte 15 (use-top, LIFO-last) still works unchanged alongside the new
+    /// use-by-kind bytes — back-compat with every pre-batch-15 log/bot.
+    #[test]
+    fn byte_15_use_top_still_works() {
+        let mut g = blank_room(1);
+        g.hp = 1;
+        g.held = vec![POTION];
+        g.apply_input(15);
+        assert!(g.hp > 1, "byte 15 must still self-apply the top of held");
+        assert!(g.held.is_empty());
+    }
+
     // ---------- Light-cache item (batch 14 T1, portal ROI) ----------
 
     /// Walking onto a light-cache (`ItemEffect::LightCache`) raises `light`
@@ -3516,16 +3641,16 @@ mod tests {
     /// Put-down byte (16, batch 8 T1) round-trips through save -> parse ->
     /// replay identically, same proof shape as the version back-compat
     /// tests above: a log containing byte 16 survives `save_bytes` (which
-    /// now writes v9) -> `parse_save` -> `replay` producing the exact same
+    /// now writes v10) -> `parse_save` -> `replay` producing the exact same
     /// state as replaying the original log directly.
     #[test]
     fn put_down_byte_round_trips_through_save_parse_replay() {
         let seed0 = 246u64;
         let log = vec![0u8, 1, 16, 2, 3, 16, 4];
         let bytes = save_bytes(seed0, &log);
-        assert_eq!(bytes[4], 9, "save_bytes must write the current version (9)");
+        assert_eq!(bytes[4], 10, "save_bytes must write the current version (10)");
 
-        let (s, parsed_log) = parse_save(&bytes).expect("v9 blob must parse");
+        let (s, parsed_log) = parse_save(&bytes).expect("v10 blob must parse");
         assert_eq!(s, seed0);
         assert_eq!(parsed_log, log);
 
@@ -3534,7 +3659,7 @@ mod tests {
         assert_eq!(state_hash(&from_saved), state_hash(&direct));
     }
 
-    /// Save v8 back-compat (batch 14 T3's own version, now one behind
+    /// Save v8 back-compat (batch 14 T3's own version, now two behind
     /// current): a v8-versioned blob replays byte-identically under v9
     /// parsing — batch 15 T1's goblin talk-gate (`Monster.struck_player`/
     /// `Monster.yielded`) added two hashed per-monster bools but no new
@@ -3560,20 +3685,45 @@ mod tests {
         assert_eq!(state_hash(&from_v8), state_hash(&direct));
     }
 
-    /// `save_bytes` writes the current version (9, batch 15 T1) and a
-    /// version outside 1..=9 is rejected by `parse_save` — the "old binary
+    /// v9 -> v10 back-compat (batch 15 T2, the item-use selector): the
+    /// vocabulary grew (17..17+len(items) = use-by-kind) but no NEW hashed
+    /// state joined `state_hash` — `held`'s contents were already hashed —
+    /// so there's nothing a v9 log could contain that v10 parsing wouldn't
+    /// already handle identically. Mirrors `v8_save_replays_under_v9_parsing`
+    /// above, one version up.
+    #[test]
+    fn v9_save_replays_under_v10_parsing() {
+        let seed0 = 468u64;
+        let log = vec![0u8, 1, 16, 2, 7, 3, 4];
+        let mut v9_bytes = Vec::new();
+        v9_bytes.extend_from_slice(b"RL14");
+        v9_bytes.push(9); // v9
+        v9_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v9_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v9_bytes).expect("v9 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v9 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v9), state_hash(&direct));
+    }
+
+    /// `save_bytes` writes the current version (10, batch 15 T2) and a
+    /// version outside 1..=10 is rejected by `parse_save` — the "old binary
     /// must reject a newer save cleanly" half of every save-version bump's
     /// rationale (this bump's other half is simply keeping the version
-    /// label in lockstep with the hashed-state addition — see this
-    /// module's header comment on `SAVE_VERSION`).
+    /// label in lockstep with the vocabulary growth — see this module's
+    /// header comment on `SAVE_VERSION`).
     #[test]
     fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
         let bytes = save_bytes(7, &[0, 1, 2]);
-        assert_eq!(bytes[4], 9, "save_bytes must write the current version");
+        assert_eq!(bytes[4], 10, "save_bytes must write the current version");
         assert!(parse_save(&bytes).is_some());
 
         let mut future = bytes.clone();
-        future[4] = 10;
+        future[4] = 11;
         assert!(parse_save(&future).is_none(), "an unknown version must be rejected");
 
         let mut zero = bytes;

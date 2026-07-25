@@ -2890,6 +2890,73 @@ impl Game {
         self.monsters_act_and_resolve_awe(None, None, None, (self.px, self.py)); // using an item on yourself isn't bump-attacking
     }
 
+    /// USE-BY-KIND: self-applies the TOP-MOST held item of a CHOSEN kind
+    /// (batch 15 T2, the item-use selector). Input bytes 17..17+len(items) —
+    /// byte `17+kind` selects `kind`; see `Game::apply_input` and
+    /// `Game::held_summary` (the frontend-facing helper a selector reads to
+    /// build its menu). Unlike `use_item` (byte 15, which always acts on
+    /// `held.last()`), this scans `self.held` for the LAST (topmost)
+    /// occurrence of `kind` specifically — a different kind may sit above it
+    /// in the LIFO stack, and that other kind is left completely untouched,
+    /// along with any earlier (lower-stack) copies of THIS kind. Same
+    /// no-op/turn/feedback shape as `use_item` otherwise: nothing of this
+    /// kind held, or its `ItemDef::on_use` is `None`, is a graceful no-op (no
+    /// turn, no RNG draw) using the same two feedback lines `use_item` uses
+    /// (`use_empty_hands` for "none of this kind held", `use_no_effect` for
+    /// "held but no self-use") — a selector never needs a third string. A
+    /// landed use costs an ordinary turn (no violence tax) exactly like
+    /// `use_item`.
+    pub(crate) fn use_item_kind(&mut self, kind: u8) {
+        self.fx_hit = None;
+        if self.dead || self.won {
+            return;
+        }
+        let Some(pos) = self.held.iter().rposition(|&k| k == kind) else {
+            self.log(String::from(GAME.strings.use_empty_hands));
+            return; // none of this kind held: no-op, no turn
+        };
+        let def = &GAME.items[kind as usize];
+        let Some(effect) = def.on_use else {
+            self.log(String::from(GAME.strings.use_no_effect));
+            return; // this kind has no self-use: no-op, no turn
+        };
+        match effect {
+            UseEffect::Heal(amount) => {
+                let heal = amount.min(self.maxhp - self.hp);
+                self.hp += heal;
+            }
+            UseEffect::Light(amount) => {
+                self.light += amount;
+            }
+        }
+        self.log(String::from(def.use_line));
+        self.held.remove(pos);
+        if !self.spend_turn(0) {
+            return; // died in the dark on a use turn: lose beats anything else
+        }
+        // The player never moves during a use; batch 11 T2 fix round.
+        self.monsters_act_and_resolve_awe(None, None, None, (self.px, self.py)); // using an item on yourself isn't bump-attacking
+    }
+
+    /// Held items grouped by kind with their counts, in first-appearance
+    /// (bottom-of-stack-first) order (batch 15 T2, presentation-only — a
+    /// derived read of the hashed `self.held`, not itself hashed, same
+    /// status as `scene()`'s derived entities). For a frontend's item-use
+    /// selector / status readout: e.g. `[(POTION, 2), (CHEESE, 1)]` renders
+    /// as "Potion x2  Cheese x1" (the backend, being crust, is free to name
+    /// the kind — see `ItemDef::glyph`/the cartridge's own naming — this
+    /// helper only groups and counts).
+    pub(crate) fn held_summary(&self) -> Vec<(u8, usize)> {
+        let mut out: Vec<(u8, usize)> = Vec::new();
+        for &k in &self.held {
+            match out.iter_mut().find(|(kind, _)| *kind == k) {
+                Some(entry) => entry.1 += 1,
+                None => out.push((k, 1)),
+            }
+        }
+        out
+    }
+
     /// PUT DOWN: byte 16 (batch 8 T1, story §9-D). Sets the carried
     /// objective on the player's own tile if held (`has_objective`) and the
     /// tile has no item already sitting on it (no stacking): the objective
@@ -3825,19 +3892,27 @@ impl Game {
 }
 
 impl Game {
-    /// Input-byte vocabulary, 0-16 (save v5, batch 8 T1): 0-4 move/wait (see
-    /// below), 5-6 are frontend/reconstruction-layer only (restart/retry —
-    /// handled in `save::replay`, never reach here), 7-10 = talk-N/S/W/E,
-    /// 11-14 = give-N/S/W/E, 15 = use, 16 = put-down — every directional
-    /// pair's order mirrors the move bytes' 0-3 direction order exactly
-    /// (see `Game::try_give_player`'s doc comment; the brief's original
-    /// "11-12" numbering is revised to 11-14 give + 15 use so give stays a
-    /// 4-byte directional block just like move/talk, rather than colliding
-    /// one value short of that shape). 16 (put-down, batch 8 T1, story
-    /// §9-D) is self-apply like 15, no direction — see `Game::put_down`.
-    /// Any other byte is silently ignored (`_ => {}`) — this is the one
-    /// place old logs (v1-v4, no byte 16) and any future build's own
-    /// reserved bytes both fall through harmlessly.
+    /// Input-byte vocabulary, 0-16 plus 17..17+len(items) (save v10, batch 15
+    /// T2): 0-4 move/wait (see below), 5-6 are frontend/reconstruction-layer
+    /// only (restart/retry — handled in `save::replay`, never reach here),
+    /// 7-10 = talk-N/S/W/E, 11-14 = give-N/S/W/E, 15 = use (top of `held`),
+    /// 16 = put-down — every directional pair's order mirrors the move
+    /// bytes' 0-3 direction order exactly (see `Game::try_give_player`'s doc
+    /// comment; the brief's original "11-12" numbering is revised to 11-14
+    /// give + 15 use so give stays a 4-byte directional block just like
+    /// move/talk, rather than colliding one value short of that shape). 16
+    /// (put-down, batch 8 T1, story §9-D) is self-apply like 15, no
+    /// direction — see `Game::put_down`. 17..17+`GAME.items.len()` (batch 15
+    /// T2, the item-use selector): byte `17+kind` is USE-BY-KIND (see
+    /// `Game::use_item_kind`) — a frontend resolves a menu pick (built from
+    /// `Game::held_summary`) to this byte instead of the LIFO-top-only byte
+    /// 15; byte 15 itself is UNCHANGED, kept for back-compat with every
+    /// older save/bot. A `kind` past the cartridge's actual item count is
+    /// impossible for a real `17+kind` byte to encode this batch, but the
+    /// bounds check below guards it anyway rather than indexing blind. Any
+    /// other byte is silently ignored (`_ => {}`) — this is the one place
+    /// old logs (v1-v9, no byte >= 17) and any future build's own reserved
+    /// bytes both fall through harmlessly.
     pub(crate) fn apply_input(&mut self, b: u8) {
         match b {
             0 => self.try_move_player(0, -1),
@@ -3855,6 +3930,9 @@ impl Game {
             14 => self.try_give_player(1, 0),
             15 => self.use_item(),
             16 => self.put_down(),
+            b if b >= 17 && (b as usize - 17) < GAME.items.len() => {
+                self.use_item_kind(b - 17)
+            }
             _ => {}
         }
     }
