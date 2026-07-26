@@ -27,7 +27,7 @@ mod backend_minifb;
 mod backend_term;
 
 use game::Game;
-use headless::{Policy, dump, dump_overworld, probe_floors_main, sim_main, solve_main};
+use headless::{Policy, dump, dump_overworld, probe_floors_main, sim_flip_main, sim_main, solve_main};
 use rng::h64;
 use save::{parse_save, replay, state_hash};
 
@@ -45,7 +45,7 @@ use games::GAME;
 #[cfg(test)]
 use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, OGRE, POTION, RAT, TOWEL, TRAINER};
 #[cfg(test)]
-use headless::{floor_dive_cost, level_dump, sim_seed, solve_seed};
+use headless::{band_scalar, floor_dive_cost, level_dump, sim_seed, solve_seed};
 #[cfg(test)]
 use render::scale;
 #[cfg(test)]
@@ -121,6 +121,16 @@ fn main() {
             args.iter().any(|a| a == "--report"),
             policy,
         );
+        return;
+    }
+    if args.iter().any(|a| a == "--sim-flip") {
+        // batch 16: the relational flip gate — see `headless::sim_flip_main`'s
+        // doc comment. Reuses `--sim`'s own default-5000 convention (not
+        // `--sim`'s default-1000: the flip margin is calibrated for 5000
+        // seeds, per `flip_n` in tests/tactical-pacifist-band.json) since
+        // there's no separate `--sim` invocation on this code path to borrow
+        // a count from.
+        sim_flip_main(flag_val("--sim-flip").unwrap_or(5000));
         return;
     }
     if args.iter().any(|a| a == "--dump") {
@@ -5016,5 +5026,33 @@ mod tests {
             g.monsters.iter().any(|m| m.kind == DONKEY && m.calm),
             "the calm donkey is carried across the screen-link with the player"
         );
+    }
+
+    /// batch 16: `band_scalar` is `band_range`'s sibling for the flip gate's
+    /// two new plain-integer fields (`flip_margin`/`flip_n` in
+    /// tests/tactical-pacifist-band.json). Same no-JSON-crate parsing
+    /// discipline as `band_range` — proved directly against a small sample
+    /// string rather than the real band file, so this test doesn't churn
+    /// every time that file's prose comment is edited.
+    #[test]
+    fn band_scalar_parses_flip_fields() {
+        let json = r#"{"comment": "some prose, with a \"quoted\" bit", "flip_margin": 3, "flip_n": 5000, "win_pct": [25, 50]}"#;
+        assert_eq!(band_scalar(json, "flip_margin"), Some(3));
+        assert_eq!(band_scalar(json, "flip_n"), Some(5000));
+        assert_eq!(band_scalar(json, "not_a_key"), None, "a missing key must return None, not panic or default to 0");
+    }
+
+    /// batch 16: `sim_flip_main`'s pass/fail condition, isolated from the
+    /// (slow, 5000-seed) bot runs it wraps. A full run is exercised for real
+    /// by `make check`'s `flip` target, not by `cargo test` — this proves
+    /// only the comparison arithmetic `sim_flip_main` gates on:
+    /// `diplomat_pct - violent_pct >= flip_margin`.
+    #[test]
+    fn flip_margin_comparison_is_correct() {
+        let passes = |diplomat: f64, violent: f64, margin: i32| diplomat - violent >= margin as f64;
+        assert!(passes(39.0, 32.3, 3), "39.0 vs 32.3 with margin 3 must pass");
+        assert!(!passes(32.3, 39.0, 3), "an inverted order must fail");
+        assert!(!passes(34.0, 32.3, 3), "a too-thin margin (1.7 < 3) must fail");
+        assert!(passes(35.3, 32.3, 3), "exactly the required margin must pass (>=, not >)");
     }
 }

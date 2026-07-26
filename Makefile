@@ -1,14 +1,24 @@
 # Makefile — `make check` runs the whole AGENTS.md verification gate in one
 # command: warning-free release build (both cargo backends), cargo test
 # (both backends), golden-dump diff, frame-golden diff, cross-backend
-# replay-hash gate, solver winnability gate, sim-bot balance gate, and
-# UPX-packed size budget. POSIX sh recipes (no bashisms); see
-# AGENTS.md/CLAUDE.md for the manual workflow this encodes.
+# replay-hash gate, solver winnability gate, sim-bot balance gate, the
+# relational flip gate, and UPX-packed size budget. POSIX sh recipes (no
+# bashisms); see AGENTS.md/CLAUDE.md for the manual workflow this encodes.
 #
-# The sim-bot balance gate (`sim` target) runs BOTH bot policies — greedy
-# (tests/sim-band.json) and pacifist (tests/pacifist-band.json, batch 5 T2,
-# DECISION.md item 3) — so `make check` gates mercy's viability alongside
-# violence's, not instead of it.
+# The sim-bot balance gate (`sim` target) runs all four bot policies —
+# greedy (tests/sim-band.json), pacifist (tests/pacifist-band.json, batch 5
+# T2, DECISION.md item 3), tactical (tests/tactical-band.json), and
+# tactical-pacifist (tests/tactical-pacifist-band.json) — so `make check`
+# gates mercy's viability alongside violence's, not instead of it.
+#
+# The `flip` target (batch 16) is a separate, RELATIONAL gate that runs
+# after `sim`: each per-policy band above only checks a bot against its own
+# absolute floor/ceiling, so two overlapping bands could both stay green
+# while the tactical-pacifist and tactical bots' relative order silently
+# inverted. `flip` compares the two tactical bots directly against each
+# other and fails if the diplomat's margin over the violent bot ever drops
+# below `tests/tactical-pacifist-band.json`'s own `flip_margin` — see
+# `headless::sim_flip_main`'s doc comment for the full justification.
 #
 # `make targets` is a separate reporting tool: it prints a stripped/packed
 # size scoreboard for both backends. It is not part of `check` — `xhash`
@@ -35,9 +45,9 @@ FRAME_SEEDS := 1 42
 
 REF_SAVE := tests/fixtures/ref.sav
 
-.PHONY: check build test goldens solve sim size build-term test-term frames targets xhash msrv
+.PHONY: check build test goldens solve sim flip size build-term test-term frames targets xhash msrv
 
-check: build test test-term goldens frames xhash solve sim size msrv
+check: build test test-term goldens frames xhash solve sim flip size msrv
 
 build:
 	RUSTFLAGS="-D warnings" cargo build --release
@@ -179,6 +189,12 @@ sim: build
 	./$(BIN) --sim $(SIM_SEEDS) --policy pacifist
 	./$(BIN) --sim $(SIM_SEEDS) --policy tactical
 	./$(BIN) --sim $(SIM_SEEDS) --policy tactical-pacifist
+
+# batch 16: the relational flip gate — see `headless::sim_flip_main`'s doc
+# comment. Runs AFTER `sim` (each per-policy band must already be green
+# before the relational check between the two tactical bots is meaningful).
+flip: build
+	./$(BIN) --sim-flip $(SIM_SEEDS)
 
 # Pack a copy of the release binary (never target/) and enforce the floppy
 # budget. If $(UPX) isn't runnable, warn and fall back to reporting the

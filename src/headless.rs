@@ -106,6 +106,24 @@ pub(crate) fn band_range(json: &str, key: &str) -> Option<(i32, i32)> {
     Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
 }
 
+/// Pull a bare `"key": N` scalar out of the band file without a JSON crate —
+/// `band_range`'s sibling for the flip gate's two new fields
+/// (`flip_margin`/`flip_n` in `tests/tactical-pacifist-band.json`), which are
+/// plain integers, not `[lo, hi]` pairs. Finds `"key"`, then reads the next
+/// run of digits (an optional leading `-` included, though neither field
+/// this batch uses one). Returns `None` if `key` isn't present or the
+/// following text doesn't parse as an integer — same graceful-miss contract
+/// as `band_range`.
+pub(crate) fn band_scalar(json: &str, key: &str) -> Option<i32> {
+    let k = format!("\"{}\"", key);
+    let rest = &json[json.find(&k)? + k.len()..];
+    let rest = &rest[rest.find(':')? + 1..].trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
 /// `--solve N`: winnability + difficulty gate over seeds 0..N. Prints JSON
 /// stats; exits nonzero on any unwinnable seed or drift outside the band
 /// committed in tests/solver-band.json. With `--report`, prints the stats
@@ -1092,6 +1110,92 @@ pub(crate) fn sim_main(n: u64, report: bool, policy: Policy) {
         Err(_) => {
             eprintln!("warning: {} not found; sim band check skipped", band_path);
         }
+    }
+}
+
+/// `--sim-flip N`: the mercy-economy arc's central thesis — "diplomacy is
+/// the reliable road, ABOVE violence" — promoted from an implicit fact
+/// about band POSITIONS to its own RELATIONAL `make check` gate (batch 16).
+/// Before this gate existed, `tests/tactical-band.json` (`win_pct
+/// [27,42]`) and `tests/tactical-pacifist-band.json` (`win_pct [25,50]`,
+/// pre-batch-16) already overlapped: a future re-tune could land the
+/// diplomat at 28 and the violent bot at 40, and every per-policy band gate
+/// above would still be green while the thesis the whole arc is built on
+/// was quietly inverted. This function compares the two bots to EACH OTHER,
+/// not just to their own separate floors/ceilings.
+///
+/// Mirrors `sim_main`'s shape (same `sim_seed` loop, same JSON-line-then-
+/// gate structure) but runs BOTH tactical policies over the same `0..n`
+/// seed range and computes each win rate as a floating-point PERCENTAGE
+/// (`wins * 100.0 / n`, not `sim_main`'s truncating integer `win_pct`) —
+/// the margin this gate asserts is only a few points wide (`flip_margin`,
+/// currently 3), so truncating either side to an integer before comparing
+/// could paper over exactly the inversion this gate exists to catch.
+///
+/// The required margin and the seed count it was calibrated for both live
+/// in `tests/tactical-pacifist-band.json` (`"flip_margin"`/`"flip_n"`,
+/// read via `band_scalar`) rather than a new file — the diplomat band is
+/// already the file whose comment carries this arc's full justification,
+/// and the margin is fundamentally a statement about the diplomat's
+/// relationship to the violent bot's band, not a free-standing fact.
+///
+/// **This is a CONSERVATIVE proxy, not a tight measurement.** The
+/// tactical-diplomat bot deliberately excludes whole becalm routes a human
+/// diplomat has available (cheese-to-goblin, potion-to-rat — see
+/// `sim_seed`'s doc comment on what each policy's kit does and doesn't
+/// cover), so its measured win rate is understated MORE than the tactical-
+/// violent bot's is (that bot's kit already ≈ the complete human violent
+/// route — route-around, cornered-fight, heal-at-low-HP). A weaker-kitted
+/// diplomat beating a complete-kitted violent bot by `flip_margin` or more
+/// therefore holds a-fortiori for the relationship between the COMPLETE
+/// human routes: if the handicapped bot clears the bar, a human diplomat
+/// with the full kit clears it by more, not less.
+///
+/// This gate PAIRS with (does not replace) the diplomat band's own
+/// `win_pct` lower bound, which batch 16 marked thesis-bearing in its own
+/// right: that floor excludes the "both routes lose, diplomacy is merely
+/// the least-bad option" world (imagine violent 8%, diplomat 11% — a
+/// healthy-looking margin over a floor that isn't there), while this
+/// relational gate excludes the "both routes are fine, but the order
+/// flipped" world. Neither check subsumes the other.
+pub(crate) fn sim_flip_main(n: u64) {
+    let win_pct = |policy: Policy| -> f64 {
+        let wins = (0..n).filter(|&seed| sim_seed(seed, policy).0.won).count() as u64;
+        wins as f64 * 100.0 / n.max(1) as f64
+    };
+    let violent_pct = win_pct(Policy::Tactical);
+    let diplomat_pct = win_pct(Policy::TacticalPacifist);
+    let margin = diplomat_pct - violent_pct;
+
+    let band_path = "tests/tactical-pacifist-band.json";
+    let band = match std::fs::read_to_string(band_path) {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!("warning: {} not found; flip check skipped", band_path);
+            return;
+        }
+    };
+    let required = band_scalar(&band, "flip_margin").unwrap_or(3);
+    if let Some(flip_n) = band_scalar(&band, "flip_n") {
+        if flip_n as u64 != n {
+            eprintln!(
+                "note: flip_margin ({}) was calibrated for flip_n={}, this run used n={}",
+                required, flip_n, n
+            );
+        }
+    }
+
+    println!(
+        "{{\"check\":\"flip\",\"runs\":{},\"diplomat_pct\":{:.1},\"violent_pct\":{:.1},\"margin\":{:.1},\"required\":{}}}",
+        n, diplomat_pct, violent_pct, margin, required
+    );
+
+    if margin < required as f64 {
+        eprintln!(
+            "FLIP INVERTED/THIN: diplomat {:.1} < violent {:.1} + margin {} — the mercy arc's central thesis is violated",
+            diplomat_pct, violent_pct, required
+        );
+        std::process::exit(1);
     }
 }
 
