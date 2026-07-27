@@ -456,7 +456,7 @@ mod tests {
     fn push_into_monster_refuses() {
         let mut g = blank_room(1);
         g.blocks.push((11, 10));
-        g.monsters.push(Monster { x: 12, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 12, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.try_move_player(1, 0);
         assert!(g.blocks.contains(&(11, 10)), "block must not move");
         assert_eq!((g.px, g.py), (10, 10));
@@ -844,6 +844,7 @@ mod tests {
             calm: false,
             awe: 0,
             dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+        disguised: false,
         });
         g.try_move_player(dx, dy);
         assert_eq!(g.light, l1 - 2, "bump-attack should burn 1 turn + 1 violence tax = 2 light");
@@ -873,6 +874,7 @@ mod tests {
             calm: false,
             awe: 0,
             dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+        disguised: false,
         });
         g.light = 2; // 1 (turn) + 1 (tax) lands exactly on 0
         g.try_move_player(dx, dy);
@@ -1034,6 +1036,7 @@ mod tests {
             calm: false,
             awe: 0,
             dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+        disguised: false,
         });
         g.monsters.push(Monster {
             x: px + bdx,
@@ -1044,6 +1047,7 @@ mod tests {
             calm: false,
             awe: 0,
             dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+        disguised: false,
         });
         let hp0 = g.hp;
         talk_until_landed(&mut g, adx, ady, RAT); // regard 0->1, threshold 2, not yet calm
@@ -1082,6 +1086,7 @@ mod tests {
             calm: false,
             awe: 0,
             dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+        disguised: false,
         });
         let spared0 = g.spared;
 
@@ -1115,14 +1120,14 @@ mod tests {
         let mut g = Game::new(1);
         g.monsters.clear();
         g.atk = 3; // Game::new's default; +6*(atk-3) term is 0
-        let fresh_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false };
+        let fresh_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false };
         assert_eq!(receptivity(&fresh_ogre, &g), 20, "a fresh ogre should sit at exactly its BASE");
 
         // Wounded (1 of 13 hp -> wound term 40*(13-1)/13 = 36) plus a
         // strong player (atk 9 -> +6*(9-3) = 36) pushes well past 70:
         // 20 + 0 + 36 + 36 - 0 = 92.
         g.atk = 9;
-        let wounded_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false };
+        let wounded_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false };
         let r = receptivity(&wounded_ogre, &g);
         assert!(r >= 70, "wounded ogre + high atk should land >= 70-ish, got {}", r);
         assert_eq!(r, 92, "and the exact integer math should hold");
@@ -1133,7 +1138,7 @@ mod tests {
         // (20 + 0 + 0 - 18 - 10 = -8); receptivity must still floor at 5.
         g.atk = 0;
         g.light = 1;
-        let floor_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false };
+        let floor_ogre = Monster { x: 0, y: 0, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false };
         assert_eq!(receptivity(&floor_ogre, &g), 5, "receptivity must clamp at the floor of 5");
 
         // Clamp ceiling: a high-regard, badly wounded rat with a very
@@ -1141,7 +1146,7 @@ mod tests {
         // at 95.
         g.atk = 20;
         g.light = game::start_light();
-        let capped_rat = Monster { x: 0, y: 0, kind: RAT, hp: 1, regard: 10, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false };
+        let capped_rat = Monster { x: 0, y: 0, kind: RAT, hp: 1, regard: 10, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false };
         assert_eq!(receptivity(&capped_rat, &g), 95, "receptivity must clamp at the ceiling of 95");
     }
 
@@ -1156,7 +1161,7 @@ mod tests {
         // in the way
         let (ox, oy) = (g.px + 1, g.py);
         g.monsters.clear();
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let hp_before = g.hp;
         g.apply_input(3); // move/bump East onto the ogre
         assert!(
@@ -1183,7 +1188,7 @@ mod tests {
         // retaliation (`OGRE`'s `retaliation` in the contractor cartridge).
         let (ox, oy) = (g.px + 1, g.py);
         g.monsters.clear();
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 100, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 100, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.hp = 2;
         let ogre_name = g.theme().mobs[OGRE as usize];
         let turns_before = g.turns;
@@ -1358,7 +1363,7 @@ mod tests {
     fn silent_give_ground_does_not_awe_a_goblin() {
         let mut g = blank_room(1);
         let (gx, gy) = (g.px + 1, g.py); // goblin starts cardinally adjacent, to the east
-        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let thr = Monster::stats(GOBLIN).awe_threshold as usize;
         assert!(thr > 0, "goblin must be awe-able");
         for _ in 0..(thr + 5) {
@@ -1451,6 +1456,7 @@ mod tests {
                     disarm_regard_paid: false,
                     struck_player: false,
                     yielded: false,
+                disguised: false,
                 });
             }
             assert!(
@@ -1493,7 +1499,7 @@ mod tests {
     fn struck_goblin_can_never_be_awed() {
         let mut g = blank_room(1);
         let (gx, gy) = (g.px + 1, g.py);
-        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: true, yielded: false });
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: true, yielded: false, disguised: false });
         let thr = Monster::stats(GOBLIN).awe_threshold as usize;
         for _ in 0..(thr * 3) {
             g.apply_input(2); // WEST: give ground, arming `yielded`
@@ -1533,7 +1539,7 @@ mod tests {
     fn talking_to_a_goblin_is_not_punished_as_planting() {
         let mut g = blank_room(1);
         let (gx, gy) = (g.px + 1, g.py);
-        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let hp0 = g.hp;
         let atk = Monster::stats(GOBLIN).atk;
         g.apply_input(10); // talk East = 7 + dir(E=3)
@@ -1565,7 +1571,7 @@ mod tests {
     fn holding_against_a_goblin_resets_awe_and_lands_punish_hit() {
         let mut g = blank_room(1);
         let (gx, gy) = (g.px + 1, g.py);
-        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let hp0 = g.hp;
         let atk = Monster::stats(GOBLIN).atk;
         g.apply_input(4); // WAIT — stand planted, adjacent to the goblin
@@ -1593,7 +1599,7 @@ mod tests {
     fn fleeing_an_ogre_lands_a_punish_hit() {
         let mut g = blank_room(1);
         let (ox, oy) = (g.px + 1, g.py);
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let hp0 = g.hp;
         let atk = Monster::stats(OGRE).atk;
         g.apply_input(2); // WEST — step directly away (gives ground: the WRONG move for an ogre)
@@ -1618,8 +1624,8 @@ mod tests {
         let mut g = blank_room(1);
         let (ox, oy) = (g.px + 1, g.py); // ogre to the east
         let (gx, gy) = (g.px - 1, g.py); // goblin to the west
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
-        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
+        g.monsters.push(Monster { x: gx, y: gy, kind: GOBLIN, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.apply_input(4); // WAIT — hold ground against both
         let ogre = g.monsters.iter().find(|m| m.kind == OGRE).unwrap();
         let goblin = g.monsters.iter().find(|m| m.kind == GOBLIN).unwrap();
@@ -1635,7 +1641,7 @@ mod tests {
     fn lethal_punish_hit_sets_killer_to_the_punishing_monster() {
         let mut g = blank_room(1);
         let (ox, oy) = (g.px + 1, g.py);
-        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: ox, y: oy, kind: OGRE, hp: 99, regard: 0, calm: false, awe: 1, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let ogre_name = g.theme().mobs[OGRE as usize];
         g.hp = 1; // guarantee the punish hit alone is lethal
         g.apply_input(2); // WEST — flees the ogre, the wrong move, punished
@@ -1699,7 +1705,7 @@ mod tests {
             "fixture: east of the player must be open floor"
         );
         g.monsters.clear();
-        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.hp = g.maxhp - 5;
         let hp_before = g.hp;
         let mut crng = channel(seed, &["combat"]);
@@ -1737,7 +1743,7 @@ mod tests {
             "fixture: the tile diagonally adjacent (SE) to the player must be open floor"
         );
         g.monsters.clear();
-        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 99, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.hp = g.maxhp - 5;
         let hp_before = g.hp;
         let mut crng = channel(seed, &["combat"]);
@@ -1794,7 +1800,7 @@ mod tests {
             "fixture: east of the player must be open floor"
         );
         g.monsters.clear();
-        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 3, regard: 0, calm: true, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 3, regard: 0, calm: true, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
 
         let light_before = g.light;
         g.apply_input(4); // WAIT, cardinally adjacent to a becalmed rat
@@ -1826,7 +1832,7 @@ mod tests {
             "fixture: east of the player must be open floor"
         );
         g.monsters.clear();
-        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: rx, y: ry, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
 
         let light_before = g.light;
         g.apply_input(4); // WAIT, adjacent to a HOSTILE (non-calm) rat
@@ -1990,6 +1996,7 @@ mod tests {
                 calm: false,
                 awe: 0,
                 dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+            disguised: false,
             });
             let (mut saw_landed, mut saw_failed) = (false, false);
             for _ in 0..50 {
@@ -2043,6 +2050,7 @@ mod tests {
             calm: false,
             awe: 0,
             dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+        disguised: false,
         });
         let mut found = false;
         for _ in 0..200 {
@@ -2096,6 +2104,7 @@ mod tests {
                 calm: false,
                 awe: 0,
                 dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false,
+            disguised: false,
             });
             for _ in 0..10 {
                 g.try_move_player(dx, dy);
@@ -2220,7 +2229,7 @@ mod tests {
     #[test]
     fn give_with_empty_hands_is_noop() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let before_turns = g.turns;
         assert!(g.held.is_empty(), "fixture: nothing held");
         g.apply_input(11); // give-N
@@ -2233,7 +2242,7 @@ mod tests {
     #[test]
     fn give_declined_when_no_matching_rule() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.held = vec![COAT];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -2248,7 +2257,7 @@ mod tests {
     #[test]
     fn cheese_to_rat_is_a_regard_penalty() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 1, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 3, regard: 1, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.held = vec![CHEESE];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -2287,7 +2296,7 @@ mod tests {
     #[test]
     fn cheese_to_goblin_always_stays_it_no_damage_ever() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let hp0 = g.hp;
         let pos0 = (g.monsters[0].x, g.monsters[0].y);
         for _ in 1..=200u32 {
@@ -2312,7 +2321,7 @@ mod tests {
     #[test]
     fn cheese_to_goblin_landed_becalm_sets_calm_and_spared() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let spared_before = g.spared;
         give_cheese_until_becalmed(&mut g, 11); // give-N
         assert!(g.monsters[0].calm, "a landed cheese roll must becalm the goblin outright");
@@ -2330,7 +2339,7 @@ mod tests {
         let mut saw_failed = false;
         'seeds: for seed in 1..200u64 {
             let mut g = blank_room(seed);
-            g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+            g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
             for _ in 1..=200u32 {
                 if g.monsters[0].calm {
                     break;
@@ -2354,7 +2363,7 @@ mod tests {
     #[test]
     fn cheese_to_ogre_declines_gracefully() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.held = vec![CHEESE];
         let before_turns = g.turns;
         g.apply_input(11); // give-N
@@ -2372,7 +2381,7 @@ mod tests {
     #[test]
     fn cheese_give_isolated_from_combat_and_ai() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         for _ in 1..=200u32 {
             if g.monsters[0].calm {
                 break;
@@ -2394,7 +2403,7 @@ mod tests {
     #[test]
     fn potion_given_to_rat_heals_full_and_raises_regard() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: RAT, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.held = vec![POTION];
         g.apply_input(11); // give-N
         let maxhp = Monster::stats(RAT).hp;
@@ -2412,7 +2421,7 @@ mod tests {
     #[test]
     fn potion_given_to_goblin_enrages_no_monster_damage() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 2, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: GOBLIN, hp: 6, regard: 2, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.held = vec![POTION];
         let hp0 = g.hp;
         let atk = Monster::stats(GOBLIN).atk;
@@ -2430,7 +2439,7 @@ mod tests {
     #[test]
     fn potion_given_to_ogre_enrages_no_monster_damage() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 2, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 2, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.held = vec![POTION];
         let hp0 = g.hp;
         let atk = Monster::stats(OGRE).atk;
@@ -2450,7 +2459,7 @@ mod tests {
     fn potion_enrage_hit_not_tied_to_player_atk() {
         let mut g = blank_room(1);
         g.atk = 0; // weak-ATK player
-        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 2, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: g.px, y: g.py - 1, kind: OGRE, hp: 13, regard: 2, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.held = vec![POTION];
         let hp0 = g.hp;
         let atk = Monster::stats(OGRE).atk;
@@ -3182,6 +3191,168 @@ mod tests {
         assert_eq!(state_hash(&a), state_hash(&b));
     }
 
+    // ---------- Disguise/ambush + climb re-encounter (mimic batch T4) ----------
+
+    /// `MonsterDef::starts_disguised` is `true` for the mimic and `false`
+    /// for every other kind; `Monster::spawn` reads it, so a freshly spawned
+    /// mimic starts disguised and every other freshly spawned kind never is.
+    #[test]
+    fn mimic_starts_disguised_flag_and_default_spawn() {
+        assert!(crate::game::Monster::stats(MIMIC).starts_disguised, "fixture assumption: the mimic disguises");
+        for k in [RAT, GOBLIN, OGRE, TRAINER, DONKEY] {
+            assert!(!crate::game::Monster::stats(k).starts_disguised, "only the mimic starts disguised ({})", k);
+        }
+        assert!(Monster::spawn(MIMIC, 0, 0).disguised, "a freshly spawned mimic starts disguised");
+        assert!(!Monster::spawn(RAT, 0, 0).disguised, "a freshly spawned rat is never disguised");
+    }
+
+    /// THE core disguise/ambush behavior (story §4 D3): a disguised mimic
+    /// out of striking distance is fully inert — no chase, no attack, no
+    /// movement at all — for as many turns as the player stays away, even
+    /// though it `sees` the player (an ordinary `Fight` monster this close
+    /// would already be closing the distance).
+    #[test]
+    fn disguised_mimic_stays_inert_until_player_within_striking_distance() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster::spawn(MIMIC, 13, 10)); // dist 3 from the player at (10,10)
+        let (mx0, my0) = (g.monsters[0].x, g.monsters[0].y);
+        for _ in 0..5 {
+            g.apply_input(4); // WAIT — a disguised mimic must never chase from afar
+            assert!(g.monsters[0].disguised, "still out of striking range: must stay disguised");
+            assert_eq!((g.monsters[0].x, g.monsters[0].y), (mx0, my0), "a disguised monster must never move");
+        }
+        assert_eq!(g.hp, GAME.balance.starting_hp, "an inert, out-of-range disguised mimic must never attack");
+    }
+
+    /// Closing the distance to exactly adjacent triggers the reveal —
+    /// permanently, same turn — and the mimic behaves like any other
+    /// `Fight` monster from that turn on (verified here by the ordinary
+    /// counter-attack landing the same turn it reveals, mirroring
+    /// `polite_decline_accepting_without_declining_costs_hp`'s own
+    /// replicate-the-combat-channel-draw discipline).
+    #[test]
+    fn disguised_mimic_reveals_on_approach_and_behaves_same_turn() {
+        let seed = 1u64;
+        let mut g = blank_room(seed);
+        g.monsters.push(Monster::spawn(MIMIC, 12, 10)); // dist 2 from the player at (10,10)
+        let hp_before = g.hp;
+        let mut combat_probe = channel(seed, &["combat"]);
+        let ordinary_attack = crate::game::Monster::stats(MIMIC).atk + combat_probe.range(0, 2);
+        // Moving one step adjacent triggers the reveal AND lets it behave
+        // like any other Fight+PoliteDecline monster THIS SAME turn: it
+        // lands its ordinary counter-swing (monsters_act, not `stayed`)
+        // AND the turn ends adjacent without a decline, so accept-damage
+        // (`resolve_polite_decline`) charges too — both in the one turn
+        // that reveals it, matching "then behaves," not "behaves next turn."
+        g.apply_input(3); // move East: dist 2 -> 1, adjacent now
+        assert!(!g.monsters[0].disguised, "adjacency must trigger the reveal, same turn");
+        assert_eq!(
+            hp_before - g.hp,
+            ordinary_attack + GAME.balance.polite_decline_accept_damage,
+            "the reveal turn itself carries both the ordinary attack and accept-damage"
+        );
+    }
+
+    /// A mimic that spawns ALREADY adjacent (as most fixtures in this file
+    /// do) reveals on the very first turn taken — approach isn't required
+    /// to be literal footsteps, only literal adjacency; this is also the
+    /// invariant that keeps every batch-17-T3 `PoliteDecline` test passing
+    /// unmodified under T4's disguise addition.
+    #[test]
+    fn mimic_spawned_already_adjacent_reveals_on_first_turn() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster::spawn(MIMIC, g.px + 1, g.py));
+        assert!(g.monsters[0].disguised, "freshly spawned adjacent mimic still starts disguised");
+        g.apply_input(4); // WAIT
+        assert!(!g.monsters[0].disguised, "adjacency at spawn must trigger the reveal on the very first turn");
+    }
+
+    /// `Monster.disguised` is hashed (`save::state_hash`) — it changes
+    /// whether a future turn attacks/chases, exactly like `regard`/`calm`/
+    /// `awe` beside it, so it's run-defining, not presentation.
+    #[test]
+    fn monster_disguised_is_hashed() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster::spawn(MIMIC, 13, 10));
+        let h1 = state_hash(&g);
+        g.monsters[0].disguised = false;
+        let h2 = state_hash(&g);
+        assert_ne!(h1, h2, "disguised must be part of state_hash");
+    }
+
+    /// `GAME.strings.disguise_reveal`, filled with every theme's every mob
+    /// name, must still fit the 78-char log row (same discipline as
+    /// `polite_decline_hurt_fits_log_row`).
+    #[test]
+    fn disguise_reveal_fits_log_row() {
+        for t in GAME.themes {
+            for name in t.mobs {
+                let filled = GAME.strings.disguise_reveal.replace("{}", name);
+                assert!(filled.len() <= 78, "too long ({}): {}", filled.len(), filled);
+            }
+        }
+    }
+
+    /// `MonsterDef::climb_reencounter` is `true` only for the mimic — the
+    /// story's "one guaranteed encounter slot," not a general mechanism.
+    #[test]
+    fn climb_reencounter_flag_is_true_only_for_the_mimic() {
+        assert!(crate::game::Monster::stats(MIMIC).climb_reencounter);
+        for k in [RAT, GOBLIN, OGRE, TRAINER, DONKEY] {
+            assert!(!crate::game::Monster::stats(k).climb_reencounter, "only the mimic gets this slot ({})", k);
+        }
+    }
+
+    /// The climb re-encounter (story §3.5): ending a turn cardinally-
+    /// adjacent-and-seeing a BECALMED mimic while carrying the objective
+    /// dispatches `CarryEvent::ClimbReencounter` — exactly one line, drawn
+    /// only from `flavor_rng` (proven generically for every event already
+    /// by `carry_event_only_touches_flavor_rng_and_the_log`; this test
+    /// isolates the NEW trigger CONDITION inside `Game::monsters_act`
+    /// itself, which that generic test can't reach since it calls
+    /// `carry_event` directly rather than through a real adjacent turn).
+    /// `dividend_paid`/`disguised` are pre-set on the fixture so the ONLY
+    /// thing this turn logs is the reencounter line, not the (unrelated)
+    /// becalm dividend or a disguise-reveal.
+    #[test]
+    fn climb_reencounter_fires_for_becalmed_mimic_while_carrying() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { calm: true, dividend_paid: true, disguised: false, ..Monster::spawn(MIMIC, g.px + 1, g.py) });
+        g.has_objective = true;
+        let before_len = g.msgs.len();
+        g.apply_input(4); // WAIT, adjacent to a becalmed mimic, carrying
+        assert_eq!(g.msgs.len(), before_len + 1, "exactly one new line: the ClimbReencounter dispatch");
+        let pool = GAME.carried_lines.iter().find(|(e, _)| *e == CarryEvent::ClimbReencounter).unwrap().1;
+        assert!(pool.contains(&g.msgs.last().unwrap().as_str()), "logged line must come from the ClimbReencounter pool");
+    }
+
+    /// No dispatch without carrying the objective — `Game::carry_event`'s
+    /// own `has_objective` gate, exercised through the real trigger path.
+    #[test]
+    fn climb_reencounter_does_not_fire_without_the_objective() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { calm: true, dividend_paid: true, disguised: false, ..Monster::spawn(MIMIC, g.px + 1, g.py) });
+        assert!(!g.has_objective);
+        let before_len = g.msgs.len();
+        g.apply_input(4);
+        assert_eq!(g.msgs.len(), before_len, "not carrying: no ClimbReencounter line");
+    }
+
+    /// No dispatch for a becalmed monster that ISN'T the mimic (no
+    /// `climb_reencounter` slot) — the story's "one guaranteed slot" reads
+    /// as exactly one kind, not a generic becalmed-monster-while-carrying
+    /// hook (that's the distinct, NOT-built, batch-12-R4 mood-lift HOOK
+    /// commented in `Game::monsters_act` beside this one).
+    #[test]
+    fn climb_reencounter_does_not_fire_for_a_becalmed_non_mimic() {
+        let mut g = blank_room(1);
+        g.monsters.push(Monster { calm: true, dividend_paid: true, ..Monster::spawn(RAT, g.px + 1, g.py) });
+        g.has_objective = true;
+        let before_len = g.msgs.len();
+        g.apply_input(4);
+        assert_eq!(g.msgs.len(), before_len, "a becalmed non-mimic must never fire ClimbReencounter");
+    }
+
     // ---------- Light-cache item (batch 14 T1, portal ROI) ----------
 
     /// Walking onto a light-cache (`ItemEffect::LightCache`) raises `light`
@@ -3568,6 +3739,7 @@ mod tests {
             CarryEvent::Idle,
             CarryEvent::RestedBright,
             CarryEvent::RestedDim,
+            CarryEvent::ClimbReencounter,
         ] {
             let mut g = blank_room(1);
             g.has_objective = true;
@@ -3808,7 +3980,7 @@ mod tests {
 
         // A becalmed rat (threshold 2) east of the carrier: a spare.
         let (rx, ry) = (px1 + 1, py1);
-        g.monsters.push(Monster { kind: RAT, x: rx, y: ry, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { kind: RAT, x: rx, y: ry, hp: 1, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let mood_before_spare = g.mood();
         talk_until_landed(&mut g, 1, 0, RAT);
         talk_until_landed(&mut g, 1, 0, RAT); // crosses threshold 2: becalms
@@ -4654,7 +4826,7 @@ mod tests {
         assert_eq!(bloody_line, "Back already? Happens. I don't ask. You don't ask.", "must be TRA_007 verbatim");
 
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.last_life_bloody = Some(true);
         g.try_talk_player(1, 0);
         assert!(g.last_life_greeting_spoken, "setup: seed 1's first parley roll must land");
@@ -4668,7 +4840,7 @@ mod tests {
         );
 
         let mut h = blank_room(3);
-        h.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        h.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         h.last_life_bloody = Some(false);
         h.try_talk_player(1, 0);
         assert!(h.last_life_greeting_spoken, "setup: seed 3's first parley roll must land");
@@ -4678,7 +4850,7 @@ mod tests {
         // batch) must never speak either line, even with the memory set —
         // the graceful no-op, same invariant as `carry_event`'s empty pool.
         let mut r = blank_room(4);
-        r.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        r.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         r.last_life_bloody = Some(true);
         r.try_talk_player(1, 0);
         assert!(!r.msgs.iter().any(|m| m == bloody_line), "a kind with no resurrection_lines row must never speak one");
@@ -5484,7 +5656,7 @@ mod tests {
     #[test]
     fn passive_monster_never_chases_or_attacks() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 12, y: 11, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 12, y: 11, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let hp_before = g.hp;
         for _ in 0..20 {
             g.wait_turn();
@@ -5501,7 +5673,7 @@ mod tests {
     #[test]
     fn bump_fight_kind_attacks_unchanged() {
         let mut g = blank_room(1);
-        g.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: RAT, hp: 3, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.try_move_player(1, 0);
         assert_eq!((g.px, g.py), (10, 10), "attacking doesn't move the player");
         assert!(g.monsters.is_empty() || g.monsters[0].hp < 3, "the rat takes damage or dies");
@@ -5514,7 +5686,7 @@ mod tests {
     fn bump_yield_kind_swaps_without_damage() {
         let mut g = blank_room(1);
         let full_hp = GAME.monsters[TRAINER as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: TRAINER, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.try_move_player(1, 0);
         assert_eq!((g.px, g.py), (11, 10), "player swaps into the trainer's tile");
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (10, 10), "trainer swaps back to the player's old tile");
@@ -5527,7 +5699,7 @@ mod tests {
     fn bump_shove_kind_pushes_onto_floor() {
         let mut g = blank_room(1);
         let full_hp = GAME.monsters[DONKEY as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.try_move_player(1, 0);
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (12, 10), "donkey shoved one tile");
         assert_eq!((g.px, g.py), (11, 10), "player advances into the vacated tile");
@@ -5541,7 +5713,7 @@ mod tests {
         let mut g = blank_room(1);
         g.map[idx(12, 10)] = Tile::Wall;
         let full_hp = GAME.monsters[DONKEY as usize].hp;
-        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 11, y: 10, kind: DONKEY, hp: full_hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let before_turns = g.turns;
         g.try_move_player(1, 0);
         assert_eq!((g.monsters[0].x, g.monsters[0].y), (11, 10), "donkey plants, does not move");
@@ -5591,7 +5763,7 @@ mod tests {
     fn aloof_donkey_does_not_follow_in_overworld() {
         let mut g = blank_room(1);
         g.world = WorldId::Overworld;
-        g.monsters.push(Monster { x: 6, y: 6, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 6, y: 6, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         let before = (g.monsters[0].x, g.monsters[0].y);
         g.try_move_player(1, 0);
         assert_eq!((g.monsters[0].x, g.monsters[0].y), before, "an aloof (non-calm) donkey does not follow");
@@ -5610,7 +5782,7 @@ mod tests {
         let mut g = blank_room(1);
         g.world = WorldId::Overworld;
         let start = (6, 6);
-        g.monsters.push(Monster { x: start.0, y: start.1, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: true, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: start.0, y: start.1, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: true, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         g.try_move_player(1, 0); // any turn-advancing action carries the follow step
         let dist_if_it_had_stood_still = (g.px - start.0).abs().max((g.py - start.1).abs());
         let dist_now = (g.px - g.monsters[0].x).abs().max((g.py - g.monsters[0].y).abs());
@@ -5624,7 +5796,7 @@ mod tests {
     fn follow_step_never_lands_on_player_or_wall() {
         let mut g = blank_room(1);
         g.world = WorldId::Overworld;
-        g.monsters.push(Monster { x: 6, y: 6, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: true, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+        g.monsters.push(Monster { x: 6, y: 6, kind: DONKEY, hp: GAME.monsters[DONKEY as usize].hp, regard: 0, calm: true, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false, disguised: false });
         for _ in 0..10 {
             g.wait_turn();
             assert_ne!((g.monsters[0].x, g.monsters[0].y), (g.px, g.py), "follow step never lands on the player's tile");

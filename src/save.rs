@@ -218,6 +218,11 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// alongside `cache_light_collected` above. See `Game::echo_done`'s doc
 /// comment for exactly what sets each one and why `answer_done` stays
 /// permanently `false` until cast batch two's coat exists.
+/// `Monster.disguised` (mimic batch T4, disguise/ambush) is the same story
+/// an eighth time: it changes whether a FUTURE turn's `monsters_act` chases
+/// or attacks with this monster, so it's run-defining, not presentation —
+/// hashed per-monster beside `regard`/`calm`/`awe`/`dividend_paid`/
+/// `struck_player`/`yielded`/`disarm_regard_paid` above.
 /// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
 /// in (batch 6 T1): current world, provenance, and every stored
 /// `WorldState`'s own id.
@@ -372,9 +377,10 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
             // regard/calm (batch 5, DECISION.md item 3), awe (batch 11 T2,
             // the stand-tall becalm), dividend_paid (batch 13 T3, the
             // becalm return-trip dividend), struck_player/yielded (batch 15
-            // T1, the goblin talk-gate), and disarm_regard_paid (mimic
-            // batch T2 fix round, the sword's set-down-for-regard anti-farm
-            // guard) are all hashed — mercy is run-defining state, not
+            // T1, the goblin talk-gate), disarm_regard_paid (mimic batch T2
+            // fix round, the sword's set-down-for-regard anti-farm guard),
+            // and disguised (mimic batch T4, the disguise/ambush trigger)
+            // are all hashed — mercy/ambush state is run-defining, not
             // presentation-only like the killer/echo/facing/fx_hit
             // exclusion set below.
             h = fnv_bytes(
@@ -391,6 +397,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
                     m.struck_player as u8,
                     m.yielded as u8,
                     m.disarm_regard_paid as u8,
+                    m.disguised as u8,
                 ],
             );
         }

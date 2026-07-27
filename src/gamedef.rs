@@ -178,6 +178,17 @@ pub(crate) enum CarryEvent {
     Idle,
     RestedBright,
     RestedDim,
+    /// Mimic batch T4 (the climb re-encounter, story §3.5: "the mimic runs
+    /// its material on the dude IN FRONT OF the McGuffin... the McGuffin's
+    /// reaction resolves on the page when both voices collide. Do not
+    /// pre-decide it. One encounter slot, high value."). Dispatched
+    /// (`Game::monsters_act`) when the carrying player ends a turn
+    /// cardinally-adjacent-and-seeing a BECALMED `MonsterDef::
+    /// climb_reencounter` monster — generic over that flag, not the mimic
+    /// by name, exactly like `PoliteDecline` above. This cartridge's own
+    /// pool is a marked PLACEHOLDER (see `CARRIED_LINES` in contractor.rs)
+    /// — the real reaction is `[YOURS]`, deliberately not authored here.
+    ClimbReencounter,
 }
 
 /// One monster kind's complete definition. `glyph` doubles as both the
@@ -326,6 +337,30 @@ pub(crate) struct MonsterDef {
     /// `endure_done`) are recorded from this one tag, not three separate
     /// mechanisms.
     pub(crate) talk_minigame: Option<Minigame>,
+    /// Mimic batch T4 (disguise/ambush, story §4 D3 — "a real mimic,
+    /// chest-with-teeth, whose hunting strategy is courtship"): whether a
+    /// freshly-spawned `Monster` of this kind starts with hashed
+    /// `Monster.disguised` set (`Monster::spawn`) — inert (no chase, no
+    /// attack; `Game::monsters_act` skips it outright, same shape as the
+    /// `passive` skip) until the player comes within striking distance, at
+    /// which point it reveals (one-way: `disguised` never re-arms) and
+    /// behaves like any other monster from then on. The disguise is
+    /// BEHAVIORAL/narrative only (a log line on reveal) — the glyph never
+    /// changes; a render-only chest-to-monster glyph swap is an explicit
+    /// non-goal this batch (see `Game::monsters_act`'s doc comment). `false`
+    /// for every kind but the mimic — an ordinary monster is never
+    /// "disguised" at all, so `Monster.disguised` starts (and stays) false
+    /// for it, a provable no-op versus pre-batch-17 behavior.
+    pub(crate) starts_disguised: bool,
+    /// Mimic batch T4 (the climb re-encounter, story §3.5): whether a
+    /// BECALMED monster of this kind gets `CarryEvent::ClimbReencounter`
+    /// dispatched when the carrying player ends a turn cardinally-adjacent-
+    /// and-seeing it — see that variant's doc comment. `false` for every
+    /// kind but the mimic (the one "guaranteed encounter slot" the story
+    /// specifies); irrelevant for a kind that can never becalm (a `0`
+    /// `talk_threshold`/awe-threshold monster with no talk minigame simply
+    /// never reaches the `calm` gate this checks).
+    pub(crate) climb_reencounter: bool,
 }
 
 /// The talk-minigame framework's per-kind resolution tag (mimic batch T3)
@@ -885,4 +920,11 @@ pub(crate) struct StringsDef {
     /// — same convention as `hit_by`. A lethal hit here logs `killed_by`
     /// instead, exactly like every other damage site.
     pub(crate) polite_decline_hurt: &'static str,
+    /// Mimic batch T4 (disguise/ambush): logged once, the turn a
+    /// `MonsterDef::starts_disguised` monster reveals itself (the player
+    /// came within striking distance). `{}` fills from the monster's own
+    /// theme name, same `.replace` convention as every other `StringsDef`
+    /// field (contrast `MonsterDef::talk_lines`' `{M}` template, which is
+    /// filled by a different call site).
+    pub(crate) disguise_reveal: &'static str,
 }

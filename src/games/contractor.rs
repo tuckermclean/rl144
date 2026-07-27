@@ -299,29 +299,40 @@ const TRAINER_RESURRECTION: [&str; 2] = [
     "Back already? Quiet trip, from what I can tell. Don't get many of those.",
 ];
 
-/* batch 17 T1: PLACEHOLDER talk lines only — the mimic's real "courtship
-   as hunting" register (workmanlike -> professional -> wistful hunger,
-   per the sign-off package's §4 D3) is T4's content pass, once the
-   polite-decline minigame (T3) exists for it to run through. These four
-   stages/two variants are grounded (restate only that something is being
-   talked to, nothing invented) so the row is legal and length-tested
-   from T1 onward without pre-empting T4's actual writing. */
+/* batch 17 T4 (courtship-as-hunting, story §4 D3: "workmanlike seduction ->
+   professional respect -> wistful hunger" — its want NEVER changes, regard
+   only refines the register). Stage 0/1 are THE POLITE NO's decline ladder
+   before becalm (0 = first decline, 1 = a later one); stage 2 is BOTH the
+   becalming decline AND every talk after (see `Game::try_talk_player`'s
+   already-calm branch, which reuses stage 2 forever) — so stage 2 must read
+   truthfully in both moments: the decline that finally lands, and the
+   settled state after. Canon flags one specific claim ("it still wants to
+   eat you") as sayable only ONCE, lifetime — since stage 2 REPEATS on every
+   later talk, that specific line is deliberately NOT placed here (it would
+   repeat, breaking "once"); it stays available for a future one-shot hook
+   instead. Stage 3 (a failed roll) is structurally UNREACHABLE for
+   `PoliteDecline` (every decline lands, deterministically — see
+   `Game::try_talk_player`), but the field still must compile and stay
+   grounded, so it's populated with the same restrained register rather
+   than left to imply a meaning it can't have. Every line restates only
+   what's observable at the table — no invented history, no counts, no
+   named victims. */
 const MIMIC_TALK: [[&str; 2]; 4] = [
     [
-        "The {M} holds still. Whatever it is, it's listening.",
-        "The {M} gives no ground, gives no sign, just watches.",
+        "The {M} offers you a seat, warmly, like it's done this before.",
+        "The {M} suggests you set your burdens down. Just for a moment.",
     ],
     [
-        "The {M} tilts, faintly, toward you. Interested, maybe.",
-        "The {M} seems to weigh you. It has not decided.",
+        "The {M} tries again, gentler. Rest here. Just rest, it says.",
+        "The {M} seems almost hurt you keep declining. Almost.",
     ],
     [
-        "The {M} settles. Whatever it wanted, this satisfied it.",
-        "The {M} stops watching you like prey. Progress, of a kind.",
+        "The {M} stops asking. Professional, about it, now.",
+        "The {M} watches you a while, wistful, and lets you pass.",
     ],
     [
-        "The {M} is unmoved. It wants something else from you.",
-        "The {M} stays exactly as it was. Try differently.",
+        "The {M} does not care for being rushed.",
+        "The {M} withdraws the offer. For now.",
     ],
 ];
 
@@ -356,6 +367,10 @@ const MONSTERS: [MonsterDef; 6] = [
         // `Game.echo_done` (the curriculum's lesson 1) without the engine
         // ever naming "rat." No new minigame was built for this.
         talk_minigame: Some(Minigame::Echo),
+        // mimic batch T4: not the mimic — never disguised, no climb
+        // re-encounter slot.
+        starts_disguised: false,
+        climb_reencounter: false,
     },
     MonsterDef {
         hp: 6,
@@ -391,6 +406,10 @@ const MONSTERS: [MonsterDef; 6] = [
         follows_when_calm: false,
         // mimic batch T3: no minigame — ordinary talk, unchanged.
         talk_minigame: None,
+        // mimic batch T4: not the mimic — never disguised, no climb
+        // re-encounter slot.
+        starts_disguised: false,
+        climb_reencounter: false,
     },
     MonsterDef {
         hp: 13,
@@ -425,6 +444,10 @@ const MONSTERS: [MonsterDef; 6] = [
         follows_when_calm: false,
         // mimic batch T3: no minigame — ordinary talk (and awe), unchanged.
         talk_minigame: None,
+        // mimic batch T4: not the mimic — never disguised, no climb
+        // re-encounter slot.
+        starts_disguised: false,
+        climb_reencounter: false,
     },
     // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
     // construction — `passive` keeps it out of `monsters_act` entirely, and
@@ -458,6 +481,11 @@ const MONSTERS: [MonsterDef; 6] = [
         // never even reaches the receptivity seam for a hostile purpose,
         // but the field must exist regardless; `None` is correct here.
         talk_minigame: None,
+        // mimic batch T4: not the mimic — never disguised (passive already
+        // means never chases/attacks, from spawn — disguise would be inert
+        // redundancy), no climb re-encounter slot.
+        starts_disguised: false,
+        climb_reencounter: false,
     },
     // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
     // `bump: Shove` pushes it one tile if the destination is plain floor,
@@ -496,17 +524,23 @@ const MONSTERS: [MonsterDef; 6] = [
         // mimic batch T3: no minigame — the donkey's own follow/schmooze
         // ladder is ordinary talk, unchanged.
         talk_minigame: None,
+        // mimic batch T4: not the mimic — never disguised, no climb
+        // re-encounter slot.
+        starts_disguised: false,
+        climb_reencounter: false,
     },
     // MIMIC (batch 17 T1, the mimic batch — first dungeon cast character,
     // manifest item 5, guaranteed at the D3 room below). Glyph `c` — reads
     // as a chest/box, never the lore `?` (sign-off amendment B); free
     // against every existing tile/item/monster/vault-legend byte (checked
     // against `headless::level_dump`'s legend and every glyph above).
-    // PLAIN this batch: ordinary `Fight` bump, not `passive` (T4 adds the
-    // disguise-until-triggered AI; until then it acts like any other
-    // monster, just wearing a chest's glyph), modest hp/atk, every
-    // mercy/awe field 0/false (no retaliation, no awe route — those are
-    // content for a later batch if ever), placeholder `MIMIC_TALK`.
+    // ordinary `Fight` bump (attacking it is legal, canon-approved
+    // rudeness); `passive: false` — it is NOT a trainer/donkey-style
+    // never-fights NPC, it is a real predator that happens to be inert
+    // until triggered (see `starts_disguised` below, T4). Every raw
+    // mercy/awe field but `talk_minigame`/the two T4 flags stays 0/false —
+    // no retaliation, no stand-tall-awe route (its mercy route is THE
+    // POLITE NO, not awe).
     MonsterDef {
         hp: 8,
         atk: 3,
@@ -535,6 +569,19 @@ const MONSTERS: [MonsterDef; 6] = [
         // `talk_threshold`) tags `Game.endure_done`, the curriculum's
         // lesson 3, the same way the rat's `Echo` tag above feeds lesson 1.
         talk_minigame: Some(Minigame::PoliteDecline),
+        // mimic batch T4 (disguise/ambush, story §4 D3): the one `true` of
+        // each in this whole table. Renders/acts inert (no chase, no
+        // attack) until the player comes within striking distance — see
+        // `Monster.disguised`'s doc comment in game.rs for the exact
+        // trigger — then behaves like any other `Fight`/`PoliteDecline`
+        // monster from that same turn on; the glyph never changes (`c`
+        // throughout), only behavior does.
+        starts_disguised: true,
+        // mimic batch T4 (the climb re-encounter, story §3.5): the one
+        // guaranteed slot — a becalmed mimic passed while carrying gets
+        // `CarryEvent::ClimbReencounter` dispatched (see `CARRIED_LINES`
+        // below for the McGuffin's own, deliberately placeholder, reaction).
+        climb_reencounter: true,
     },
 ];
 
@@ -1318,8 +1365,22 @@ const MCG_RESTED_DIM: [&str; 2] = [
     "I've gone dim. Rest anyway; the mending doesn't need me.",
     "Dimmed near to nothing. Rest -- the mending isn't mine to give.",
 ];
+// Mimic batch T4 (the climb re-encounter, story §3.5): "the mimic runs its
+// material on the dude IN FRONT OF the McGuffin -- the only creature in the
+// dungeon fluent in its native genre, and it cannot leave the conversation.
+// `[YOURS]` -- the McGuffin's reaction resolves on the page when both voices
+// collide. Do not pre-decide it." PLACEHOLDER pool, deliberately: these two
+// lines are the minimal grounded thing sayable without resolving the
+// collision one way or the other (jealousy, amusement, recognition -- all
+// still open). Revive/replace with the human-authored reaction later; the
+// `Game::carry_event` dispatch and hookup are the real T4 deliverable, not
+// this text.
+const MCG_CLIMB_REENCOUNTER: [&str; 2] = [
+    "Oh. It's this one. I have -- notes. Later.",
+    "It's still talking. I'm allowing it. For now.",
+];
 
-const CARRIED_LINES: [(CarryEvent, &[&str]); 9] = [
+const CARRIED_LINES: [(CarryEvent, &[&str]); 10] = [
     (CarryEvent::PickedUpBloody, &MCG_PICKED_UP_BLOODY),
     (CarryEvent::PickedUpMerciful, &MCG_PICKED_UP_MERCIFUL),
     (CarryEvent::PickedBackUp, &MCG_PICKED_BACK_UP),
@@ -1329,6 +1390,7 @@ const CARRIED_LINES: [(CarryEvent, &[&str]); 9] = [
     (CarryEvent::PutDown, &MCG_PUT_DOWN),
     (CarryEvent::RestedBright, &MCG_RESTED_BRIGHT),
     (CarryEvent::RestedDim, &MCG_RESTED_DIM),
+    (CarryEvent::ClimbReencounter, &MCG_CLIMB_REENCOUNTER),
 ];
 
 /* batch 8 T2 (story §9-C, the pickup register): the fixed, always-fires
@@ -1422,6 +1484,10 @@ const STRINGS: StringsDef = StringsDef {
     // offer was accepted and what it cost; invents no history. `{}` fill
     // order matches `hit_by`: monster name, damage taken.
     polite_decline_hurt: "The {} makes you comfortable. That cost you {} HP.",
+    // mimic batch T4 (disguise/ambush): grounded — restates only that the
+    // thing you thought was scenery just moved; invents no history about
+    // what it is or how long it's waited. `{}` fills from the monster name.
+    disguise_reveal: "The {} was never furniture.",
 };
 
 /* The overworld's 3 fixed screens (batch 9 T1, story §9-J prep, SIGN-OFF

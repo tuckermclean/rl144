@@ -355,6 +355,18 @@ pub(crate) struct Monster {
     /// `struck_player` above — it changes whether a future talk becalms the
     /// monster, which is run-defining, not presentation.
     pub(crate) yielded: bool,
+    /// Mimic batch T4 (disguise/ambush, story §4 D3): starts at
+    /// `MonsterDef::starts_disguised` (`Monster::spawn`, every construction
+    /// site) — `true` only for the mimic. While `true`, `Game::monsters_act`
+    /// skips this monster outright (no chase, no attack), exactly like the
+    /// `calm`/`passive` skip beside it, UNTIL the player comes within
+    /// striking distance, at which point it flips permanently `false` (one-
+    /// way; never re-arms) and the monster behaves normally from that same
+    /// turn onward. Hashed in `save::state_hash` right beside `regard`/
+    /// `calm`/`awe` — it changes whether a FUTURE turn attacks/chases,
+    /// which is run-defining, not the presentation-only exclusion set
+    /// (`killer`/`echo`/`facing`/`fx_hit`/`mcguffin_last_line_turn`).
+    pub(crate) disguised: bool,
 }
 
 impl Monster {
@@ -383,7 +395,20 @@ impl Monster {
     /// duplicating this field list at every call site.
     #[allow(dead_code)] // exercised by tests only as of batch 11 T2
     pub(crate) fn spawn(kind: MKind, x: i32, y: i32) -> Monster {
-        Monster { x, y, kind, hp: GAME.monsters[kind as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false }
+        Monster {
+            x,
+            y,
+            kind,
+            hp: GAME.monsters[kind as usize].hp,
+            regard: 0,
+            calm: false,
+            awe: 0,
+            dividend_paid: false,
+            disarm_regard_paid: false,
+            struck_player: false,
+            yielded: false,
+            disguised: GAME.monsters[kind as usize].starts_disguised,
+        }
     }
 }
 
@@ -1242,7 +1267,20 @@ impl Game {
                     .map(|&(_, k)| k)
                     .unwrap_or(GAME.balance.monster_roll[GAME.balance.monster_roll.len() - 1].1);
                 let hp = GAME.monsters[kind as usize].hp;
-                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+                self.monsters.push(Monster {
+                    x: mx,
+                    y: my,
+                    kind,
+                    hp,
+                    regard: 0,
+                    calm: false,
+                    awe: 0,
+                    dividend_paid: false,
+                    disarm_regard_paid: false,
+                    struck_player: false,
+                    yielded: false,
+                    disguised: GAME.monsters[kind as usize].starts_disguised,
+                });
             }
         }
         /* items: deep floors are a war of attrition, so supply scales too —
@@ -1423,7 +1461,20 @@ impl Game {
                     self.items.push(Item { x: tx, y: ty, kind: ii as IKind });
                 } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                     let hp = GAME.monsters[ki].hp;
-                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+                    self.monsters.push(Monster {
+                        x: tx,
+                        y: ty,
+                        kind: ki as MKind,
+                        hp,
+                        regard: 0,
+                        calm: false,
+                        awe: 0,
+                        dividend_paid: false,
+                        disarm_regard_paid: false,
+                        struck_player: false,
+                        yielded: false,
+                        disguised: GAME.monsters[ki].starts_disguised,
+                    });
                 }
             }
         }
@@ -2018,7 +2069,20 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+                            self.monsters.push(Monster {
+                                x: tx,
+                                y: ty,
+                                kind: ki as MKind,
+                                hp,
+                                regard: 0,
+                                calm: false,
+                                awe: 0,
+                                dividend_paid: false,
+                                disarm_regard_paid: false,
+                                struck_player: false,
+                                yielded: false,
+                                disguised: GAME.monsters[ki].starts_disguised,
+                            });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -2090,7 +2154,20 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
+                            self.monsters.push(Monster {
+                                x: tx,
+                                y: ty,
+                                kind: ki as MKind,
+                                hp,
+                                regard: 0,
+                                calm: false,
+                                awe: 0,
+                                dividend_paid: false,
+                                disarm_regard_paid: false,
+                                struck_player: false,
+                                yielded: false,
+                                disguised: GAME.monsters[ki].starts_disguised,
+                            });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -3763,6 +3840,30 @@ impl Game {
         // ever runs), so indices stay valid across this whole function.
         let mut attacks: Vec<(usize, MKind, i32)> = Vec::new();
         for i in 0..self.monsters.len() {
+            let (mx, my) = (self.monsters[i].x, self.monsters[i].y);
+            let dist = (px - mx).abs().max((py - my).abs());
+            let sees = self.monster_sees_player(&self.monsters[i]);
+            // Mimic batch T4 (disguise/ambush, story §4 D3): a
+            // `starts_disguised` monster is furniture — inert, no chase, no
+            // attack — until the player comes within striking distance
+            // (Chebyshev-adjacent, the SAME metric the attack check below
+            // uses), at which point it reveals PERMANENTLY (one-way; never
+            // re-arms) and, since it's already adjacent, immediately falls
+            // through into the ordinary calm/passive/attack decision below
+            // THIS SAME turn — "then behaves" means from the moment it's
+            // triggered, not one turn later. `sees`/`dist` are computed
+            // above (moved out of the old post-skip position) so this check
+            // and the climb re-encounter check just below it can both read
+            // them before the calm/passive `continue`.
+            if self.monsters[i].disguised {
+                if dist <= 1 {
+                    self.monsters[i].disguised = false;
+                    let name = self.mob_name(self.monsters[i].kind);
+                    self.log(GAME.strings.disguise_reveal.replace("{}", name));
+                } else {
+                    continue; // still disguised: fully inert, no movement, no attack
+                }
+            }
             if self.monsters[i].calm || Monster::stats(self.monsters[i].kind).passive {
                 // Becalmed (batch 5): never attacks, never chases — the
                 // simplest deterministic option per the batch-5 plan's
@@ -3773,14 +3874,28 @@ impl Game {
                 // of `regard`/`calm` (see `MonsterDef::passive`'s doc
                 // comment).
                 //
+                // Mimic batch T4 (the climb re-encounter, story §3.5): a
+                // BECALMED `climb_reencounter` monster (the mimic) the
+                // carrying player ends a turn cardinally-adjacent-and-seeing
+                // gets `CarryEvent::ClimbReencounter` dispatched — the ONLY
+                // place a becalmed monster is visited at all before this
+                // early `continue`, same reasoning as the R5+ HOOK comment
+                // below. `Game::carry_event` itself checks `has_objective`
+                // and the empty-pool/rate-limit gates, so this call is a
+                // provable no-op for every kind but the mimic and every
+                // player who isn't carrying.
+                if dist == 1 && sees && Monster::stats(self.monsters[i].kind).climb_reencounter {
+                    self.carry_event(CarryEvent::ClimbReencounter);
+                }
+                //
                 // R5+ HOOK (batch 12 R4's brief, NOT built this task — see
                 // `Game::mood_sum`'s doc comment): "every time she sees a
                 // becalmed monster, she likes you that much more" — a
                 // bounded, once-per-monster (hashed "already greeted"
                 // flag, farming-guarded like `Monster.awe`'s cap) mood lift
                 // for passing a becalmed monster within the McGuffin's
-                // shine radius while carrying. This is the ONLY place a
-                // becalmed monster is visited at all before this early
+                // shine radius while carrying. This is the ONLY OTHER place
+                // a becalmed monster is visited at all before this early
                 // `continue` — the detection has to be gated on
                 // `self.has_objective` and land HERE, ahead of this line,
                 // since a `calm` monster never reaches the dist/sees check
@@ -3789,9 +3904,6 @@ impl Game {
                 // (`Game::kills`'s call site, `Game::record_spare`) only.
                 continue;
             }
-            let (mx, my) = (self.monsters[i].x, self.monsters[i].y);
-            let dist = (px - mx).abs().max((py - my).abs());
-            let sees = self.monster_sees_player(&self.monsters[i]);
             if dist == 1 && sees {
                 // batch 8 T1: the McGuffin may react to a monster now
                 // standing right next to you, win-or-lose-of-this-turn
