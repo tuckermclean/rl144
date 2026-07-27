@@ -41,6 +41,21 @@ pub(crate) const OGRE: crate::game::MKind = 2;
 pub(crate) const TRAINER: crate::game::MKind = 3;
 #[allow(dead_code)]
 pub(crate) const DONKEY: crate::game::MKind = 4;
+/* batch 17 T1 (the mimic batch, the cast NPC-vault worldgen MAJOR,
+   DECISION.md item 4): the first dungeon cast character. Renders as a
+   chest-like glyph (never the lore `?`, per the sign-off package's
+   amendment B) at its guaranteed D3 room (see `REQUIRED_VAULTS` below).
+   This batch ships it as a PLAIN, minimal `MonsterDef` row — ordinary
+   `Fight` bump, no `passive`, every mercy/awe field 0/false, placeholder
+   `talk_lines` — the disguise/ambush/courtship behavior that makes it
+   read as "a chest until triggered" is explicitly T3/T4's scope, not
+   this task's; see this row's own field comments below for what's
+   deferred. `#[allow(dead_code)]`: like COAT/TOWEL/LIGHT_CACHE above, no
+   non-test production code references this index by name yet — it's
+   placed by glyph (`stamp_vault`'s item/monster glyph lookup, matching
+   `REQUIRED_VAULTS`' `c` byte) and read by `main.rs`'s tests only. */
+#[allow(dead_code)]
+pub(crate) const MIMIC: crate::game::MKind = 5;
 
 pub(crate) const POTION: crate::game::IKind = 0;
 pub(crate) const SWORD: crate::game::IKind = 1;
@@ -284,7 +299,33 @@ const TRAINER_RESURRECTION: [&str; 2] = [
     "Back already? Quiet trip, from what I can tell. Don't get many of those.",
 ];
 
-const MONSTERS: [MonsterDef; 5] = [
+/* batch 17 T1: PLACEHOLDER talk lines only — the mimic's real "courtship
+   as hunting" register (workmanlike -> professional -> wistful hunger,
+   per the sign-off package's §4 D3) is T4's content pass, once the
+   polite-decline minigame (T3) exists for it to run through. These four
+   stages/two variants are grounded (restate only that something is being
+   talked to, nothing invented) so the row is legal and length-tested
+   from T1 onward without pre-empting T4's actual writing. */
+const MIMIC_TALK: [[&str; 2]; 4] = [
+    [
+        "The {M} holds still. Whatever it is, it's listening.",
+        "The {M} gives no ground, gives no sign, just watches.",
+    ],
+    [
+        "The {M} tilts, faintly, toward you. Interested, maybe.",
+        "The {M} seems to weigh you. It has not decided.",
+    ],
+    [
+        "The {M} settles. Whatever it wanted, this satisfied it.",
+        "The {M} stops watching you like prey. Progress, of a kind.",
+    ],
+    [
+        "The {M} is unmoved. It wants something else from you.",
+        "The {M} stays exactly as it was. Try differently.",
+    ],
+];
+
+const MONSTERS: [MonsterDef; 6] = [
     MonsterDef {
         hp: 3,
         atk: 1,
@@ -435,6 +476,39 @@ const MONSTERS: [MonsterDef; 5] = [
         // (`Game::overworld_follow_step`) instead of just standing still
         // the way a becalmed rat/goblin/ogre does.
         follows_when_calm: true,
+    },
+    // MIMIC (batch 17 T1, the mimic batch — first dungeon cast character,
+    // manifest item 5, guaranteed at the D3 room below). Glyph `c` — reads
+    // as a chest/box, never the lore `?` (sign-off amendment B); free
+    // against every existing tile/item/monster/vault-legend byte (checked
+    // against `headless::level_dump`'s legend and every glyph above).
+    // PLAIN this batch: ordinary `Fight` bump, not `passive` (T4 adds the
+    // disguise-until-triggered AI; until then it acts like any other
+    // monster, just wearing a chest's glyph), modest hp/atk, every
+    // mercy/awe field 0/false (no retaliation, no awe route — those are
+    // content for a later batch if ever), placeholder `MIMIC_TALK`.
+    MonsterDef {
+        hp: 8,
+        atk: 3,
+        glyph: b'c',
+        color: 0xC08040,
+        talk_threshold: 3,
+        receptivity_base: 30,
+        talk_lines: MIMIC_TALK,
+        resurrection_lines: None,
+        passive: false,
+        bump: BumpResponse::Fight,
+        retaliation: 0,
+        awe_threshold: 0,
+        // batch 17 T1 [TUNE placeholder]: no kill-valence story assigned
+        // yet (courtship, not combat, is the mimic's intended arc per the
+        // manifest) — 0 is neutral-most-despicable pending T4's content
+        // pass, same convention as an un-set kill valence elsewhere.
+        kill_valence: 0,
+        awe_by_giving_ground: false,
+        punish_wrong_move: false,
+        awe_tell: "",
+        follows_when_calm: false,
     },
 ];
 
@@ -715,8 +789,10 @@ const THEMES: [ThemeDef; 4] = [
         // batch 9 T1: indices 3/4 (trainer/donkey) are constant across every
         // theme, unlike rat/goblin/ogre's per-theme reskins — they're two
         // specific recurring characters, not a monster-kind archetype that
-        // gets a new name per dungeon.
-        mobs: &["cloister rat", "drowned acolyte", "bell-warden", "trainer", "donkey"],
+        // gets a new name per dungeon. batch 17 T1: index 5 (mimic) is a
+        // PLACEHOLDER name, same literal-across-themes convention as
+        // trainer/donkey — T4's content pass may theme it per dungeon.
+        mobs: &["cloister rat", "drowned acolyte", "bell-warden", "trainer", "donkey", "mimic"],
         adjs: ["water-stained", "hushed", "candle-blackened", "weeping"],
         lore: [
             "The Order raised these halls over the spring, {A}.",
@@ -730,7 +806,7 @@ const THEMES: [ThemeDef; 4] = [
     ThemeDef {
         label: "the salt counting-house",
         objective_name: "the Final Ledger",
-        mobs: &["salt rat", "clerk-thing", "debt-golem", "trainer", "donkey"],
+        mobs: &["salt rat", "clerk-thing", "debt-golem", "trainer", "donkey", "mimic"],
         adjs: ["dust-dry", "ink-stained", "ledger-lined", "airless"],
         lore: [
             "The vaults run deep to keep the salt-debts cool, {A}.",
@@ -744,7 +820,7 @@ const THEMES: [ThemeDef; 4] = [
     ThemeDef {
         label: "the deep mine",
         objective_name: "the First Lode",
-        mobs: &["blind rat", "ember wisp", "pit foreman", "trainer", "donkey"],
+        mobs: &["blind rat", "ember wisp", "pit foreman", "trainer", "donkey", "mimic"],
         adjs: ["soot-caked", "cold", "narrow", "groaning"],
         lore: [
             "They followed the seam past the marked depth, {A}.",
@@ -758,7 +834,7 @@ const THEMES: [ThemeDef; 4] = [
     ThemeDef {
         label: "the hollow library",
         objective_name: "the Last Index",
-        mobs: &["paper rat", "ink haunt", "shelf-warden", "trainer", "donkey"],
+        mobs: &["paper rat", "ink haunt", "shelf-warden", "trainer", "donkey", "mimic"],
         adjs: ["dog-eared", "mould-spotted", "whispering", "unshelved"],
         lore: [
             "The stacks were carved downward when shelves ran out, {A}.",
@@ -859,6 +935,38 @@ const VAULTS: [&str; 5] = [
      ##################",
 ];
 
+/* Guaranteed per-depth cast vaults (batch 17 T1, the mimic batch — the
+   cast NPC-vault worldgen MAJOR, DECISION.md item 4). Same legend/authoring
+   rules as `VAULTS` above (rectangular, solid `#` border, center tile `.`
+   — see `Game::gen_level`'s comment on why the center matters: it's the
+   corridor's connection point) but stamped UNCONDITIONALLY at the named
+   ROOT-world depth instead of rolled against the optional `vault` channel
+   — see `gamedef::GameDef::required_vaults`'s doc comment for the
+   mechanism and why a non-root world's own depth 3/5 is unaffected.
+
+   D3 "the mimic's alcove": a plain room holding the mimic (glyph `c`,
+   off-center so the corridor's connection point at the room's exact
+   center stays open floor, same convention as every other vault above).
+
+   D5 "the stage": the objective's new home. The pedestal sits at the
+   room's exact center — the corridor now runs straight to it, which reads
+   right for a fixed pickup point (an altar you approach) where it read
+   oddly for the old sokoban-style vaults (a monster standing exactly on
+   the connector). This REPLACES the old deepest-BFS-room objective push
+   (`Game::gen_level`) — see that function's comment for the guard that
+   keeps exactly one objective item on the root world's last depth. */
+const MIMIC_ROOM: &str = "#########\n\
+                           #.......#\n\
+                           #..c....#\n\
+                           #.......#\n\
+                           #########";
+const THE_STAGE: &str = "###########\n\
+                          #.........#\n\
+                          #....&....#\n\
+                          #.........#\n\
+                          ###########";
+const REQUIRED_VAULTS: [(u8, &str); 2] = [(3, MIMIC_ROOM), (5, THE_STAGE)];
+
 /* A portal's destination may be an authored, singular place instead of a
    derived world: hand-built, one level, no RNG at all. Legend, an extended
    vault-style subset: '#' wall, '.' floor, '<' the return portal, '!'
@@ -939,10 +1047,21 @@ const GHOST_LABELS: [&str; 12] = [
 ];
 
 /* Solver-derived: worst-case round-trip walk budget over the 10K CI seed
-   set is 1494 (--solve 10000, worstSeed 2108; budget = descend ×1 + climb
+   set is 1476 (--solve 10000, worstSeed 82; budget = descend ×1 + climb
    out ×2 per step, see headless::solve_seed). Start light 2000 leaves
    margin for combat, detours and loot runs. Changing this re-tunes every
-   run: rerun --solve and re-commit tests/solver-band.json alongside it. */
+   run: rerun --solve and re-commit tests/solver-band.json alongside it.
+
+   Re-derived batch 17 T1 (the mimic batch — the cast NPC-vault worldgen
+   MAJOR, DECISION.md item 4): was 1494/worstSeed 2108 before the
+   objective moved from deepest-BFS placement to THE STAGE's fixed D5
+   pedestal (see `REQUIRED_VAULTS`) — the new worst case (1476/seed 82) is
+   SLIGHTLY lower, comfortably inside the standing `tests/solver-band.json`
+   bands (min/p50/p90/p99/max all still within range; see that file), so
+   the band file itself needed no re-commit this batch, only this comment
+   updating to the now-current derivation numbers. `start_light` (2000)
+   is unchanged — the new worst case leaves slightly MORE margin (524 vs
+   the old 506), not less, so no retune was warranted. */
 const BALANCE: BalanceDef = BalanceDef {
     starting_hp: 20,
     starting_atk: 3,
@@ -1279,6 +1398,7 @@ pub(crate) const GAME: GameDef = GameDef {
     room_kinds: &ROOM_KINDS,
     tone_lines: &TONE_LINES,
     vaults: &VAULTS,
+    required_vaults: &REQUIRED_VAULTS,
     authored_floors: &AUTHORED_FLOORS,
     ghost_labels: &GHOST_LABELS,
     balance: BALANCE,

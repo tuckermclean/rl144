@@ -43,7 +43,7 @@ use gamedef::{CarryEvent, ItemEffect, PickupBehavior};
 #[cfg(test)]
 use games::GAME;
 #[cfg(test)]
-use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, OGRE, POTION, RAT, TOWEL, TRAINER};
+use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, MIMIC, OGRE, POTION, RAT, TOWEL, TRAINER};
 #[cfg(test)]
 use headless::{band_scalar, floor_dive_cost, level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -304,6 +304,96 @@ mod tests {
             }
             let (cx, cy) = (w / 2, rows.len() / 2);
             assert_eq!(rows[cy].as_bytes()[cx], b'.', "vault {} center not floor", vi);
+        }
+    }
+
+    /// Authoring rules for the guaranteed cast vaults (batch 17 T1, the
+    /// mimic batch — the cast NPC-vault worldgen MAJOR): same shape as
+    /// `vaults_well_formed` above, plus each row's own `(depth, spec)`
+    /// pairing must be a canon cast depth (3 the mimic room, 5 THE STAGE
+    /// per the sign-off package) and its glyph set is exactly what that
+    /// depth needs — the mimic glyph on D3, the objective glyph on D5 —
+    /// checked here as a stronger, ROW-specific rule than the generic
+    /// whitelist `vaults_well_formed` uses for the optional pool.
+    #[test]
+    fn required_vaults_well_formed() {
+        let objective_glyph = GAME.items[GAME.win.objective_item as usize].glyph;
+        let mimic_glyph = GAME.monsters[MIMIC as usize].glyph;
+        for &(depth, spec) in GAME.required_vaults {
+            assert!(depth == 3 || depth == 5, "unexpected required-vault depth {}", depth);
+            let rows: Vec<&str> = spec.lines().collect();
+            let w = rows[0].len();
+            assert!(rows.len() >= 3 && w >= 3, "required vault (depth {}) too small", depth);
+            let mut saw_expected_glyph = false;
+            for (j, row) in rows.iter().enumerate() {
+                assert_eq!(row.len(), w, "required vault (depth {}) row {} ragged", depth, j);
+                for (i, c) in row.bytes().enumerate() {
+                    assert!(
+                        c == b'#' || c == b'.' || c == mimic_glyph || c == objective_glyph,
+                        "required vault (depth {}) bad char {}",
+                        depth,
+                        c as char
+                    );
+                    if (depth == 3 && c == mimic_glyph) || (depth == 5 && c == objective_glyph) {
+                        saw_expected_glyph = true;
+                    }
+                    if j == 0 || j == rows.len() - 1 || i == 0 || i == w - 1 {
+                        assert_eq!(c, b'#', "required vault (depth {}) border open at {},{}", depth, i, j);
+                    }
+                }
+            }
+            assert!(saw_expected_glyph, "required vault (depth {}) missing its own glyph", depth);
+        }
+    }
+
+    /// Solver invariant (batch 17 T1, the mimic batch — the cast NPC-vault
+    /// worldgen MAJOR): on every seed in the CI range, the root world's D3
+    /// contains the mimic room, D5 contains THE STAGE (i.e. the objective),
+    /// and the level exit stays BFS-reachable throughout — the guaranteed-
+    /// placement mechanism's own acceptance test, run over a much wider
+    /// range than the golden seeds so a rare placement failure (like the
+    /// one an earlier version of `place_required_vault_room` hit on seed
+    /// 1623 before its margin-0 fallback tier was added) can't hide.
+    #[test]
+    fn required_cast_vaults_placed_on_every_seed() {
+        let mimic_glyph = GAME.monsters[MIMIC as usize].glyph;
+        let objective_glyph = GAME.items[GAME.win.objective_item as usize].glyph;
+        for seed in 0..2000u64 {
+            assert!(solve_seed(seed).is_some(), "seed {} unwinnable", seed);
+            let mut g = Game::new(seed);
+            g.depth = 3;
+            g.gen_level();
+            assert!(
+                g.monsters.iter().any(|m| Monster::stats(m.kind).glyph == mimic_glyph),
+                "seed {} missing the mimic room on D3",
+                seed
+            );
+            g.depth = 5;
+            g.gen_level();
+            assert!(
+                g.items.iter().any(|it| GAME.items[it.kind as usize].glyph == objective_glyph),
+                "seed {} missing THE STAGE's objective on D5",
+                seed
+            );
+        }
+    }
+
+    /// Dump-test assertion (batch 17 T1, sign-off package amendment C):
+    /// survives the golden regen, unlike an eye-checked diff — the mimic
+    /// glyph must appear on D3 and the objective glyph on D5 in every
+    /// golden seed's dump text, proving the guaranteed placement is
+    /// actually visible in the frozen fixtures, not just in `gen_level`.
+    #[test]
+    fn golden_dumps_show_the_cast_glyphs() {
+        let mimic_glyph = GAME.monsters[MIMIC as usize].glyph as char;
+        let objective_glyph = GAME.items[GAME.win.objective_item as usize].glyph as char;
+        for seed in [1u64, 2, 3, 42, 1337] {
+            let text = dump(seed);
+            let depths: Vec<&str> = text.split("-- depth ").collect();
+            let d3 = depths.iter().find(|s| s.starts_with("3 ")).expect("depth 3 present");
+            assert!(d3.contains(mimic_glyph), "seed {} depth 3 missing mimic glyph", seed);
+            let d5 = depths.iter().find(|s| s.starts_with("5 ")).expect("depth 5 present");
+            assert!(d5.contains(objective_glyph), "seed {} depth 5 missing objective glyph", seed);
         }
     }
 

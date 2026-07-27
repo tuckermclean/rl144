@@ -37,6 +37,22 @@ pub(crate) struct GameDef {
     /// there is no separate vault-legend table, a def's glyph IS its legend
     /// character (see `Game::stamp_vault`).
     pub(crate) vaults: &'static [&'static str],
+    /// Guaranteed per-depth vaults (batch 17/mimic-batch T1, the cast
+    /// NPC-vault worldgen MAJOR, DECISION.md item 4): `(depth, spec)` rows,
+    /// same ASCII legend as `vaults` above, but stamped UNCONDITIONALLY on
+    /// the ROOT world's named depth — never rolled against the optional
+    /// `vr.chance(2,5)` draw `vaults` goes through, and never stamped on a
+    /// non-root `Seed` world (a portal destination), so a derived multiverse
+    /// world's own depth 3/5 keeps today's occasional-vault behavior
+    /// untouched (see `Game::gen_level`'s `is_root` gate). At most one row
+    /// per depth is meaningful — `gen_level` looks up `self.depth` in this
+    /// table before falling through to the optional roll, so a depth with a
+    /// row here never also gets an optional vault. This batch populates two
+    /// of the manifest's four cast depths (D3 the mimic room, D5 THE STAGE,
+    /// which replaces the old deepest-BFS objective push with a fixed
+    /// pedestal tile); D2/D4 are reserved for a later cast batch and simply
+    /// have no row yet — the mechanism is general, not two-slots-wide.
+    pub(crate) required_vaults: &'static [(u8, &'static str)],
     /// Hand-authored singular floors a portal may lead to (see
     /// `AuthoredFloorDef`).
     pub(crate) authored_floors: &'static [AuthoredFloorDef],

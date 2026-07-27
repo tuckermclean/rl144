@@ -910,6 +910,19 @@ impl Game {
         let world_seed = self.world_seed();
         let mut wr = channel(world_seed, &["worldgen", &depth_tag]);
         let mut sr = channel(world_seed, &["spawns", &depth_tag]);
+        // batch 17 T1 (the mimic batch, the cast NPC-vault worldgen MAJOR):
+        // computed here (was previously derived further down, only for the
+        // stairs/objective branch) so the guaranteed-vault gate below can
+        // also read it. "Root" is a comparison, not a stored flag — see
+        // `WorldId`'s doc comment — so this is true for the seed actually
+        // being played from the start AND for any world dumped/hashed
+        // directly via `Game::new` (headless `dump`/`world_hash`), exactly
+        // the same frame the pre-existing objective-push branch already
+        // used; a portal-derived world only reads `false` here once it's
+        // actually been transited INTO during live play (`self.world`
+        // diverges from `WorldId::Seed(self.seed)`), which is why its own
+        // depth 3/5 keep today's occasional-vault behavior untouched.
+        let is_root = self.world == WorldId::Seed(self.seed);
 
         // rooms
         let mut rooms: Vec<(i32, i32, i32, i32)> = Vec::new(); // x,y,w,h
@@ -935,11 +948,43 @@ impl Game {
             rooms.push((x, y, w, h));
         }
 
-        // occasionally stamp one hand-authored vault as an extra room; the
-        // corridor pass below connects its center like any other room
+        // Cast rooms stamp UNCONDITIONALLY, before the optional roll below
+        // (batch 17 T1, the mimic batch — the cast NPC-vault worldgen
+        // MAJOR, DECISION.md item 4): a ROOT-world depth named in
+        // `GAME.required_vaults` (currently D3 the mimic room, D5 THE
+        // STAGE) always gets its room — see `GameDef::required_vaults`'s
+        // doc comment for why a non-root world's own depth 3/5 never takes
+        // this branch. `required_vault` (distinct from the generic
+        // `vault_room` below) marks that the just-stamped room is one of
+        // these fixed cast rooms, so the `deepest`-room exclusion further
+        // down can keep a cast room out of the exit-selection pool the
+        // same way a sokoban vault's own center already is excluded. This
+        // uses `place_required_vault_room` — an EXHAUSTIVE placement scan,
+        // deliberately NOT the optional path's bounded 40-try retry loop
+        // below: a required room's placement must be an actual guarantee
+        // (a miss here means no exit item, i.e. an unwinnable seed), and a
+        // fixed retry budget measurably wasn't one — an early version of
+        // this task using the same 40-try retry for both paths left ~5%
+        // of seeds without a stamped required vault. The exhaustive scan
+        // is a separate function specifically so the OPTIONAL path below
+        // (non-cast depths, and every depth of a non-root world) keeps its
+        // original algorithm and channel-draw pattern byte-for-byte —
+        // this batch's golden diff must be limited to the cast depths.
         let mut vault_room: Option<usize> = None;
+        let mut required_vault = false;
         let mut vr = channel(world_seed, &["vault", &depth_tag]);
-        if vr.chance(2, 5) {
+        let required_spec = if is_root {
+            GAME.required_vaults.iter().find(|&&(d, _)| d == self.depth as u8).map(|&(_, spec)| spec)
+        } else {
+            None
+        };
+        if let Some(spec) = required_spec {
+            vault_room = self.place_required_vault_room(spec, &mut vr, &mut rooms);
+            required_vault = vault_room.is_some();
+        } else if vr.chance(2, 5) {
+            // occasionally stamp one hand-authored vault as an extra room;
+            // the corridor pass below connects its center like any other
+            // room
             let vi = vr.range(0, GAME.vaults.len() as i32) as usize;
             let rows: Vec<&str> = GAME.vaults[vi].lines().collect();
             let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
@@ -1018,23 +1063,35 @@ impl Game {
         // end for a bot that only ever routes, never backtracks. Keeping
         // the exit out of sokoban rooms entirely sidesteps the whole
         // failure class rather than chasing every way a corridor could
-        // produce it.
+        // produce it. batch 17 T1: generalized to also exclude a
+        // GUARANTEED cast-vault center (`required_vault`, regardless of
+        // whether it has blocks — the mimic room and THE STAGE have none)
+        // — same rationale, a cast room is never the exit/reward room
+        // either (THE STAGE already IS the D5 reward room via its own
+        // pedestal, decoupled from BFS-deepest selection entirely).
         let dist = bfs_dist(&self.map, (sx, sy));
-        let sokoban_vault_center =
-            vault_room.filter(|_| !self.blocks.is_empty()).map(|vi| centers[vi]);
+        let excluded_vault_center =
+            vault_room.filter(|_| required_vault || !self.blocks.is_empty()).map(|vi| centers[vi]);
         let deepest = centers
             .iter()
             .filter(|&&c| c != (sx, sy))
-            .filter(|&&c| Some(c) != sokoban_vault_center)
+            .filter(|&&c| Some(c) != excluded_vault_center)
             .max_by_key(|&&(cx, cy)| dist[idx(cx, cy)])
             .copied()
             .unwrap_or((sx + 1, sy));
         self.map[idx(sx, sy)] = Tile::UpStairs;
-        let is_root = self.world == WorldId::Seed(self.seed);
         if self.depth < GAME.win.max_depth {
             self.map[idx(deepest.0, deepest.1)] = Tile::Stairs;
         } else if is_root {
-            self.items.push(Item { x: deepest.0, y: deepest.1, kind: GAME.win.objective_item });
+            /* batch 17 T1 (the mimic batch, the cast NPC-vault worldgen
+               MAJOR): the objective no longer pushes here. On the root
+               world's last depth, `required_vaults` (above) already
+               stamped THE STAGE — its `&` pedestal glyph placed exactly
+               one `GAME.win.objective_item` via `stamp_vault`'s ordinary
+               item-glyph lookup, the same mechanism every vault-placed
+               item uses. This arm is intentionally empty: it exists only
+               so root's last depth still takes neither the Stairs branch
+               above nor the portal-world consolation branch below. */
         } else {
             /* batch 6 T1: the win-condition item and the win condition both
                live only in the root world (see `Game::land_on_tile`'s
@@ -1204,6 +1261,75 @@ impl Game {
         // first arrival: name the place; its history is buried in the rooms
         let t = self.theme();
         self.log(GAME.strings.enter_theme.replace("{}", t.label));
+    }
+
+    /// Find a collision-free spot for a REQUIRED vault (batch 17 T1, the
+    /// mimic batch — the cast NPC-vault worldgen MAJOR) and stamp it there.
+    /// Deliberately an EXHAUSTIVE scan of every candidate top-left position
+    /// against the rooms placed so far, not the optional path's bounded
+    /// 40-try random retry (see `gen_level`'s call site comment for why a
+    /// bounded retry measurably wasn't a real guarantee — ~5% of seeds
+    /// missed it in an earlier version of this task). Collects every
+    /// clash-free `(x, y)` into a `Vec` (bounded by `COLS`/`MAP_H`, at most
+    /// a few thousand candidates, checked against at most ~10 existing
+    /// rooms — trivial work, done at most twice per level: the two cast
+    /// depths), then draws ONE `vr.range` to pick among them uniformly —
+    /// still deterministic and reproducible (same channel, same draw
+    /// count regardless of map density). Tries TWO tiers: first with the
+    /// standard 1-tile separation margin every other room in this level
+    /// keeps from its neighbors (matching the optional-vault path's own
+    /// spacing convention); if that comes up empty — measured to happen on
+    /// a real CI seed (1623 at `--solve 10000`): its 10 procedurally-placed
+    /// rooms genuinely tile the map densely enough that no margined 11x5
+    /// gap exists anywhere — falls back to a margin-0 scan (candidate
+    /// rooms may touch wall-to-wall, never actually overlap). That second
+    /// tier is a MATHEMATICAL guarantee whenever it finds anything: total
+    /// room footprint (≤10 rooms × ≤12×8) is always a small fraction of the
+    /// 80×25 map, so a touching-allowed gap for an 11×5 or smaller vault is
+    /// always there in practice — confirmed exhaustively by the
+    /// solver-invariant test (`main.rs`) over the full CI seed range.
+    /// Returns `None` only if BOTH tiers are empty (never observed; would
+    /// mean the map is saturated), in which case the caller leaves
+    /// `vault_room`/`required_vault` at their prior (unset) values — a
+    /// condition the solver-invariant test would catch as an unwinnable
+    /// seed if it ever actually occurred.
+    fn place_required_vault_room(
+        &mut self,
+        spec: &'static str,
+        vr: &mut Rng,
+        rooms: &mut Vec<(i32, i32, i32, i32)>,
+    ) -> Option<usize> {
+        let rows: Vec<&str> = spec.lines().collect();
+        let (vw, vh) = (rows[0].len() as i32, rows.len() as i32);
+        let find = |margin: i32| -> Vec<(i32, i32)> {
+            let mut candidates = Vec::new();
+            for x in 1..=(COLS as i32 - vw - 1) {
+                for y in 1..=(MAP_H as i32 - vh - 1) {
+                    let clash = rooms.iter().any(|&(rx, ry, rw, rh)| {
+                        x < rx + rw + margin
+                            && rx < x + vw + margin
+                            && y < ry + rh + margin
+                            && ry < y + vh + margin
+                    });
+                    if !clash {
+                        candidates.push((x, y));
+                    }
+                }
+            }
+            candidates
+        };
+        let mut candidates = find(1);
+        if candidates.is_empty() {
+            candidates = find(0);
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        let (x, y) = candidates[vr.range(0, candidates.len() as i32) as usize];
+        self.stamp_vault(spec, x, y);
+        let vi = rooms.len();
+        rooms.push((x, y, vw, vh));
+        Some(vi)
     }
 
     /// Stamp a hand-authored vault's ASCII (a `GAME.vaults`-style legend:
