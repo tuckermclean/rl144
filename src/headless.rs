@@ -5,7 +5,7 @@
 
 use crate::content::theme_for;
 use crate::game::{COLS, Game, MAP_H, Monster, Tile, WorldId, bfs_dist, idx, in_map, max_depth};
-use crate::gamedef::ItemEffect;
+use crate::gamedef::{ItemEffect, Minigame};
 use crate::games::GAME;
 use crate::rng::fnv_bytes;
 
@@ -403,6 +403,52 @@ impl Policy {
 /// (main.rs) is the test that actually checks it for all four policies,
 /// which is the whole reason it's threaded out here instead of asserted
 /// silently inside this function.
+///
+/// Mimic batch T5 (instrument parity — THE POLITE NO, story §4 D3): if
+/// `policy` is a diplomat (`Pacifist` or `TacticalPacifist` — deliberately
+/// NOT tactical-only, see below) and the player is currently cardinally
+/// (Manhattan-1) adjacent to a live, non-calm `Minigame::PoliteDecline`
+/// monster, returns the talk byte (7-10) that declines it — `None` for
+/// every other policy, or when no such monster is adjacent. Pure function
+/// of `Game` state, no RNG, no mutation: `sim_seed` calls this FIRST, ahead
+/// of heal/rest/routing, because `Game::resolve_polite_decline` charges
+/// accept-damage to ANY turn that ends adjacent to such a monster without
+/// declining it, and (since the mimic is an ordinary `Fight`-bump,
+/// non-`passive` monster once revealed) an un-stayed adjacent turn ALSO
+/// eats its ordinary attack on top — declining is therefore strictly
+/// protective, never merely optional, so it overrides everything else the
+/// turn a diplomat bot finds itself adjacent. Each landed decline advances
+/// `regard` by one (deterministically, no roll — see `Game::
+/// try_talk_player`'s `PoliteDecline` branch) until `Monster::
+/// talk_threshold` becalms it, at which point `m.calm` excludes it from
+/// this check and the loop naturally terminates.
+///
+/// Plain `Pacifist` needs this exactly as much as `TacticalPacifist` does:
+/// its ordinary monster-oblivious routing (`routing_map`, not
+/// `tactical_routing_map`) can walk directly past the mimic's neighbor
+/// tile without ever landing ON its tile — the only case the existing
+/// end-of-turn `talks`/`blocked` conversion in `sim_seed`'s final dispatch
+/// already covers. This was exactly the gap this batch's brief flagged:
+/// "verify the tactical-pacifist bot's existing 'talk when blocked'
+/// actually declines the mimic correctly rather than eating accept-damage
+/// or routing into it" — factored into its own function (rather than left
+/// inline in `sim_seed`) so it's directly unit-testable against a
+/// hand-built `Game` (main.rs), not only observable as an aggregate win-
+/// rate/HP effect over a whole run.
+pub(crate) fn diplomat_decline_byte(g: &Game, policy: Policy) -> Option<u8> {
+    if !matches!(policy, Policy::Pacifist | Policy::TacticalPacifist) {
+        return None;
+    }
+    let mi = g.monsters.iter().position(|m| {
+        !m.calm
+            && Monster::stats(m.kind).talk_minigame == Some(Minigame::PoliteDecline)
+            && (g.px - m.x).abs() + (g.py - m.y).abs() == 1
+    })?;
+    let m = &g.monsters[mi];
+    let (tdx, tdy) = ((m.x - g.px).signum(), (m.y - g.py).signum());
+    SIM_DIRS.iter().position(|&d| d == (tdx, tdy)).map(|b| 7 + b as u8)
+}
+
 pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
     let mut g = Game::new(seed);
     let mut turns: u32 = 0;
@@ -466,6 +512,48 @@ pub(crate) fn sim_seed(seed: u64, policy: Policy) -> (SimResult, WorldId) {
         };
         if turns >= SIM_TURN_CAP {
             return (stuck(turns, g.light, g.kills, g.spared), g.world);
+        }
+        // Mimic batch T5 (instrument parity — THE POLITE NO, story §4 D3):
+        // both diplomat policies (Pacifist AND TacticalPacifist — this is
+        // NOT tactical-only, see `diplomat_policy` below) learn the mimic's
+        // rhythm. `Game::resolve_polite_decline` charges accept-damage
+        // (`GAME.balance.polite_decline_accept_damage`) to ANY turn that
+        // ENDS cardinally (Manhattan-1) adjacent to a live, non-calm
+        // `Minigame::PoliteDecline` monster without that turn's action
+        // being a talk directed at it — and, since the mimic is an ordinary
+        // `Fight`-bump, non-`passive` monster once revealed, an un-stayed
+        // adjacent turn ALSO eats its ordinary attack on top (see
+        // `resolve_polite_decline`'s own doc comment; confirmed by
+        // `polite_decline_accepting_without_declining_costs_hp`, main.rs).
+        // Declining (talking at it) is therefore strictly protective — it
+        // is the ONLY action that avoids both costs simultaneously — so it
+        // takes priority over heal/rest/ordinary routing below, checked
+        // fresh every turn against the player's CURRENT (pre-move)
+        // position: as long as the bot never lets routing carry it onto an
+        // adjacent tile in the first place (`tactical_routing_map` already
+        // walls the monster's own tile for `TacticalPacifist`, and a landed
+        // decline stays the monster from attacking this same turn via
+        // `stayed`, exactly like any other talk), this check alone is
+        // sufficient to guarantee zero net damage from the mimic from the
+        // second adjacent turn onward — each landed decline advances regard
+        // by one (deterministically, no roll) until `talk_threshold`
+        // becalms it, at which point `m.calm` excludes it from this check
+        // and the loop naturally stops (no risk of looping forever).
+        // Plain `Pacifist` is included too (not just the tactical bot):
+        // its ordinary monster-oblivious routing can walk directly past the
+        // mimic's neighbor tile without ever landing ON its tile (the only
+        // case the existing end-of-turn `talks`/`blocked` conversion below
+        // already covers) — exactly the gap this batch's brief flagged
+        // ("verify the tactical-pacifist bot's existing 'talk when
+        // blocked' actually declines the mimic correctly rather than
+        // eating accept-damage or routing into it"). Factored into
+        // `diplomat_decline_byte` (below `sim_seed`) so it's directly
+        // unit-testable against a hand-built `Game`, not just observable
+        // through a whole-run aggregate.
+        if let Some(b) = diplomat_decline_byte(&g, policy) {
+            g.apply_input(b);
+            turns += 1;
+            continue;
         }
         // batch 7 T2: the potion moved from walk-over Consume to Hold this
         // batch (see `ItemDef::on_pickup`'s doc comment) — a bot that never
@@ -1167,12 +1255,21 @@ pub(crate) fn sim_flip_main(n: u64) {
     let diplomat_pct = win_pct(Policy::TacticalPacifist);
     let margin = diplomat_pct - violent_pct;
 
+    // Mimic batch T5, nit (docs/superpowers/plans/2026-07-27-cast-npc-vault-major.md
+    // §I): unlike `sim_main`'s per-policy band check, a missing band file
+    // here must NOT silently pass — this is the arc's central thesis gate,
+    // and a deleted/misnamed band file disabling it silently is exactly the
+    // failure mode a gate exists to prevent. `sim_main`'s own missing-band
+    // warn-and-return-0 is a DIFFERENT, deliberate case (an as-yet-unbuilt
+    // policy's band, batch 10's own comment on that arm) — this gate has no
+    // such "not yet built" state once it exists, so treat "file missing" as
+    // a hard failure, not a skip.
     let band_path = "tests/tactical-pacifist-band.json";
     let band = match std::fs::read_to_string(band_path) {
         Ok(b) => b,
         Err(_) => {
-            eprintln!("warning: {} not found; flip check skipped", band_path);
-            return;
+            eprintln!("error: {} not found; flip check cannot run — the mercy arc's thesis gate would be silently disabled", band_path);
+            std::process::exit(1);
         }
     };
     let required = band_scalar(&band, "flip_margin").unwrap_or(3);

@@ -18,7 +18,19 @@
 # inverted. `flip` compares the two tactical bots directly against each
 # other and fails if the diplomat's margin over the violent bot ever drops
 # below `tests/tactical-pacifist-band.json`'s own `flip_margin` — see
-# `headless::sim_flip_main`'s doc comment for the full justification.
+# `headless::sim_flip_main`'s doc comment for the full justification. A
+# MISSING band file is a hard failure here (nonzero exit), not a skip —
+# unlike a per-policy band's own "not yet built" skip case, this gate has no
+# legitimate "doesn't exist yet" state once it's wired into `check`, so a
+# deleted/misnamed file must not silently disable the arc's thesis check
+# (mimic batch T5 nit). SIM_SEEDS below is expected to match the `flip_n`
+# value `tests/tactical-pacifist-band.json` was calibrated at (currently
+# 5000); running `flip` at a DIFFERENT N than `flip_n` is not itself a
+# failure — `sim_flip_main` only prints an informational note to stderr in
+# that case (the required margin is a property of the sample size it was
+# measured at, so a mismatched N changes what the check actually proves,
+# without failing it outright) — keep SIM_SEEDS and `flip_n` in sync when
+# either changes, rather than relying on that note to catch a drift.
 #
 # `make targets` is a separate reporting tool: it prints a stripped/packed
 # size scoreboard for both backends. It is not part of `check` — `xhash`

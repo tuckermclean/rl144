@@ -47,7 +47,7 @@ use games::contractor::{
     CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, MIMIC, OBJECTIVE, OGRE, POTION, RAT, SWORD, TOWEL, TRAINER,
 };
 #[cfg(test)]
-use headless::{band_scalar, floor_dive_cost, level_dump, sim_seed, solve_seed};
+use headless::{band_scalar, diplomat_decline_byte, floor_dive_cost, level_dump, sim_seed, solve_seed};
 #[cfg(test)]
 use render::scale;
 #[cfg(test)]
@@ -5034,6 +5034,95 @@ mod tests {
             if sim_seed(seed, Policy::TacticalPacifist).0.won { tac += 1; }
         }
         assert!(tac >= base, "tactical-diplomat {tac} should win >= pacifist {base} over 300 seeds");
+    }
+
+    /// Mimic batch T5 (instrument parity, THE POLITE NO): `diplomat_decline_byte`
+    /// fires only for a diplomat policy, only against a live, non-calm
+    /// `Minigame::PoliteDecline` monster, only when it's cardinally
+    /// (Manhattan-1) adjacent — and picks the correctly-directed talk byte
+    /// (7-10, mirroring the move-byte direction order).
+    #[test]
+    fn diplomat_decline_byte_fires_correctly_directed_and_only_for_diplomats() {
+        let mut g = Game::new(1);
+        g.px = 10;
+        g.py = 10;
+        g.monsters.push(Monster::spawn(MIMIC, g.px + 1, g.py)); // East
+        assert_eq!(
+            diplomat_decline_byte(&g, Policy::TacticalPacifist),
+            Some(10),
+            "mimic to the East must decline via talk-East (byte 10)"
+        );
+        assert_eq!(
+            diplomat_decline_byte(&g, Policy::Pacifist),
+            Some(10),
+            "plain pacifist must decline too, not just the tactical diplomat"
+        );
+        assert_eq!(
+            diplomat_decline_byte(&g, Policy::Tactical),
+            None,
+            "a violent bot never declines — it fights (canon-legal)"
+        );
+        assert_eq!(
+            diplomat_decline_byte(&g, Policy::Greedy),
+            None,
+            "greedy never declines either"
+        );
+    }
+
+    /// A DIAGONALLY-adjacent (Chebyshev-1, Manhattan-2) mimic is not a
+    /// decline target this turn (no diagonal talk exists) — the check must
+    /// use cardinal (Manhattan-1) adjacency, not Chebyshev, matching
+    /// `Game::resolve_polite_decline`'s own "cardinally adjacent" gate
+    /// exactly (a mismatch here would either miss real accept-damage risk
+    /// or spuriously fire on a direction `try_talk_player` can't encode).
+    #[test]
+    fn diplomat_decline_byte_ignores_diagonal_adjacency() {
+        let mut g = Game::new(1);
+        g.px = 10;
+        g.py = 10;
+        g.monsters.push(Monster::spawn(MIMIC, g.px + 1, g.py + 1)); // diagonal
+        assert_eq!(
+            diplomat_decline_byte(&g, Policy::TacticalPacifist),
+            None,
+            "a diagonally-adjacent mimic has no cardinal talk direction to decline with"
+        );
+    }
+
+    /// A becalmed mimic is no longer a decline target (it already won) —
+    /// mirrors `Game::try_talk_player`'s own already-calm early return.
+    #[test]
+    fn diplomat_decline_byte_ignores_a_calm_mimic() {
+        let mut g = Game::new(1);
+        g.px = 10;
+        g.py = 10;
+        let mut m = Monster::spawn(MIMIC, g.px + 1, g.py);
+        m.calm = true;
+        g.monsters.push(m);
+        assert_eq!(
+            diplomat_decline_byte(&g, Policy::TacticalPacifist),
+            None,
+            "a becalmed mimic needs no further decline"
+        );
+    }
+
+    /// The whole point, end to end: a `TacticalPacifist` run that actually
+    /// reaches the guaranteed D3 mimic room must becalm it via repeated
+    /// decline rather than take ordinary combat damage from it — asserted
+    /// by driving `sim_seed` itself (not the standalone helper) over the
+    /// golden seeds, and confirming the fix is deterministic (two-run
+    /// identity, same discipline as every other bot-policy test in this
+    /// file).
+    #[test]
+    fn tactical_pacifist_declines_the_mimic_deterministically() {
+        for seed in [1u64, 7, 42, 100, 1337, 4242] {
+            let (a, _) = sim_seed(seed, Policy::TacticalPacifist);
+            let (b, _) = sim_seed(seed, Policy::TacticalPacifist);
+            assert_eq!(
+                (a.won, a.turns, a.light_left, a.spared, a.stuck),
+                (b.won, b.turns, b.light_left, b.spared, b.stuck),
+                "tactical-pacifist must stay deterministic through the mimic room, seed {seed}"
+            );
+        }
     }
 
     /// Batch 6 T1 (extended batch 12 R3): the only input that can transit a
