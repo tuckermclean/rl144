@@ -7,6 +7,14 @@ a **recommendation + the default I'll take absent objection** — not a question
 Approve the MAJOR (with any amendments) and the mimic batch builds; **no golden regenerates
 before this is signed.**
 
+**SIGNED OFF 2026-07-27** — all eight manifest items, all seven sections, defaults 1/2/4/5/6
+as stated. Three human amendments folded below: (A) put-down is **kind-routed or verb-split**
+(framework work in the mimic batch — the §E LIFO-ambiguity row is WITHDRAWN, not acceptable
+as shipped); (B) **default 3 changed** — the mimic disguises as a **chest-like cartridge
+glyph, never the lore `?`**; (C) the §B eye-check is upgraded to a **dump-test assertion**
+(cast glyphs at canon depths in the golden seeds) so it survives the regen. With these:
+goldens may regenerate once, bands re-baseline, START_LIGHT lands per §C. Build the mimic.
+
 Rulings folded (2026-07-27): ① disarm = adopt canon (sword→`Hold` + set-down-for-regard;
 violent re-baseline deliberate); ② donkey = compose (arc-doc descent companion + STORY-COMPILE
 mantel re-glyph as its payoff); ③ two new minigames, verify ECHO expressible, lesson-state
@@ -82,9 +90,11 @@ scale/journey "B", wasm/net/platform-matrix. The mantel's three exits are the en
   at its canon depth, and the level exit stays BFS-reachable with the rooms stamped (the
   sokoban exit-room-exclusion precedent applies: a cast room never occupies the exit room).
   `--solve` asserts this across full N.
-- **Golden coverage (fixture-blind-spot lesson):** the regenerated dump goldens must VISIBLY
-  contain the new rooms (a golden that can't see the cast doesn't guard it). Verify by eye on
-  regen that D2–D5 of seeds 1/2/3/42/1337 show the cast glyphs.
+- **Golden coverage + dump-test assertion (amendment C; fixture-blind-spot lesson):** the
+  regenerated dump goldens must VISIBLY contain the new rooms, AND a `#[test]` asserts the cast
+  glyphs appear at their canon depths across the golden seeds (1/2/3/42/1337): THE STAGE +
+  mimic on D3, pedestal/tired-ones-region on D5, etc. An eye-check dies with the reviewer; the
+  assertion survives the regen and guards the guaranteed-placement invariant permanently.
 
 ## C. START_LIGHT re-derivation
 
@@ -125,7 +135,7 @@ decision legible (bank regard OR keep your teeth). Edges, specified not discover
 | Monster dies on your set-down sword's tile | sword stays on the tile (an item), pick up as normal |
 | Portal out while sword is set down | sword remains on the tile in that world (world state persists, per existing multi-world `LevelState`) |
 | Retry after death | sword goes to the corpse/inventory-below per manifest item 8 (ruling ④) |
-| Put-down objective while holding sword | both are in the `held` LIFO; put-down/set-down act on the right one by the existing verb routing |
+| Put-down objective while holding sword | **kind-routed or verb-split (amendment A)** — the LIFO "acts on the right one by existing routing" is WITHDRAWN as unacceptable. Resolved as framework work in the mimic batch: either put-down becomes kind-routed (choose WHAT to set down, like batch 15's use-by-kind `17+kind` selector) or the verb splits into distinct set-down-sword vs put-down-objective inputs. Recommendation: kind-routed set-down mirroring the use-selector, so the input vocabulary grows once, consistently. |
 
 ## F. Split-spawn determinism (coat)
 
@@ -188,10 +198,10 @@ Absent objection at sign-off, I proceed on the **defaults** below:
    (§B). *Alt: a dedicated `authored-room` channel — heavier, rejected as more surface.*
 2. **Sword ATK model** → held confers ATK, set-down removes it (§E). *Alt: ATK only via an
    explicit `use` — rejected, adds a step and reads worse.*
-3. **Mimic disguise glyph** → the mimic renders as a plausible item glyph (e.g. the lore `?`
-   or a chest-like glyph if we add one to the cartridge — cartridge data, engine stays
-   grep-clean) until triggered by adjacency/approach. *Default: reuse an existing item glyph;
-   no new engine tile.*
+3. **Mimic disguise glyph** (RULED, amendment B) → the mimic disguises as a **chest-like
+   cartridge glyph, NEVER the lore `?`**. The glyph is a cartridge fact (engine stays
+   grep-clean); it reads as treasure/furniture, not lore, so the disguise lands. Triggered by
+   adjacency/approach. No new engine tile — a cartridge glyph + the mimic's disguise state.
 4. **ECHO** → verified expressible in current talk rules per §9-F; if it is, no new minigame,
    lesson-state still tracks it. *If it is NOT expressible → manifest amendment before build
    (I stop and bring it).*
