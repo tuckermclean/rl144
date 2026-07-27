@@ -1239,12 +1239,17 @@ const BALANCE: BalanceDef = BalanceDef {
     // against today's content (2 floors * 1 cache * value 21 = 42 max
     // collectible) — a forward guard, sized from data, not hand-picked.
     max_cache_light_per_run: 60,
-    // mimic batch T3 (THE POLITE NO): [TUNE] semantic default, not yet
-    // measured — the human plays the mimic (T6) to judge feel. 2 HP per
-    // un-declined adjacent turn is deliberately mild relative to the
-    // ogre's guaranteed 6-HP retaliation: the mimic's threat is attrition
-    // over many turns of "sitting down with it," not a single costly hit.
-    polite_decline_accept_damage: 2,
+    // mimic batch T3 (THE POLITE NO); [TUNE] RE-TUNED from human playtest
+    // (2026-07-27): 2 HP read as a "nibble," not a mimic EATING you (canon
+    // §4 D3: "it wants to eat you"; its flirtation and menace are the same
+    // sentence), and being that mild it never registered AS a trap — the
+    // whole minigame was invisible. 7 HP per un-declined adjacent turn is a
+    // real bite: on the ~20-26 HP pool at D3 with scarce 1-HP rest healing,
+    // ~3-4 turns of "sitting down with it" is lethal, so the danger is
+    // legible and declining is legibly the move. Bots rarely linger at a
+    // mimic (the diplomat declines, the violent attacks — both skip the
+    // accept-damage path), so this barely moves the bands; re-measured.
+    polite_decline_accept_damage: 7,
 };
 
 const WIN: WinDef = WinDef {
@@ -1483,7 +1488,7 @@ const STRINGS: StringsDef = StringsDef {
     // mimic batch T3 (THE POLITE NO): grounded — restates only that its
     // offer was accepted and what it cost; invents no history. `{}` fill
     // order matches `hit_by`: monster name, damage taken.
-    polite_decline_hurt: "The {} makes you comfortable. That cost you {} HP.",
+    polite_decline_hurt: "The {} makes you comfortable, and takes a bite. -{} HP.",
     // mimic batch T4 (disguise/ambush): grounded — restates only that the
     // thing you thought was scenery just moved; invents no history about
     // what it is or how long it's waited. `{}` fills from the monster name.
