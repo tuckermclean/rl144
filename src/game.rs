@@ -309,6 +309,24 @@ pub(crate) struct Monster {
     /// run-defining (it changes future light), not the presentation-only
     /// exclusion set.
     pub(crate) dividend_paid: bool,
+    /// The sword's set-down-for-regard once-per-monster farming guard
+    /// (mimic batch T2 fix round, review finding — exactly parallel to
+    /// `dividend_paid` above and guarded against the SAME hazard the arc
+    /// doc flags for `becalm_dividend`: "the exact knob that made pacifism
+    /// dominant" — see `CLAUDE.md`'s becalm-dividend bullet). Without this
+    /// guard, `Game::put_down_kind`'s disarm-regard grant could be farmed
+    /// by oscillating set-down/pick-up against the same monster, each
+    /// cycle re-granting `ItemDef::disarm_regard` for free — a cheap-regard
+    /// lever the set-down mechanic is explicitly NOT supposed to be (set-
+    /// down is "the pacifist route's STANDING decision," a one-time visible
+    /// gesture per monster, not a farm). Set true the first time THIS
+    /// monster receives a disarm-regard grant; never reset, so a monster
+    /// that has already been disarmed-in-front-of once receives nothing on
+    /// a later set-down even if it's still alive and un-becalmed. Hashed in
+    /// `save::state_hash` right beside `regard`/`calm`/`awe`/
+    /// `dividend_paid` — run-defining (it changes whether a future
+    /// set-down grants regard), not presentation.
+    pub(crate) disarm_regard_paid: bool,
     /// batch 15 T1 (the playtest fix — "a silent give-ground move must not
     /// awe a goblin"): set the instant this monster lands ANY hit on the
     /// player — the three sites: `Game::monsters_act`'s attack loop,
@@ -365,7 +383,7 @@ impl Monster {
     /// duplicating this field list at every call site.
     #[allow(dead_code)] // exercised by tests only as of batch 11 T2
     pub(crate) fn spawn(kind: MKind, x: i32, y: i32) -> Monster {
-        Monster { x, y, kind, hp: GAME.monsters[kind as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false, struck_player: false, yielded: false }
+        Monster { x, y, kind, hp: GAME.monsters[kind as usize].hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false }
     }
 }
 
@@ -1196,7 +1214,7 @@ impl Game {
                     .map(|&(_, k)| k)
                     .unwrap_or(GAME.balance.monster_roll[GAME.balance.monster_roll.len() - 1].1);
                 let hp = GAME.monsters[kind as usize].hp;
-                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, struck_player: false, yielded: false });
+                self.monsters.push(Monster { x: mx, y: my, kind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
             }
         }
         /* items: deep floors are a war of attrition, so supply scales too —
@@ -1377,7 +1395,7 @@ impl Game {
                     self.items.push(Item { x: tx, y: ty, kind: ii as IKind });
                 } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                     let hp = GAME.monsters[ki].hp;
-                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, struck_player: false, yielded: false });
+                    self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
                 }
             }
         }
@@ -1947,7 +1965,7 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, struck_player: false, yielded: false });
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -2019,7 +2037,7 @@ impl Game {
                         } else if let Some(ki) = GAME.monsters.iter().position(|m| m.glyph == c) {
                             self.map[idx(tx, ty)] = Tile::Floor;
                             let hp = GAME.monsters[ki].hp;
-                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, struck_player: false, yielded: false });
+                            self.monsters.push(Monster { x: tx, y: ty, kind: ki as MKind, hp, regard: 0, calm: false, awe: 0, dividend_paid: false, disarm_regard_paid: false, struck_player: false, yielded: false });
                         }
                         // else: well-formedness (main.rs) guards the legal-
                         // char set; an unrecognized byte leaves the default
@@ -3141,11 +3159,18 @@ impl Game {
     ///   `self.items` at the player's own tile (same no-stacking rule as the
     ///   objective branch). If `ItemDef::disarm_regard` is nonzero, every
     ///   LIVE monster Chebyshev-adjacent to that tile (the same N/S/E/W-
-    ///   plus-diagonals shape `Game::rest_heal`/`resolve_awe` use) gets a
-    ///   flat, unconditional regard bump — no roll, no `parley_rng` draw,
-    ///   the same "fixed value, no gamble" shape most `GiveRule` rows use —
-    ///   and may cross `Monster::talk_threshold` into an outright becalm,
-    ///   exactly like a landed talk or a fixed-value give.
+    ///   plus-diagonals shape `Game::rest_heal`/`resolve_awe` use) that
+    ///   hasn't already received this grant (`Monster.disarm_regard_paid`,
+    ///   the ONCE-PER-MONSTER anti-farm guard added in review — without it,
+    ///   oscillating set-down/pick-up against the same monster would
+    ///   re-grant the bonus every cycle, exactly the cheap-regard lever the
+    ///   arc doc's `becalm_dividend` guard warns against) gets a flat,
+    ///   unconditional regard bump — no roll, no `parley_rng` draw, the
+    ///   same "fixed value, no gamble" shape most `GiveRule` rows use — and
+    ///   may cross `Monster::talk_threshold` into an outright becalm,
+    ///   exactly like a landed talk or a fixed-value give. A monster that
+    ///   has already been paid, or one already `calm`, simply receives
+    ///   nothing on a later set-down.
     ///
     /// Both branches are graceful no-ops (one feedback line, no turn) when
     /// there's nothing of that kind to set down, or the tile is occupied.
@@ -3198,11 +3223,15 @@ impl Game {
         let bonus = def.disarm_regard;
         if bonus != 0 {
             for mi in 0..self.monsters.len() {
+                if self.monsters[mi].disarm_regard_paid {
+                    continue; // anti-farm guard: already disarmed-in-front-of once
+                }
                 let (mx, my) = (self.monsters[mi].x, self.monsters[mi].y);
                 if (mx - self.px).abs().max((my - self.py).abs()) != 1 {
                     continue; // not Chebyshev-adjacent to the set-down tile
                 }
                 let mkind = self.monsters[mi].kind;
+                self.monsters[mi].disarm_regard_paid = true;
                 let before = self.monsters[mi].regard;
                 self.monsters[mi].regard = before.saturating_add(bonus as u8);
                 let regard = self.monsters[mi].regard;

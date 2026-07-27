@@ -205,6 +205,12 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// permanently, `yielded` turn-to-turn), so they're run-defining, not
 /// presentation — hashed per-monster beside `regard`/`calm`/`awe`/
 /// `dividend_paid` above.
+/// `Monster.disarm_regard_paid` (mimic batch T2 fix round, the sword's
+/// set-down-for-regard anti-farm guard) is the same story a sixth time: it
+/// changes whether a FUTURE set-down grants this monster `ItemDef::
+/// disarm_regard`, so it's run-defining, not presentation — hashed
+/// per-monster beside `regard`/`calm`/`awe`/`dividend_paid`/
+/// `struck_player`/`yielded` above.
 /// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
 /// in (batch 6 T1): current world, provenance, and every stored
 /// `WorldState`'s own id.
@@ -349,10 +355,12 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         for m in monsters {
             // regard/calm (batch 5, DECISION.md item 3), awe (batch 11 T2,
             // the stand-tall becalm), dividend_paid (batch 13 T3, the
-            // becalm return-trip dividend), and struck_player/yielded
-            // (batch 15 T1, the goblin talk-gate) are all hashed — mercy is
-            // run-defining state, not presentation-only like the
-            // killer/echo/facing/fx_hit exclusion set below.
+            // becalm return-trip dividend), struck_player/yielded (batch 15
+            // T1, the goblin talk-gate), and disarm_regard_paid (mimic
+            // batch T2 fix round, the sword's set-down-for-regard anti-farm
+            // guard) are all hashed — mercy is run-defining state, not
+            // presentation-only like the killer/echo/facing/fx_hit
+            // exclusion set below.
             h = fnv_bytes(
                 h,
                 &[
@@ -366,6 +374,7 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
                     m.dividend_paid as u8,
                     m.struck_player as u8,
                     m.yielded as u8,
+                    m.disarm_regard_paid as u8,
                 ],
             );
         }

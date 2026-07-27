@@ -355,7 +355,11 @@ pub(crate) struct ItemDef {
     /// the active cartridge's own item table). Unlike `GiveRule::
     /// regard_delta`, this never rolls (`parley_rng` untouched) — a plain,
     /// unconditional signal, same "fixed value, no gamble" shape as most
-    /// `GiveRule` rows.
+    /// `GiveRule` rows. Gated per-monster by `Monster.disarm_regard_paid`
+    /// (review fix round): a monster only ever receives this grant ONCE,
+    /// ever — without that guard, oscillating set-down/pick-up against the
+    /// same monster would re-grant it every cycle, the exact cheap-regard
+    /// farm the arc doc's `becalm_dividend` guard already warns against.
     pub(crate) disarm_regard: i32,
     /// The line logged when this item is set down via kind-routed put-down
     /// (`Game::put_down_kind`). Empty string falls back to `StringsDef::
