@@ -211,6 +211,13 @@ pub(crate) fn replay(seed0: u64, inputs: &[u8]) -> Game {
 /// disarm_regard`, so it's run-defining, not presentation — hashed
 /// per-monster beside `regard`/`calm`/`awe`/`dividend_paid`/
 /// `struck_player`/`yielded` above.
+/// `g.echo_done`/`g.answer_done`/`g.endure_done` (mimic batch T3, the
+/// curriculum lesson-state substrate manifest item 7 asks for) are the
+/// same story a seventh time: the mantel exam (§9-I, not built yet) will
+/// branch on them, so they're run-defining, not presentation — hashed
+/// alongside `cache_light_collected` above. See `Game::echo_done`'s doc
+/// comment for exactly what sets each one and why `answer_done` stays
+/// permanently `false` until cast batch two's coat exists.
 /// `WorldId` as bytes, shared by every place `state_hash` needs to fold one
 /// in (batch 6 T1): current world, provenance, and every stored
 /// `WorldState`'s own id.
@@ -330,6 +337,15 @@ pub(crate) fn state_hash(g: &Game) -> u64 {
         g.mood_count as u64,
         // batch 14 T3: run-defining (see this function's doc comment above).
         g.cache_light_collected as u64,
+        // mimic batch T3 (curriculum lesson-state, cast NPC-vault MAJOR
+        // manifest item 7): run-defining substrate the mantel exam (§9-I,
+        // not built yet) will branch on — see `Game::echo_done`'s doc
+        // comment for the full rationale (same as every other bool in this
+        // function's doc comment above, not the `killer`/`echo`/`facing`/
+        // `fx_hit`/`mcguffin_last_line_turn`-style presentation set).
+        g.echo_done as u64,
+        g.answer_done as u64,
+        g.endure_done as u64,
         g.combat_rng.0,
         g.ai_rng.0,
         g.flavor_rng.0,

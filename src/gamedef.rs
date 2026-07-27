@@ -294,6 +294,64 @@ pub(crate) struct MonsterDef {
     /// descend — is explicitly a later batch). `false` for every kind but
     /// the donkey; irrelevant outside the overworld (nothing else sets it).
     pub(crate) follows_when_calm: bool,
+    /// The talk-minigame framework (mimic batch T3, cast NPC-vault MAJOR
+    /// manifest item 1): which resolution `Game::try_talk_player` runs at
+    /// the receptivity seam, INSTEAD of the flat roll, when talking to this
+    /// kind. `None` (every pre-batch-17 kind, plus every kind this batch
+    /// that isn't the mimic) is the CRITICAL invariant: talk behaves
+    /// exactly as it did before this field existed — same roll, same
+    /// `regard`/`calm`/`talk_lines` stage logic, byte-identical — the same
+    /// empty-pool-no-op discipline `GameDef::carried_lines` established in
+    /// batch 8, now applied to an enum dispatch instead of a line-pool
+    /// lookup. `Some(Minigame::PoliteDecline)` (the mimic, story §4 D3)
+    /// replaces the roll with a deterministic "every courteous decline
+    /// lands" advance — see `Game::try_talk_player`'s dispatch and
+    /// `Game::resolve_polite_decline` for the other half (accepting its
+    /// offer, i.e. ending a turn adjacent without declining, costs HP).
+    /// `Some(Minigame::Echo)` is a DOCUMENTED placeholder, wired onto the
+    /// rat this batch: §9-F's own "may already be expressible — check"
+    /// directive was verified true (repeating what a rat says IS just
+    /// climbing its ordinary `talk_lines` registers via ordinary talk), so
+    /// this variant changes NOTHING mechanically versus `None` — the
+    /// dispatch below treats it identically to `None`. It exists purely so
+    /// the engine can tag WHICH kind's becalm completes the curriculum's
+    /// ECHO lesson (`Game.echo_done`) without ever naming "rat" — see
+    /// `Game::record_talk_lesson`. `Some(Minigame::AnswerSecondVoice)` is
+    /// RESERVED (cast batch two's coat, not built) — no row selects it yet;
+    /// the dispatch treats it identically to `None`/`Echo` too, so wiring a
+    /// future coat row onto it is mechanically free until that batch adds
+    /// its own resolution, exactly like batch 7's built-but-unused give
+    /// rows. This same field is reused VERBATIM by the mantel exam (§9-I):
+    /// all three lessons the mantel reads off (`echo_done`/`answer_done`/
+    /// `endure_done`) are recorded from this one tag, not three separate
+    /// mechanisms.
+    pub(crate) talk_minigame: Option<Minigame>,
+}
+
+/// The talk-minigame framework's per-kind resolution tag (mimic batch T3)
+/// — see `MonsterDef::talk_minigame`'s doc comment for the full dispatch
+/// semantics of each variant. Doubles as the curriculum-lesson tag the
+/// mantel exam (§9-I) will read (`echo`/`answer`/`endure`, story §3.6) —
+/// the three lessons ARE the three named minigames, so one enum carries
+/// both the mechanism and the lesson identity.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Minigame {
+    /// D1 rats: repeat-what-it-says. Verified expressible as ordinary talk
+    /// (see the field doc comment above) — mechanically identical to
+    /// `None`.
+    Echo,
+    /// D2 coat (cast batch two, not built yet): respond to the second
+    /// voice. Reserved — no row selects this yet, so this variant is never
+    /// constructed until that batch wires a coat row onto it (same
+    /// reservation discipline as `Game::answer_done`/the earlier
+    /// built-but-unused give rows — see this batch's status log).
+    #[allow(dead_code)]
+    AnswerSecondVoice,
+    /// D3 mimic (built this batch): THE POLITE NO — decline (a landed
+    /// talk) advances toward becalm; accepting its offer (ending a turn
+    /// adjacent without declining) costs HP; rudeness (a bump-attack)
+    /// builds no progress on its own (ordinary combat still applies).
+    PoliteDecline,
 }
 
 /// A monster's reaction to a player's bump-into (batch 9 T1, SIGN-OFF ASK
@@ -659,6 +717,14 @@ pub(crate) struct BalanceDef {
     /// `main.rs`'s `light_cache_cap_clamps_total_per_run` test for the
     /// clamping behavior once enough caches exist to hit it).
     pub(crate) max_cache_light_per_run: i32,
+    /// THE POLITE NO (mimic batch T3, `Minigame::PoliteDecline`, story §4
+    /// D3): HP lost when the player ends a turn cardinally adjacent to a
+    /// not-yet-calm `PoliteDecline` monster WITHOUT declining it (a landed
+    /// talk directed at it) THIS turn — "acceptance is damage." See
+    /// `Game::resolve_polite_decline` for the exact turn-by-turn gate.
+    /// [TUNE] starting value — the human plays the mimic (T6) to judge
+    /// feel; this is a semantic default, not a tuned constant.
+    pub(crate) polite_decline_accept_damage: i32,
 }
 
 /// The win condition: which item ends the run, how it's carried, and where
@@ -812,4 +878,11 @@ pub(crate) struct StringsDef {
     /// must never get this line. `{}` fills from the destination floor's
     /// name, same as `portal_describe_floor`.
     pub(crate) portal_describe_floor_cache: &'static str,
+    /// Mimic batch T3 (THE POLITE NO, `Minigame::PoliteDecline`): logged
+    /// when `Game::resolve_polite_decline` charges the accept-damage cost
+    /// (ending a turn adjacent to a not-yet-calm `PoliteDecline` monster
+    /// without declining it). `{}` fill order: monster name, damage taken
+    /// — same convention as `hit_by`. A lethal hit here logs `killed_by`
+    /// instead, exactly like every other damage site.
+    pub(crate) polite_decline_hurt: &'static str,
 }

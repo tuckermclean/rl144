@@ -17,7 +17,7 @@
 // all looked up by index, never spelled out here.
 
 use crate::content::theme_for;
-use crate::gamedef::{BumpResponse, CarryEvent, ItemEffect, PickupBehavior, UseEffect};
+use crate::gamedef::{BumpResponse, CarryEvent, ItemEffect, Minigame, PickupBehavior, UseEffect};
 use crate::games::GAME;
 use crate::render::Facing;
 use crate::rng::{Rng, channel, h64};
@@ -685,6 +685,31 @@ pub(crate) struct Game {
     /// not a `killer`/`echo`/`facing`/`fx_hit`/`mcguffin_last_line_turn`-
     /// style presentation value.
     pub(crate) cache_light_collected: i32,
+    /// Curriculum lesson-state (mimic batch T3, cast NPC-vault MAJOR
+    /// manifest item 7): hashed, reserved substrate the mantel exam (§9-I,
+    /// not built yet) will read to decide which of the three exits (§3.6)
+    /// a run has earned. Set from `Game::record_talk_lesson`, keyed off
+    /// `MonsterDef::talk_minigame` (see that field's doc comment) — never
+    /// from a hardcoded kind name. `echo_done`: a rat becalmed via
+    /// ordinary TALK (curriculum lesson 1 — "repeat what it says," verified
+    /// this batch to already be exactly that). `endure_done`: the mimic
+    /// becalmed via `Minigame::PoliteDecline` (curriculum lesson 3 —
+    /// "hold still / endure"). Both are run-defining (the mantel will
+    /// branch on them), not presentation, so they join `save::state_hash`
+    /// under the SAME `SAVE_VERSION` 11 the mimic batch already bumped to
+    /// (see that constant's doc comment) — no re-bump, exactly the arc
+    /// package's ONE-consolidated-bump plan.
+    pub(crate) echo_done: bool,
+    /// Curriculum lesson 2 ("answer correctly," the coat's `Minigame::
+    /// AnswerSecondVoice`) — RESERVED. Cast batch two builds the coat; no
+    /// `MonsterDef` row selects `AnswerSecondVoice` yet, so nothing ever
+    /// sets this true this batch. Exists now so the ending batch never has
+    /// to re-bump `SAVE_VERSION` for it — same convention as batch 7's
+    /// built-but-unused give rows.
+    pub(crate) answer_done: bool,
+    /// See `echo_done`'s doc comment — this is its `PoliteDecline`
+    /// counterpart (curriculum lesson 3, "hold still / endure").
+    pub(crate) endure_done: bool,
     pub(crate) monsters: Vec<Monster>,
     pub(crate) items: Vec<Item>,
     pub(crate) rooms: Vec<(i32, i32, i32, i32)>,
@@ -819,6 +844,9 @@ impl Game {
             mood_sum: 0,
             mood_count: 0,
             cache_light_collected: 0,
+            echo_done: false,
+            answer_done: false,
+            endure_done: false,
             monsters: Vec::new(),
             items: Vec::new(),
             rooms: Vec::new(),
@@ -1664,6 +1692,31 @@ impl Game {
         if self.mood_count > 0 {
             self.mood_sum += GAME.balance.mood_spare_valence;
             self.mood_count += 1;
+        }
+    }
+
+    /// Curriculum lesson-state (mimic batch T3, manifest item 7): the ONE
+    /// place a talk-becalm tags which of the three mantel-exam lessons
+    /// (echo/answer/endure, story §3.6) it satisfies — keyed off
+    /// `MonsterDef::talk_minigame`, never a hardcoded kind name (grep-clean:
+    /// see that field's doc comment for why the SAME tag doubles as
+    /// mechanism and lesson identity). Called from `Game::try_talk_player`
+    /// at the exact instant `Monster.calm` flips true — both the ordinary
+    /// flat-roll becalm (where a rat's `Some(Minigame::Echo)` tag sets
+    /// `echo_done`) and the `PoliteDecline` becalm (the mimic's
+    /// `endure_done`) — mirroring `record_spare`'s own "one becalm, one
+    /// consolidated site" discipline. A becalm via any OTHER path (awe,
+    /// GIVE) deliberately does NOT call this: the lessons are specifically
+    /// about talking (echoing/enduring through conversation), not every
+    /// route to mercy. `Some(Minigame::AnswerSecondVoice)` is reserved — no
+    /// row selects it yet, so that arm is presently unreachable but ready
+    /// for cast batch two's coat.
+    fn record_talk_lesson(&mut self, kind: MKind) {
+        match Monster::stats(kind).talk_minigame {
+            Some(Minigame::Echo) => self.echo_done = true,
+            Some(Minigame::AnswerSecondVoice) => self.answer_done = true,
+            Some(Minigame::PoliteDecline) => self.endure_done = true,
+            None => {}
         }
     }
 
@@ -2761,26 +2814,28 @@ impl Game {
             self.log(line);
             return; // no turn cost change; regard stays capped
         }
-        let chance = receptivity(&self.monsters[mi], self);
-        let landed = self.parley_rng.range(0, 100) < chance;
-        // batch 13 T1 ("the trainer reads your last life"): the
-        // resurrection greeting fires on the FIRST LANDED talk of a fresh
-        // post-death life, once, for whichever kind's cartridge data
-        // actually has one (`resurrection_lines` — `None` is a graceful
-        // no-op, same invariant as `carry_event`'s empty-pool check).
-        // `last_life_bloody`/`last_life_greeting_spoken` are both
-        // presentation-only (see their own doc comments) — this can never
-        // perturb `regard`/`calm`/anything `spend_turn` or `state_hash`
-        // touches, only which extra line gets logged this one time.
-        if landed && !self.last_life_greeting_spoken {
-            if let Some(bloody) = self.last_life_bloody {
-                if let Some(lines) = GAME.monsters[kind as usize].resurrection_lines {
-                    self.log(String::from(lines[if bloody { 0 } else { 1 }]));
-                    self.last_life_greeting_spoken = true;
-                }
-            }
-        }
-        let stayed = if landed {
+        // Mimic batch T3 (the talk-minigame framework, cast NPC-vault MAJOR
+        // manifest item 1): `Some(Minigame::PoliteDecline)` branches away
+        // from the flat receptivity roll entirely — THE POLITE NO (story
+        // §4 D3). Every other kind (`None`, or the documented-inert
+        // `Some(Echo)`/`Some(AnswerSecondVoice)` tags — see `MonsterDef::
+        // talk_minigame`'s doc comment) falls through to the UNCHANGED
+        // flat-roll path below: this is the framework's load-bearing
+        // invariant, proven by `talk_at_a_none_minigame_monster_is_
+        // unchanged` in main.rs.
+        let stayed = if let Some(Minigame::PoliteDecline) = Monster::stats(kind).talk_minigame {
+            // Every courteous decline lands, deterministically — no
+            // `parley_rng` roll, no resurrection greeting (that's a
+            // flat-roll-path concern only). "The winning move is the
+            // courteous decline, repeatedly, while your light burns" reads
+            // as: talking IS declining, and declining always advances —
+            // the actual pressure is `Game::resolve_polite_decline`'s
+            // other half (accepting the offer by NOT declining costs HP),
+            // not a coin flip here. Otherwise identical to a landed
+            // flat-roll talk: same regard/threshold/stage/talk_lines
+            // machinery, same becalm-at-threshold path, so a
+            // `PoliteDecline` monster's dialogue ladder reads exactly like
+            // any other kind's.
             let threshold = Monster::talk_threshold(kind);
             let before = self.monsters[mi].regard;
             self.monsters[mi].regard = before.saturating_add(1);
@@ -2797,18 +2852,63 @@ impl Game {
                 self.monsters[mi].calm = true;
                 self.record_spare();
                 self.carry_event(CarryEvent::SpareWitnessed);
+                self.record_talk_lesson(kind);
             }
             let v = self.flavor_rng.range(0, 2) as usize;
             let line = GAME.monsters[kind as usize].talk_lines[stage][v].replace("{M}", name);
             self.log(line);
             Some(mi)
         } else {
-            // Failed roll (addendum): no regard, no stay — the monster
-            // acts normally this turn, whether that's an attack or a move.
-            let v = self.flavor_rng.range(0, 2) as usize;
-            let line = GAME.monsters[kind as usize].talk_lines[3][v].replace("{M}", name);
-            self.log(line);
-            None
+            let chance = receptivity(&self.monsters[mi], self);
+            let landed = self.parley_rng.range(0, 100) < chance;
+            // batch 13 T1 ("the trainer reads your last life"): the
+            // resurrection greeting fires on the FIRST LANDED talk of a fresh
+            // post-death life, once, for whichever kind's cartridge data
+            // actually has one (`resurrection_lines` — `None` is a graceful
+            // no-op, same invariant as `carry_event`'s empty-pool check).
+            // `last_life_bloody`/`last_life_greeting_spoken` are both
+            // presentation-only (see their own doc comments) — this can never
+            // perturb `regard`/`calm`/anything `spend_turn` or `state_hash`
+            // touches, only which extra line gets logged this one time.
+            if landed && !self.last_life_greeting_spoken {
+                if let Some(bloody) = self.last_life_bloody {
+                    if let Some(lines) = GAME.monsters[kind as usize].resurrection_lines {
+                        self.log(String::from(lines[if bloody { 0 } else { 1 }]));
+                        self.last_life_greeting_spoken = true;
+                    }
+                }
+            }
+            if landed {
+                let threshold = Monster::talk_threshold(kind);
+                let before = self.monsters[mi].regard;
+                self.monsters[mi].regard = before.saturating_add(1);
+                let regard = self.monsters[mi].regard;
+                let became_calm = regard >= threshold;
+                let stage = if became_calm {
+                    2
+                } else if before == 0 {
+                    0
+                } else {
+                    1
+                };
+                if became_calm {
+                    self.monsters[mi].calm = true;
+                    self.record_spare();
+                    self.carry_event(CarryEvent::SpareWitnessed);
+                    self.record_talk_lesson(kind);
+                }
+                let v = self.flavor_rng.range(0, 2) as usize;
+                let line = GAME.monsters[kind as usize].talk_lines[stage][v].replace("{M}", name);
+                self.log(line);
+                Some(mi)
+            } else {
+                // Failed roll (addendum): no regard, no stay — the monster
+                // acts normally this turn, whether that's an attack or a move.
+                let v = self.flavor_rng.range(0, 2) as usize;
+                let line = GAME.monsters[kind as usize].talk_lines[3][v].replace("{M}", name);
+                self.log(line);
+                None
+            }
         };
         if !self.spend_turn(0) {
             return; // died in the dark on a talk turn: lose beats anything else
@@ -3802,9 +3902,72 @@ impl Game {
         let pre_chase: Vec<(i32, i32)> = self.monsters.iter().map(|m| (m.x, m.y)).collect();
         self.monsters_act(stayed);
         self.resolve_awe(attacked, talked, prev_player, &pre_chase);
+        self.resolve_polite_decline(attacked, talked);
         self.resolve_becalm_dividend();
         self.overworld_follow_step();
         self.compute_fov();
+    }
+
+    /// THE POLITE NO (mimic batch T3, `Minigame::PoliteDecline`, story §4
+    /// D3): a `PoliteDecline` monster is furniture that hungers — ending a
+    /// turn cardinally adjacent to one WITHOUT declining it (a landed talk
+    /// directed at it, THIS turn) reads as accepting its offer, and costs
+    /// HP. "It offers rest, comfort, sitting down... acceptance is
+    /// damage." Generic over `MonsterDef::talk_minigame == Some(Minigame::
+    /// PoliteDecline)`, not the mimic by name — a future `PoliteDecline`
+    /// monster gets this for free. Always called from the shared
+    /// `monsters_act_and_resolve_awe` tail, exactly like `resolve_awe`/
+    /// `resolve_becalm_dividend` beside it, so every turn-advancing action
+    /// (move/wait/talk/give/use/put-down/screen-link) carries it, not only
+    /// a talk turn — a bare wait while adjacent costs exactly as much as
+    /// silence in conversation would.
+    ///
+    /// Exclusions, mirroring `resolve_awe`'s own precedent:
+    ///   - already `calm` (declined enough times = won; no further cost,
+    ///     ever — see `Game::try_talk_player`'s already-calm branch).
+    ///   - `attacked == Some(i)` (this turn bump-ATTACKED it — RUDENESS
+    ///     already fails on its own via ordinary combat; no double
+    ///     penalty on top of whatever the fight itself costs).
+    ///   - `talked == Some(i)` (this turn's talk directed at it WAS the
+    ///     decline — the win path, not a cost).
+    ///
+    /// Deliberately uses CURRENT (post-`monsters_act`) positions, not the
+    /// pre-chase snapshot `resolve_awe` reads — unlike the ogre/goblin's
+    /// "held ground the WHOLE turn" read, THE POLITE NO only cares whether
+    /// the turn ENDED adjacent, matching the canon framing exactly
+    /// ("ending your turn adjacent... without declining").
+    ///
+    /// A lethal hit here is handled like every other combat-adjacent death
+    /// site: `killer` set, `hp` floored at 0, no further monsters
+    /// processed this call.
+    fn resolve_polite_decline(&mut self, attacked: Option<usize>, talked: Option<usize>) {
+        if self.dead {
+            return;
+        }
+        for i in 0..self.monsters.len() {
+            let kind = self.monsters[i].kind;
+            if self.monsters[i].calm || Monster::stats(kind).talk_minigame != Some(Minigame::PoliteDecline) {
+                continue; // not this minigame, or already won
+            }
+            if attacked == Some(i) || talked == Some(i) {
+                continue; // rudeness already fails on its own; a decline is the win, not a cost
+            }
+            let dist = (self.px - self.monsters[i].x).abs() + (self.py - self.monsters[i].y).abs();
+            if dist != 1 {
+                continue; // not cardinally adjacent this turn
+            }
+            let name = self.mob_name(kind);
+            let dmg = GAME.balance.polite_decline_accept_damage;
+            self.hp -= dmg;
+            if self.hp <= 0 {
+                self.hp = 0;
+                self.dead = true;
+                self.killer = Some(name);
+                self.log(GAME.strings.killed_by.replace("{}", name));
+                return; // no further monsters processed once the player is dead
+            }
+            self.log(GAME.strings.polite_decline_hurt.replacen("{}", name, 1).replacen("{}", &dmg.to_string(), 1));
+        }
     }
 
     /// Overworld-only follow step (batch 13 T6, the donkey-follow seed, rung

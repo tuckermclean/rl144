@@ -14,8 +14,8 @@
 
 use crate::gamedef::{
     AuthoredFloorDef, BalanceDef, BumpResponse, CarryEvent, GameDef, GiveRule, ItemDef, ItemEffect,
-    MonsterDef, OverworldDef, OverworldScreenDef, PickupBehavior, StringsDef, ThemeDef, UseEffect,
-    WinDef,
+    Minigame, MonsterDef, OverworldDef, OverworldScreenDef, PickupBehavior, StringsDef, ThemeDef,
+    UseEffect, WinDef,
 };
 
 // ---------- Monster/item kind indices ----------
@@ -347,6 +347,15 @@ const MONSTERS: [MonsterDef; 6] = [
         punish_wrong_move: false,
         awe_tell: "",
         follows_when_calm: false,
+        // mimic batch T3 (the ECHO check, §9-F's own "may already be
+        // expressible" directive): VERIFIED — repeating what the rat says
+        // is already exactly what ordinary talk does (climb its own
+        // `talk_lines` registers via a landed roll). `Some(Echo)` changes
+        // NOTHING mechanically versus `None` (see `Game::try_talk_player`'s
+        // dispatch) — it exists solely so a becalmed rat tags
+        // `Game.echo_done` (the curriculum's lesson 1) without the engine
+        // ever naming "rat." No new minigame was built for this.
+        talk_minigame: Some(Minigame::Echo),
     },
     MonsterDef {
         hp: 6,
@@ -380,6 +389,8 @@ const MONSTERS: [MonsterDef; 6] = [
         punish_wrong_move: true,
         awe_tell: "The goblin shifts its weight, wanting you to give it room.",
         follows_when_calm: false,
+        // mimic batch T3: no minigame — ordinary talk, unchanged.
+        talk_minigame: None,
     },
     MonsterDef {
         hp: 13,
@@ -412,6 +423,8 @@ const MONSTERS: [MonsterDef; 6] = [
         punish_wrong_move: true,
         awe_tell: "The ogre plants itself, daring you to hold your ground.",
         follows_when_calm: false,
+        // mimic batch T3: no minigame — ordinary talk (and awe), unchanged.
+        talk_minigame: None,
     },
     // TRAINER (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): un-killable by
     // construction — `passive` keeps it out of `monsters_act` entirely, and
@@ -441,6 +454,10 @@ const MONSTERS: [MonsterDef; 6] = [
         punish_wrong_move: false,
         awe_tell: "",
         follows_when_calm: false,
+        // mimic batch T3: no minigame — passive/`Yield` bump means talk
+        // never even reaches the receptivity seam for a hostile purpose,
+        // but the field must exist regardless; `None` is correct here.
+        talk_minigame: None,
     },
     // DONKEY (batch 9 T1, story §9-J prep, SIGN-OFF ASK #6): stubborn —
     // `bump: Shove` pushes it one tile if the destination is plain floor,
@@ -476,6 +493,9 @@ const MONSTERS: [MonsterDef; 6] = [
         // (`Game::overworld_follow_step`) instead of just standing still
         // the way a becalmed rat/goblin/ogre does.
         follows_when_calm: true,
+        // mimic batch T3: no minigame — the donkey's own follow/schmooze
+        // ladder is ordinary talk, unchanged.
+        talk_minigame: None,
     },
     // MIMIC (batch 17 T1, the mimic batch — first dungeon cast character,
     // manifest item 5, guaranteed at the D3 room below). Glyph `c` — reads
@@ -509,6 +529,12 @@ const MONSTERS: [MonsterDef; 6] = [
         punish_wrong_move: false,
         awe_tell: "",
         follows_when_calm: false,
+        // mimic batch T3 (THE POLITE NO, story §4 D3): the mimic's whole
+        // point — talking to it runs the offer/decline loop instead of the
+        // flat receptivity roll. Its becalm (a decline crossing
+        // `talk_threshold`) tags `Game.endure_done`, the curriculum's
+        // lesson 3, the same way the rat's `Echo` tag above feeds lesson 1.
+        talk_minigame: Some(Minigame::PoliteDecline),
     },
 ];
 
@@ -1166,6 +1192,12 @@ const BALANCE: BalanceDef = BalanceDef {
     // against today's content (2 floors * 1 cache * value 21 = 42 max
     // collectible) — a forward guard, sized from data, not hand-picked.
     max_cache_light_per_run: 60,
+    // mimic batch T3 (THE POLITE NO): [TUNE] semantic default, not yet
+    // measured — the human plays the mimic (T6) to judge feel. 2 HP per
+    // un-declined adjacent turn is deliberately mild relative to the
+    // ogre's guaranteed 6-HP retaliation: the mimic's threat is attrition
+    // over many turns of "sitting down with it," not a single costly hit.
+    polite_decline_accept_damage: 2,
 };
 
 const WIN: WinDef = WinDef {
@@ -1386,6 +1418,10 @@ const STRINGS: StringsDef = StringsDef {
     // floor names (`portal_describe_floor_cache_fits_log_row`); a barren
     // floor instead gets the plain `portal_describe_floor` line above.
     portal_describe_floor_cache: "Beyond it: {}. A light-cache waits there too.",
+    // mimic batch T3 (THE POLITE NO): grounded — restates only that its
+    // offer was accepted and what it cost; invents no history. `{}` fill
+    // order matches `hit_by`: monster name, damage taken.
+    polite_decline_hurt: "The {} makes you comfortable. That cost you {} HP.",
 };
 
 /* The overworld's 3 fixed screens (batch 9 T1, story §9-J prep, SIGN-OFF
