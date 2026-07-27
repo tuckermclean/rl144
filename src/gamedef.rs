@@ -346,6 +346,24 @@ pub(crate) struct ItemDef {
     pub(crate) on_use: Option<UseEffect>,
     /// The line logged on a landed USE. Empty string when `on_use` is `None`.
     pub(crate) use_line: &'static str,
+    /// Mimic batch T2 (story §9-G / §11, "the safety cost of an unheld
+    /// sword"): the flat, deterministic regard bonus applied to every live
+    /// monster Chebyshev-adjacent to the tile this item just landed on, when
+    /// it's set down via kind-routed put-down (`Game::put_down_kind`) rather
+    /// than USEd/GIVEn away. `0` for every item that carries no such
+    /// "visible disarm" meaning (only the sword is nonzero this batch — see
+    /// the active cartridge's own item table). Unlike `GiveRule::
+    /// regard_delta`, this never rolls (`parley_rng` untouched) — a plain,
+    /// unconditional signal, same "fixed value, no gamble" shape as most
+    /// `GiveRule` rows.
+    pub(crate) disarm_regard: i32,
+    /// The line logged when this item is set down via kind-routed put-down
+    /// (`Game::put_down_kind`). Empty string falls back to `StringsDef::
+    /// set_down_generic` — most held items (potion, cheese, coat, towel)
+    /// have no authored set-down line yet, since only the sword's set-down
+    /// is story-priced this batch; a `Consume` item is never reachable here
+    /// at all (it never enters `Game.held`), so its own field is always "".
+    pub(crate) set_down_line: &'static str,
 }
 
 /// What picking up an item does, as data rather than an engine-side match
@@ -746,6 +764,12 @@ pub(crate) struct StringsDef {
     /// batch 8 T1: put-down attempted while not carrying the objective.
     /// No-op, no turn.
     pub(crate) put_down_nothing_carried: &'static str,
+    /// Mimic batch T2 (put-down kind-routing, amendment A): the fallback
+    /// line logged when a HELD item (not the objective) is set down via
+    /// `Game::put_down_kind` and its own `ItemDef::set_down_line` is empty —
+    /// i.e. every held item except the sword this batch (see `ItemDef::
+    /// set_down_line`'s doc comment).
+    pub(crate) set_down_generic: &'static str,
     /// batch 9 T1 (`Tile::ShutDoor`, story §9-J prep): a bump against a
     /// shut door, always this batch (no `has_objective` branch — see that
     /// tile's doc comment for the deferred smarter version). No-op, no

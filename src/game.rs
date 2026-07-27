@@ -454,6 +454,18 @@ pub(crate) struct Game {
     pub(crate) py: i32,
     pub(crate) hp: i32,
     pub(crate) maxhp: i32,
+    /// Mimic batch T2 (sword custody = canon Hold, story §9-G / §11):
+    /// `GAME.balance.starting_atk` plus the sum of every currently-`held`
+    /// item's `ItemEffect::AtkBonus` — recomputed from scratch by
+    /// `Game::recompute_atk` at EVERY mutation of `self.held` (pickup, use,
+    /// use-by-kind, a consuming give, kind-routed set-down), never
+    /// incremented/decremented piecemeal. Before this batch the sword was a
+    /// `Consume` item and this field was a permanent running total (`self.
+    /// atk += n` on walk-over, no way back down); now it's a pure function
+    /// of `held`'s current contents, so setting the sword down really does
+    /// drop it back to base — "the safety cost of an unheld sword" (§11) is
+    /// otherwise not a real cost. Still a plain hashed `i32` (`save::
+    /// state_hash`) — only its derivation changed, not its kind or hashing.
     pub(crate) atk: i32,
     pub(crate) depth: u32,
     pub(crate) kills: u32,
@@ -2887,6 +2899,7 @@ impl Game {
             }
             if rule.consumes {
                 self.held.pop();
+                self.recompute_atk();
             }
             if !self.spend_turn(0) {
                 return; // died in the dark on a give turn: lose beats anything else
@@ -2923,6 +2936,7 @@ impl Game {
             }
             if rule.consumes {
                 self.held.pop();
+                self.recompute_atk();
             }
             if !self.spend_turn(0) {
                 return; // died in the dark on a give turn: lose beats anything else
@@ -2961,6 +2975,7 @@ impl Game {
         self.log(line);
         if rule.consumes {
             self.held.pop();
+            self.recompute_atk();
         }
         if !self.spend_turn(0) {
             return; // died in the dark on a give turn: lose beats anything else
@@ -3009,6 +3024,7 @@ impl Game {
         }
         self.log(String::from(def.use_line));
         self.held.pop();
+        self.recompute_atk();
         if !self.spend_turn(0) {
             return; // died in the dark on a use turn: lose beats anything else
         }
@@ -3057,6 +3073,7 @@ impl Game {
         }
         self.log(String::from(def.use_line));
         self.held.remove(pos);
+        self.recompute_atk();
         if !self.spend_turn(0) {
             return; // died in the dark on a use turn: lose beats anything else
         }
@@ -3083,51 +3100,125 @@ impl Game {
         out
     }
 
-    /// PUT DOWN: byte 16 (batch 8 T1, story §9-D). Sets the carried
-    /// objective on the player's own tile if held (`has_objective`) and the
-    /// tile has no item already sitting on it (no stacking): the objective
-    /// re-enters `self.items` at `(self.px, self.py)`, `has_objective`
-    /// flips false — which automatically reverts the per-turn light burn to
-    /// `BalanceDef::base_burn` (`Game::spend_turn` already branches on
-    /// `has_objective`, so no separate code is needed for the burn-rate
-    /// flip in either direction) — and `objective_dropped` flips true (so a
-    /// later walk-over re-pickup fires `CarryEvent::PickedBackUp`, not
-    /// `PickedUpBloody`/`PickedUpMerciful` — see `Game::pickup`). Put-down is legal anywhere the
-    /// tile is otherwise empty of items; a run that abandons the objective
-    /// and never returns for it simply cannot win (the win check already
-    /// requires `has_objective` — see `Game::land_on_tile`'s `Tile::
-    /// UpStairs` arm). Not carrying, or a tile that already has an item on
-    /// it, is a graceful no-op: one feedback line, no turn.
-    ///
-    /// `CarryEvent::PutDown` fires BEFORE `has_objective` flips to false —
-    /// symmetric with `Game::pickup`'s `ItemEffect::Objective` arm, which
-    /// sets `has_objective` true BEFORE calling `carry_event` for the same
-    /// reason: `Game::carry_event`'s own guard requires `has_objective` to
-    /// currently be true, and at the instant of a put-down the player is,
-    /// until this call, still carrying it.
+    /// PUT DOWN: byte 16 (batch 8 T1, story §9-D). Back-compat alias for
+    /// `Self::put_down_kind(GAME.win.objective_item)` — see that method's
+    /// doc comment for the full mechanism. Byte 16 keeps meaning exactly
+    /// what it always has ("set down the objective"), unchanged by the
+    /// mimic batch's kind-routing (amendment A) below.
     pub(crate) fn put_down(&mut self) {
+        self.put_down_kind(GAME.win.objective_item);
+    }
+
+    /// SET-DOWN / PUT-DOWN, KIND-ROUTED (mimic batch T2, §E's withdrawn-LIFO
+    /// amendment A): input bytes 16 (the objective only, via `Game::
+    /// put_down`) and `17+len(items)+kind`..`17+2*len(items)` (choose WHAT
+    /// to set down — see `Game::apply_input`'s doc comment for the exact
+    /// byte arithmetic). The withdrawn design let put-down act on
+    /// "whatever's on top" and called it done; that's unacceptable once the
+    /// sword ALSO sits in `Game.held` (§9-G's sword-Hold move) alongside the
+    /// objective's own separate `has_objective` tracking — a player carrying
+    /// both the objective and the sword needs to say WHICH one comes off
+    /// their back, not get whichever the engine guesses.
+    ///
+    /// Two disjoint branches, selected by `kind`:
+    /// - `kind == GAME.win.objective_item`: the original batch-8 T1
+    ///   mechanism verbatim (sets the carried objective on the player's own
+    ///   tile if held (`has_objective`) and the tile has no item already
+    ///   sitting on it — no stacking — flips `has_objective` false (which
+    ///   automatically reverts the per-turn carry-burn light rate via
+    ///   `Game::spend_turn`'s existing branch) and `objective_dropped` true
+    ///   (so a later re-pickup fires `CarryEvent::PickedBackUp`, not the
+    ///   first-pickup register — see `Game::pickup`). `CarryEvent::PutDown`
+    ///   fires BEFORE `has_objective` flips false, symmetric with
+    ///   `Game::pickup`'s ordering for the same is-currently-carried-guard
+    ///   reason.
+    /// - any other `kind`: a HELD item (mimic batch T2, sword custody — see
+    ///   `ItemDef::disarm_regard`/`set_down_line`). Scans `self.held` for
+    ///   the topmost occurrence of `kind` (same shape as `use_item_kind`'s
+    ///   `rposition` scan), removes it, re-derives `self.atk`
+    ///   (`Game::recompute_atk` — a set-down sword really does drop its ATK,
+    ///   unlike the old permanent-Consume model), and re-enters it into
+    ///   `self.items` at the player's own tile (same no-stacking rule as the
+    ///   objective branch). If `ItemDef::disarm_regard` is nonzero, every
+    ///   LIVE monster Chebyshev-adjacent to that tile (the same N/S/E/W-
+    ///   plus-diagonals shape `Game::rest_heal`/`resolve_awe` use) gets a
+    ///   flat, unconditional regard bump — no roll, no `parley_rng` draw,
+    ///   the same "fixed value, no gamble" shape most `GiveRule` rows use —
+    ///   and may cross `Monster::talk_threshold` into an outright becalm,
+    ///   exactly like a landed talk or a fixed-value give.
+    ///
+    /// Both branches are graceful no-ops (one feedback line, no turn) when
+    /// there's nothing of that kind to set down, or the tile is occupied.
+    /// The player never moves during a set-down (same discipline as
+    /// put-down/use/give's own doc comments), so `monsters_act_and_
+    /// resolve_awe` is called with `(self.px, self.py)` as `prev_player` and
+    /// no stay/attack/talk exclusion — a set-down isn't a combat or talk
+    /// action, so none of `resolve_awe`'s exclusion hazards apply here.
+    pub(crate) fn put_down_kind(&mut self, kind: u8) {
         self.fx_hit = None;
         if self.dead || self.won {
             return;
         }
-        if !self.has_objective {
-            self.log(String::from(GAME.strings.put_down_nothing_carried));
-            return; // nothing to set down: no-op, no turn
+        if kind == GAME.win.objective_item {
+            if !self.has_objective {
+                self.log(String::from(GAME.strings.put_down_nothing_carried));
+                return; // nothing to set down: no-op, no turn
+            }
+            if self.items.iter().any(|it| it.x == self.px && it.y == self.py) {
+                self.log(String::from(GAME.strings.put_down_occupied));
+                return; // no stacking: no-op, no turn
+            }
+            self.carry_event(CarryEvent::PutDown);
+            self.items.push(Item { x: self.px, y: self.py, kind: GAME.win.objective_item });
+            self.has_objective = false;
+            self.objective_dropped = true;
+            self.log(String::from(GAME.strings.put_down_ok));
+            if !self.spend_turn(0) {
+                return; // died in the dark on a put-down turn: lose beats anything else
+            }
+            // The player never moves during a put-down; batch 11 T2 fix round.
+            self.monsters_act_and_resolve_awe(None, None, None, (self.px, self.py)); // setting the objective down isn't bump-attacking
+            return;
         }
+        let Some(pos) = self.held.iter().rposition(|&k| k == kind) else {
+            self.log(String::from(GAME.strings.use_empty_hands));
+            return; // none of this kind held: no-op, no turn
+        };
         if self.items.iter().any(|it| it.x == self.px && it.y == self.py) {
             self.log(String::from(GAME.strings.put_down_occupied));
             return; // no stacking: no-op, no turn
         }
-        self.carry_event(CarryEvent::PutDown);
-        self.items.push(Item { x: self.px, y: self.py, kind: GAME.win.objective_item });
-        self.has_objective = false;
-        self.objective_dropped = true;
-        self.log(String::from(GAME.strings.put_down_ok));
-        if !self.spend_turn(0) {
-            return; // died in the dark on a put-down turn: lose beats anything else
+        self.held.remove(pos);
+        self.recompute_atk();
+        self.items.push(Item { x: self.px, y: self.py, kind });
+        let def = &GAME.items[kind as usize];
+        let line =
+            if def.set_down_line.is_empty() { GAME.strings.set_down_generic } else { def.set_down_line };
+        self.log(String::from(line));
+        let bonus = def.disarm_regard;
+        if bonus != 0 {
+            for mi in 0..self.monsters.len() {
+                let (mx, my) = (self.monsters[mi].x, self.monsters[mi].y);
+                if (mx - self.px).abs().max((my - self.py).abs()) != 1 {
+                    continue; // not Chebyshev-adjacent to the set-down tile
+                }
+                let mkind = self.monsters[mi].kind;
+                let before = self.monsters[mi].regard;
+                self.monsters[mi].regard = before.saturating_add(bonus as u8);
+                let regard = self.monsters[mi].regard;
+                if !self.monsters[mi].calm && regard >= Monster::talk_threshold(mkind) {
+                    self.monsters[mi].calm = true;
+                    self.record_spare();
+                    self.carry_event(CarryEvent::SpareWitnessed);
+                }
+            }
         }
-        // The player never moves during a put-down; batch 11 T2 fix round.
-        self.monsters_act_and_resolve_awe(None, None, None, (self.px, self.py)); // setting the objective down isn't bump-attacking
+        if !self.spend_turn(0) {
+            return; // died in the dark on a set-down turn: lose beats anything else
+        }
+        // The player never moves during a set-down; same discipline as
+        // put-down/use/give above.
+        self.monsters_act_and_resolve_awe(None, None, None, (self.px, self.py)); // setting an item down isn't bump-attacking
     }
 
     /// Waiting (byte 4) is also how a portal transits (batch 6 T1): a
@@ -3413,6 +3504,27 @@ impl Game {
         }
     }
 
+    /// Mimic batch T2 (sword custody = canon Hold): re-derives `self.atk`
+    /// from scratch as `GAME.balance.starting_atk` plus every currently-
+    /// `held` item's `ItemEffect::AtkBonus` — see `Game::atk`'s doc comment.
+    /// Called at every mutation site of `self.held` (pickup, use, use-by-
+    /// kind, a consuming give, kind-routed set-down) so `atk` is always
+    /// exactly derived, never accumulated: a dropped sword's bonus can
+    /// never linger, and re-picking it back up restores it (§E's lifecycle
+    /// table). `Game::new`'s own initial `atk: GAME.balance.starting_atk`
+    /// is this same formula with `held` empty, so no call is needed there.
+    pub(crate) fn recompute_atk(&mut self) {
+        self.atk = GAME.balance.starting_atk
+            + self
+                .held
+                .iter()
+                .map(|&k| match GAME.items[k as usize].effect {
+                    ItemEffect::AtkBonus(n) => n,
+                    _ => 0,
+                })
+                .sum::<i32>();
+    }
+
     fn pickup(&mut self) {
         if let Some(i) = self.items.iter().position(|i| i.x == self.px && i.y == self.py) {
             let kind = self.items[i].kind;
@@ -3420,6 +3532,7 @@ impl Game {
             let def = &GAME.items[kind as usize];
             if def.on_pickup == PickupBehavior::Hold {
                 self.held.push(kind);
+                self.recompute_atk();
                 self.log(String::from(def.pickup_line));
                 return;
             }
@@ -4018,27 +4131,38 @@ impl Game {
 }
 
 impl Game {
-    /// Input-byte vocabulary, 0-16 plus 17..17+len(items) (save v10, batch 15
-    /// T2): 0-4 move/wait (see below), 5-6 are frontend/reconstruction-layer
-    /// only (restart/retry — handled in `save::replay`, never reach here),
-    /// 7-10 = talk-N/S/W/E, 11-14 = give-N/S/W/E, 15 = use (top of `held`),
-    /// 16 = put-down — every directional pair's order mirrors the move
-    /// bytes' 0-3 direction order exactly (see `Game::try_give_player`'s doc
-    /// comment; the brief's original "11-12" numbering is revised to 11-14
-    /// give + 15 use so give stays a 4-byte directional block just like
-    /// move/talk, rather than colliding one value short of that shape). 16
-    /// (put-down, batch 8 T1, story §9-D) is self-apply like 15, no
-    /// direction — see `Game::put_down`. 17..17+`GAME.items.len()` (batch 15
-    /// T2, the item-use selector): byte `17+kind` is USE-BY-KIND (see
+    /// Input-byte vocabulary, 0-16 plus 17..17+2*len(items) (save v11, mimic
+    /// batch T2): 0-4 move/wait (see below), 5-6 are frontend/reconstruction-
+    /// layer only (restart/retry — handled in `save::replay`, never reach
+    /// here), 7-10 = talk-N/S/W/E, 11-14 = give-N/S/W/E, 15 = use (top of
+    /// `held`), 16 = put-down — every directional pair's order mirrors the
+    /// move bytes' 0-3 direction order exactly (see `Game::try_give_player`'s
+    /// doc comment; the brief's original "11-12" numbering is revised to
+    /// 11-14 give + 15 use so give stays a 4-byte directional block just
+    /// like move/talk, rather than colliding one value short of that
+    /// shape). 16 (put-down, batch 8 T1, story §9-D) is self-apply like 15,
+    /// no direction — see `Game::put_down`. 17..17+`GAME.items.len()` (batch
+    /// 15 T2, the item-use selector): byte `17+kind` is USE-BY-KIND (see
     /// `Game::use_item_kind`) — a frontend resolves a menu pick (built from
     /// `Game::held_summary`) to this byte instead of the LIFO-top-only byte
     /// 15; byte 15 itself is UNCHANGED, kept for back-compat with every
-    /// older save/bot. A `kind` past the cartridge's actual item count is
-    /// impossible for a real `17+kind` byte to encode this batch, but the
-    /// bounds check below guards it anyway rather than indexing blind. Any
-    /// other byte is silently ignored (`_ => {}`) — this is the one place
-    /// old logs (v1-v9, no byte >= 17) and any future build's own reserved
-    /// bytes both fall through harmlessly.
+    /// older save/bot. `17+GAME.items.len()`..`17+2*GAME.items.len()` (save
+    /// v11, mimic batch T2, put-down kind-routing — amendment A): byte
+    /// `17+GAME.items.len()+kind` is SET-DOWN-BY-KIND (see `Game::
+    /// put_down_kind`), mirroring the use-by-kind range immediately below
+    /// it — the input vocabulary's second growth past 16, same shape as the
+    /// first. A frontend's set-down selector resolves a menu pick (also
+    /// built from `Game::held_summary`, plus the objective if carried) to
+    /// this byte instead of byte 16's objective-only put-down; byte 16
+    /// itself is UNCHANGED (`Game::put_down` is now a thin alias for
+    /// `put_down_kind(GAME.win.objective_item)`), kept for back-compat with
+    /// every older save/bot. A `kind` past the cartridge's actual item count
+    /// is impossible for a real byte in either range to encode this batch,
+    /// but the bounds check on each arm guards it anyway rather than
+    /// indexing blind. Any other byte is silently ignored (`_ => {}`) — this
+    /// is the one place old logs (v1-v9, no byte >= 17; v10, no byte >=
+    /// 17+len(items)) and any future build's own reserved bytes both fall
+    /// through harmlessly.
     pub(crate) fn apply_input(&mut self, b: u8) {
         match b {
             0 => self.try_move_player(0, -1),
@@ -4058,6 +4182,11 @@ impl Game {
             16 => self.put_down(),
             b if b >= 17 && (b as usize - 17) < GAME.items.len() => {
                 self.use_item_kind(b - 17)
+            }
+            b if b as usize >= 17 + GAME.items.len()
+                && (b as usize - 17 - GAME.items.len()) < GAME.items.len() =>
+            {
+                self.put_down_kind((b as usize - 17 - GAME.items.len()) as u8)
             }
             _ => {}
         }

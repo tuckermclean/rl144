@@ -43,7 +43,9 @@ use gamedef::{CarryEvent, ItemEffect, PickupBehavior};
 #[cfg(test)]
 use games::GAME;
 #[cfg(test)]
-use games::contractor::{CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, MIMIC, OGRE, POTION, RAT, TOWEL, TRAINER};
+use games::contractor::{
+    CHEESE, COAT, DONKEY, GOBLIN, LIGHT_CACHE, MIMIC, OBJECTIVE, OGRE, POTION, RAT, SWORD, TOWEL, TRAINER,
+};
 #[cfg(test)]
 use headless::{band_scalar, floor_dive_cost, level_dump, sim_seed, solve_seed};
 #[cfg(test)]
@@ -2616,16 +2618,20 @@ mod tests {
         assert_eq!(a.turns, b.turns);
     }
 
-    /// A `17+kind` byte past the cartridge's real item count is silently
-    /// ignored by `apply_input` (the same `_ => {}` catch-all treatment as
-    /// any other unrecognized byte) rather than indexing out of bounds.
+    /// A byte past BOTH the use-by-kind (`17..17+len(items)`) and the mimic
+    /// batch's set-down-by-kind (`17+len(items)..17+2*len(items)`) ranges is
+    /// silently ignored by `apply_input` (the same `_ => {}` catch-all
+    /// treatment as any other unrecognized byte) rather than indexing out
+    /// of bounds. `17+len(items)` itself is now the FIRST set-down-by-kind
+    /// byte (kind 0), not out of range — see `apply_input_set_down_by_kind_
+    /// out_of_range_is_ignored` below for that range's own boundary.
     #[test]
     fn apply_input_use_by_kind_out_of_range_is_ignored() {
         let mut g = blank_room(1);
         let before_turns = g.turns;
-        let out_of_range = 17 + GAME.items.len() as u8;
+        let out_of_range = 17 + 2 * GAME.items.len() as u8;
         g.apply_input(out_of_range);
-        assert_eq!(g.turns, before_turns, "an out-of-range use-by-kind byte must be a pure no-op");
+        assert_eq!(g.turns, before_turns, "an out-of-range byte must be a pure no-op");
     }
 
     /// `held_summary` groups by kind and counts correctly: holding
@@ -2655,6 +2661,218 @@ mod tests {
         g.apply_input(15);
         assert!(g.hp > 1, "byte 15 must still self-apply the top of held");
         assert!(g.held.is_empty());
+    }
+
+    // ---------- Sword custody = canon Hold (mimic batch T2, §9-G / §11) ----------
+
+    /// Walking onto the sword now `Hold`s it (not `Consume`s it): it enters
+    /// `held` rather than vanishing, and `atk` rises by exactly its
+    /// `AtkBonus` while held.
+    #[test]
+    fn sword_pickup_is_hold_and_confers_atk() {
+        let mut g = blank_room(1);
+        let base_atk = g.atk;
+        assert_eq!(base_atk, GAME.balance.starting_atk);
+        g.items.push(Item { x: g.px + 1, y: g.py, kind: SWORD });
+        g.try_move_player(1, 0); // walk onto the sword's tile
+        assert_eq!(g.held, vec![SWORD], "sword must enter `held`, not vanish (Consume)");
+        assert_eq!(g.atk, base_atk + 2, "holding the sword must confer its AtkBonus(2)");
+    }
+
+    /// Setting the sword back down removes its ATK bonus — the whole point
+    /// of the Hold model over the old permanent-Consume one (§11's "safety
+    /// cost of an unheld sword").
+    #[test]
+    fn sword_set_down_removes_atk_bonus() {
+        let mut g = blank_room(1);
+        let base_atk = g.atk;
+        g.held = vec![SWORD];
+        g.recompute_atk();
+        assert_eq!(g.atk, base_atk + 2, "fixture: holding confers the bonus");
+
+        g.put_down_kind(SWORD);
+        assert!(g.held.is_empty(), "the sword must leave `held`");
+        assert_eq!(g.atk, base_atk, "ATK must drop back to base once set down");
+        assert_eq!(g.items.len(), 1, "the sword must land on the player's own tile as an item");
+        assert_eq!(g.items[0].kind, SWORD);
+    }
+
+    /// Picking the set-down sword back up restores the ATK bonus (a `Hold`
+    /// item re-`Hold`s on walk-over, unlike a `Consume` item which could
+    /// only ever apply once) — the `§E` lifecycle table's "pick it back up"
+    /// row.
+    #[test]
+    fn sword_re_pickup_after_set_down_restores_atk() {
+        let mut g = blank_room(1);
+        let base_atk = g.atk;
+        g.held = vec![SWORD];
+        g.recompute_atk();
+        g.put_down_kind(SWORD);
+        assert_eq!(g.atk, base_atk);
+
+        g.px += 1; // step off the sword's tile (leave the item where it landed)
+        g.try_move_player(-1, 0); // walk back onto the sword's tile
+        assert_eq!(g.held, vec![SWORD]);
+        assert_eq!(g.atk, base_atk + 2, "re-picking up the sword must restore its ATK bonus");
+    }
+
+    /// Setting the sword down Chebyshev-adjacent to a live monster fires the
+    /// visible-disarm regard bonus (`ItemDef::disarm_regard`) — story §9-G /
+    /// §11. Using OGRE (talk_threshold 4) so a single disarm_regard=3 bump
+    /// doesn't itself cross the becalm threshold, isolating "the bonus
+    /// applied" from "it happened to becalm."
+    #[test]
+    fn sword_set_down_adjacent_monster_gains_regard() {
+        let mut g = blank_room(1);
+        g.held = vec![SWORD];
+        g.monsters.push(Monster::spawn(OGRE, g.px + 1, g.py));
+        let disarm = GAME.items[SWORD as usize].disarm_regard;
+        assert!(disarm > 0, "fixture: the sword must have a nonzero disarm_regard this batch");
+
+        g.put_down_kind(SWORD);
+        assert_eq!(g.monsters[0].regard as i32, disarm, "adjacent monster must gain the disarm bonus");
+        assert!(!g.monsters[0].calm, "fixture: OGRE's talk_threshold must not be crossed by one bump");
+    }
+
+    /// The disarm regard bonus can itself cross `talk_threshold` and becalm
+    /// the monster outright — RAT's threshold (2) is at or below the
+    /// sword's `disarm_regard` this batch.
+    #[test]
+    fn sword_set_down_adjacent_monster_can_becalm() {
+        let mut g = blank_room(1);
+        g.held = vec![SWORD];
+        g.monsters.push(Monster::spawn(RAT, g.px + 1, g.py));
+        let spared_before = g.spared;
+
+        g.put_down_kind(SWORD);
+        assert!(g.monsters[0].calm, "RAT's low talk_threshold must be crossed by the disarm bonus");
+        assert_eq!(g.spared, spared_before + 1, "a disarm-becalm must count as a spare");
+    }
+
+    /// No monster adjacent: setting the sword down is still legal (it lands
+    /// as an item, ATK drops) but grants no regard to anyone (nothing to
+    /// grant it to).
+    #[test]
+    fn sword_set_down_no_adjacent_monster_grants_nothing() {
+        let mut g = blank_room(1);
+        g.held = vec![SWORD];
+        g.monsters.push(Monster::spawn(RAT, g.px + 5, g.py)); // far away
+        g.put_down_kind(SWORD);
+        assert_eq!(g.monsters[0].regard, 0, "a distant monster must gain no regard");
+        assert!(g.items.iter().any(|it| it.kind == SWORD), "the sword must still land as an item");
+    }
+
+    /// Setting down a kind not currently held is a graceful no-op: no turn,
+    /// `held`/`items` unchanged.
+    #[test]
+    fn put_down_kind_nothing_of_that_kind_held_is_noop() {
+        let mut g = blank_room(1);
+        let before_turns = g.turns;
+        g.put_down_kind(SWORD);
+        assert_eq!(g.turns, before_turns);
+        assert!(g.items.is_empty());
+    }
+
+    /// Setting a held item down on an already-occupied tile is refused (no
+    /// stacking), same rule the objective's own put-down already follows.
+    #[test]
+    fn put_down_kind_refuses_when_tile_occupied() {
+        let mut g = blank_room(1);
+        g.held = vec![SWORD];
+        g.items.push(Item { x: g.px, y: g.py, kind: CHEESE });
+        let before_turns = g.turns;
+        g.put_down_kind(SWORD);
+        assert_eq!(g.held, vec![SWORD], "refused set-down must not remove the item from held");
+        assert_eq!(g.turns, before_turns, "a refused set-down costs no turn");
+        assert_eq!(g.items.len(), 1, "the occupying item must be the only one on the tile");
+    }
+
+    // ---------- Put-down kind-routing (mimic batch T2, amendment A) ----------
+
+    /// The whole point of amendment A: carrying BOTH the objective AND the
+    /// sword, put-down must let the player choose WHICH comes off — never
+    /// "whatever's on top" (the withdrawn LIFO-ambiguity design). Setting
+    /// down the sword must not touch the objective, and vice versa.
+    #[test]
+    fn put_down_kind_no_lifo_ambiguity_between_objective_and_sword() {
+        let mut g = blank_room(1);
+        g.has_objective = true;
+        g.held = vec![SWORD];
+
+        g.put_down_kind(SWORD);
+        assert!(g.has_objective, "setting the sword down must not drop the objective");
+        assert!(g.held.is_empty(), "the sword must have left held");
+        assert!(g.items.iter().any(|it| it.kind == SWORD));
+
+        // Move off so the objective's put-down tile isn't occupied by the
+        // sword we just set down.
+        g.px += 1;
+        g.py += 1;
+        g.put_down_kind(OBJECTIVE);
+        assert!(!g.has_objective, "setting the objective down must actually drop it");
+        assert!(g.items.iter().any(|it| it.kind == OBJECTIVE));
+    }
+
+    /// Byte 16 is unchanged: it's now a thin alias for
+    /// `put_down_kind(GAME.win.objective_item)`, proven by identical
+    /// resulting state either way.
+    #[test]
+    fn byte_16_matches_put_down_kind_objective() {
+        let mut a = blank_room(1);
+        a.has_objective = true;
+        a.apply_input(16);
+
+        let mut b = blank_room(1);
+        b.has_objective = true;
+        b.put_down_kind(OBJECTIVE);
+
+        assert_eq!(a.has_objective, b.has_objective);
+        assert_eq!(a.items.len(), b.items.len());
+        assert_eq!(a.turns, b.turns);
+    }
+
+    /// `apply_input(17 + len(items) + kind)` is exactly `put_down_kind(kind)`
+    /// — same resulting state either way, for the sword specifically.
+    #[test]
+    fn apply_input_set_down_by_kind_routes_to_put_down_kind() {
+        let mut a = blank_room(1);
+        a.held = vec![SWORD];
+        a.apply_input(17 + GAME.items.len() as u8 + SWORD);
+
+        let mut b = blank_room(1);
+        b.held = vec![SWORD];
+        b.put_down_kind(SWORD);
+
+        assert_eq!(a.held, b.held);
+        assert_eq!(a.items.len(), b.items.len());
+        assert_eq!(a.atk, b.atk);
+        assert_eq!(a.turns, b.turns);
+    }
+
+    /// A set-down-by-kind byte past the cartridge's real item count is
+    /// silently ignored, same discipline as the use-by-kind range.
+    #[test]
+    fn apply_input_set_down_by_kind_out_of_range_is_ignored() {
+        let mut g = blank_room(1);
+        let before_turns = g.turns;
+        let out_of_range = 17 + 2 * GAME.items.len() as u8;
+        g.apply_input(out_of_range);
+        assert_eq!(g.turns, before_turns, "an out-of-range set-down-by-kind byte must be a pure no-op");
+    }
+
+    /// Replay-determinism of the new set-down-by-kind bytes: two replays of
+    /// a log using byte 16, a use-by-kind byte, AND a set-down-by-kind byte
+    /// hash identically — the load-bearing proof this vocabulary growth is
+    /// replay-safe, same shape as every prior input-byte addition's own test.
+    #[test]
+    fn set_down_by_kind_bytes_replay_deterministic() {
+        let seed0 = 8181u64;
+        let sword_use_by_kind = 17 + SWORD;
+        let sword_set_down_by_kind = 17 + GAME.items.len() as u8 + SWORD;
+        let log = vec![0u8, 1, sword_use_by_kind, 16, sword_set_down_by_kind, 2, 3];
+        let a = replay(seed0, &log);
+        let b = replay(seed0, &log);
+        assert_eq!(state_hash(&a), state_hash(&b));
     }
 
     // ---------- Light-cache item (batch 14 T1, portal ROI) ----------
@@ -3741,16 +3959,16 @@ mod tests {
     /// Put-down byte (16, batch 8 T1) round-trips through save -> parse ->
     /// replay identically, same proof shape as the version back-compat
     /// tests above: a log containing byte 16 survives `save_bytes` (which
-    /// now writes v10) -> `parse_save` -> `replay` producing the exact same
+    /// now writes v11) -> `parse_save` -> `replay` producing the exact same
     /// state as replaying the original log directly.
     #[test]
     fn put_down_byte_round_trips_through_save_parse_replay() {
         let seed0 = 246u64;
         let log = vec![0u8, 1, 16, 2, 3, 16, 4];
         let bytes = save_bytes(seed0, &log);
-        assert_eq!(bytes[4], 10, "save_bytes must write the current version (10)");
+        assert_eq!(bytes[4], 11, "save_bytes must write the current version (11)");
 
-        let (s, parsed_log) = parse_save(&bytes).expect("v10 blob must parse");
+        let (s, parsed_log) = parse_save(&bytes).expect("v11 blob must parse");
         assert_eq!(s, seed0);
         assert_eq!(parsed_log, log);
 
@@ -3810,20 +4028,47 @@ mod tests {
         assert_eq!(state_hash(&from_v9), state_hash(&direct));
     }
 
-    /// `save_bytes` writes the current version (10, batch 15 T2) and a
-    /// version outside 1..=10 is rejected by `parse_save` — the "old binary
-    /// must reject a newer save cleanly" half of every save-version bump's
-    /// rationale (this bump's other half is simply keeping the version
-    /// label in lockstep with the vocabulary growth — see this module's
-    /// header comment on `SAVE_VERSION`).
+    /// v10 -> v11 back-compat (the mimic batch T2, put-down kind-routing):
+    /// the vocabulary grew again (17+len(items)..17+2*len(items) =
+    /// set-down-by-kind) but no NEW hashed state joined `state_hash` —
+    /// `held`'s contents were already hashed, and the sword joining `held`
+    /// (rather than a permanent Consume bonus) is data, not a new hashed
+    /// shape — so there's nothing a v10 log could contain that v11 parsing
+    /// wouldn't already handle identically. Mirrors
+    /// `v9_save_replays_under_v10_parsing` above, one version up.
+    #[test]
+    fn v10_save_replays_under_v11_parsing() {
+        let seed0 = 579u64;
+        let log = vec![0u8, 1, 16, 2, 7, 3, 4];
+        let mut v10_bytes = Vec::new();
+        v10_bytes.extend_from_slice(b"RL14");
+        v10_bytes.push(10); // v10
+        v10_bytes.extend_from_slice(&seed0.to_le_bytes());
+        v10_bytes.extend_from_slice(&log);
+
+        let (s, parsed_log) = parse_save(&v10_bytes).expect("v10 blob must still parse");
+        assert_eq!(s, seed0);
+        assert_eq!(parsed_log, log);
+
+        let from_v10 = replay(s, &parsed_log);
+        let direct = replay(seed0, &log);
+        assert_eq!(state_hash(&from_v10), state_hash(&direct));
+    }
+
+    /// `save_bytes` writes the current version (11, the mimic batch T2) and
+    /// a version outside 1..=11 is rejected by `parse_save` — the "old
+    /// binary must reject a newer save cleanly" half of every save-version
+    /// bump's rationale (this bump's other half is simply keeping the
+    /// version label in lockstep with the vocabulary growth — see this
+    /// module's header comment on `SAVE_VERSION`).
     #[test]
     fn save_bytes_writes_current_version_and_unknown_versions_are_rejected() {
         let bytes = save_bytes(7, &[0, 1, 2]);
-        assert_eq!(bytes[4], 10, "save_bytes must write the current version");
+        assert_eq!(bytes[4], 11, "save_bytes must write the current version");
         assert!(parse_save(&bytes).is_some());
 
         let mut future = bytes.clone();
-        future[4] = 11;
+        future[4] = 12;
         assert!(parse_save(&future).is_none(), "an unknown version must be rejected");
 
         let mut zero = bytes;

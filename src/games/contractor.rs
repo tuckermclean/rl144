@@ -539,6 +539,15 @@ const POTION_GIVE_ENRAGE_LINE: &str = "The potion sickens the {M} instead of hea
 // additional line only logged when the roll actually lands.
 const CHEESE_GOBLIN_STAY_LINE: &str = "The {M} forgets the fight -- it only has eyes for the cheese.";
 const CHEESE_GOBLIN_BECALM_LINE: &str = "Between bites, the {M} decides cheese beats a fight.";
+// mimic batch T2 (sword custody = canon Hold, story §9-G / §11's "safety
+// cost of an unheld sword"): the sword moves from a permanent Consume-
+// pickup ATK bonus to a Hold-and-wield one (`Game::recompute_atk`). Both
+// lines are FLAVOR-DRAFT-v0 IDs wired verbatim: NAR_030 for the pickup
+// (a `Hold` item needs `pickup_line`, unlike the old `Consume` row which
+// used the generic `atk_item` template instead), NAR_034 for the set-down
+// that also fires the visible-disarm regard bonus (`ItemDef::disarm_regard`).
+const SWORD_PICKUP_LINE: &str = "You pick up a sword. It is exactly what everyone brings."; // NAR_030, verbatim
+const SWORD_SET_DOWN_LINE: &str = "You set down your sword. The room notices."; // NAR_034, verbatim
 
 const ITEMS: [ItemDef; 10] = [
     ItemDef {
@@ -549,15 +558,31 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: POTION_PICKUP_LINE,
         on_use: Some(UseEffect::Heal(3)),
         use_line: POTION_USE_LINE,
+        disarm_regard: 0,
+        set_down_line: "",
     },
+    // SWORD (mimic batch T2, story §9-G / §11 — "sword custody = canon
+    // Hold"): moved `Consume` -> `Hold` this batch. `effect` stays
+    // `AtkBonus(2)` — its MEANING changed from "a permanent bonus applied
+    // once at walk-over" to "a bonus this item contributes while it sits in
+    // `Game.held`" (see `Game::recompute_atk`, which is now the only reader
+    // of `AtkBonus` for a `Hold` item; the `Consume`-pickup match arm in
+    // `Game::pickup` is unreachable for this cartridge's own item table
+    // after this move, but stays a valid engine primitive for a future
+    // Consume+AtkBonus item). `disarm_regard` [TUNE 3] is the visible-disarm
+    // bonus fired when the sword is set down Chebyshev-adjacent to a live
+    // monster (`Game::put_down_kind`) — the flavored general case the mimic
+    // reuses verbatim, no separate custody state (§E's lifecycle table).
     ItemDef {
         glyph: b')',
         color: 0x70B0FF,
         effect: ItemEffect::AtkBonus(2),
-        on_pickup: PickupBehavior::Consume,
-        pickup_line: "",
+        on_pickup: PickupBehavior::Hold,
+        pickup_line: SWORD_PICKUP_LINE,
         on_use: None,
         use_line: "",
+        disarm_regard: 3,
+        set_down_line: SWORD_SET_DOWN_LINE,
     },
     ItemDef {
         glyph: b'&',
@@ -567,6 +592,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: "",
         on_use: None,
         use_line: "",
+        disarm_regard: 0,
+        set_down_line: "",
     },
     ItemDef {
         glyph: b'?',
@@ -576,6 +603,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: "",
         on_use: None,
         use_line: "",
+        disarm_regard: 0,
+        set_down_line: "",
     },
     ItemDef {
         glyph: b'?',
@@ -585,6 +614,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: "",
         on_use: None,
         use_line: "",
+        disarm_regard: 0,
+        set_down_line: "",
     },
     ItemDef {
         glyph: b'?',
@@ -594,6 +625,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: "",
         on_use: None,
         use_line: "",
+        disarm_regard: 0,
+        set_down_line: "",
     },
     // CHEESE (batch 7 T2, story §4/§5 D1): the midden's own bait —
     // `o`, adopted verbatim from docs/story/SPACES-DRAFT-v0.md's legend
@@ -608,6 +641,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: CHEESE_PICKUP_LINE,
         on_use: Some(UseEffect::Light(8)),
         use_line: CHEESE_USE_LINE,
+        disarm_regard: 0,
+        set_down_line: "",
     },
     // COAT (batch 7 T2, story §4 D2 / §5): vault-find only this batch, no
     // give-target yet (the coat-monster doesn't exist — `GIVE_TABLE` has no
@@ -622,6 +657,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: COAT_PICKUP_LINE,
         on_use: None,
         use_line: "",
+        disarm_regard: 0,
+        set_down_line: "",
     },
     // TOWEL (batch 7 T2, story §4 D4 / §5): same shape as the coat — vault
     // find, no give-target yet (the lost guy isn't a `GiveRule` target this
@@ -634,6 +671,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: TOWEL_PICKUP_LINE,
         on_use: None,
         use_line: "",
+        disarm_regard: 0,
+        set_down_line: "",
     },
     // LIGHT_CACHE (batch 14 T1, portal ROI): `Consume`, walk-over — unlike
     // CHEESE/COAT/TOWEL above it is NOT `Hold`, since the reward is meant
@@ -670,6 +709,8 @@ const ITEMS: [ItemDef; 10] = [
         pickup_line: "",
         on_use: None,
         use_line: "",
+        disarm_regard: 0,
+        set_down_line: "",
     },
 ];
 
@@ -1319,6 +1360,7 @@ const STRINGS: StringsDef = StringsDef {
     put_down_ok: "You set your burden down.",
     put_down_occupied: "There is no room here.",
     put_down_nothing_carried: "You are carrying nothing to set down.",
+    set_down_generic: "You set it down.",
     // batch 9 T1 (story §9-J prep): the shut door is dumb this batch,
     // always this line regardless of `has_objective` (POS_003, per the
     // batch-9 brief's own citation) — the smarter version is deferred
