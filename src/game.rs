@@ -3284,6 +3284,18 @@ impl Game {
     /// as "Potion x2  Cheese x1" (the backend, being crust, is free to name
     /// the kind — see `ItemDef::glyph`/the cartridge's own naming — this
     /// helper only groups and counts).
+    /// The cell a size-adaptive frontend camera centers on: the player's
+    /// position. Derived, presentation-facing, stores nothing (the terminal
+    /// backend's `viewport` follows it on consoles smaller than the 80x30
+    /// grid). See docs/superpowers/specs/2026-08-04-flexible-camera-console.
+    /// `allow(dead_code)`: consumed only by `backend_term`, so it is unused in
+    /// a `backend-minifb`-only build (same pattern as other backend-specific
+    /// accessors here).
+    #[allow(dead_code)]
+    pub(crate) fn camera_focus(&self) -> (i32, i32) {
+        (self.px, self.py)
+    }
+
     pub(crate) fn held_summary(&self) -> Vec<(u8, usize)> {
         let mut out: Vec<(u8, usize)> = Vec::new();
         for &k in &self.held {

@@ -20,7 +20,7 @@
 //     pipe to a file with no termios/alt-screen side effects at all.
 
 use crate::content::ghost_label_idx;
-use crate::game::{COLS, Game, ROWS};
+use crate::game::{COLS, Game, MAP_H, ROWS};
 use crate::games::GAME;
 use crate::headless::world_hash;
 use crate::render::{CELLS, Cell, Screen, render_cells};
@@ -65,6 +65,37 @@ const TCSANOW: i32 = 0;
 // read policy (POSIX termios.h names these the same way).
 const VMIN: usize = 6;
 const VTIME: usize = 5;
+
+// ---------- terminal size (TIOCGWINSZ) ----------
+
+#[repr(C)]
+struct Winsize {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+}
+
+extern "C" {
+    fn ioctl(fd: i32, request: u64, argp: *mut Winsize) -> i32;
+}
+
+// TIOCGWINSZ is 0x5413 on Linux across archs (i386/i686/x86_64 alike).
+const TIOCGWINSZ: u64 = 0x5413;
+
+/// Query the output terminal's character size (cols, rows). `None` when stdout
+/// is not a tty (piped/redirected) or the ioctl reports a zero dimension --
+/// callers then fall back to the native 80x30, which also keeps non-tty output
+/// at today's exact shape.
+fn term_size() -> Option<(usize, usize)> {
+    let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    let r = unsafe { ioctl(STDOUT_FD, TIOCGWINSZ, &mut ws as *mut Winsize) };
+    if r == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+        Some((ws.ws_col as usize, ws.ws_row as usize))
+    } else {
+        None
+    }
+}
 const STDIN_FD: i32 = 0;
 const STDOUT_FD: i32 = 1;
 
@@ -419,6 +450,147 @@ fn ascii_fallback(ch: u16) -> u16 {
     }
 }
 
+// ---------- camera console: fit any terminal size ----------
+//
+// The engine grid is a fixed 80x30 (COLS x ROWS): map rows [0, MAP_H), a
+// status row at MAP_H, and a 4-row log below it. On a console smaller than
+// that (a real 486 text mode, a 40-column tty), drawing all 30 rows wraps and
+// corrupts the frame. These pure helpers window the fixed grid down to the
+// actual terminal: `split_rows` allocates the visible height between a pinned
+// status line, the log, and a scrolling map viewport; `scroll_axis` slides
+// that viewport to follow the player with a dead-zone. Both are pure and
+// unit-tested; the interactive-only `viewport` composes them. The
+// `--render-frame` golden path never calls any of this, so goldens stay frozen.
+
+/// Dead-zone half-width: the player may move this many cells toward a viewport
+/// edge before the viewport scrolls to follow.
+const CAM_MARGIN: usize = 4;
+/// Smallest map viewport we try to preserve before stealing its rows for the
+/// log; below this the map yields and the log holds a single line.
+const CAM_MAP_FLOOR: usize = 5;
+
+/// Split a visible terminal height into (map_rows, log_rows). One status row
+/// is always reserved when any height exists. At >= ROWS the split is the
+/// native (MAP_H, 4). Smaller: keep the log full (up to 4) while the map stays
+/// above CAM_MAP_FLOOR, then shrink the log, then finally let the map yield.
+fn split_rows(term_h: usize) -> (usize, usize) {
+    if term_h >= ROWS {
+        return (MAP_H, ROWS - MAP_H - 1);
+    }
+    if term_h <= 1 {
+        return (0, 0); // status only (or nothing)
+    }
+    let body = term_h - 1; // minus the pinned status row
+    let log_max = ROWS - MAP_H - 1; // 4
+    if body <= CAM_MAP_FLOOR {
+        let log = if body >= 2 { 1 } else { 0 };
+        (body - log, log)
+    } else {
+        let log = (body - CAM_MAP_FLOOR).min(log_max);
+        (body - log, log)
+    }
+}
+
+/// Slide a 1-D viewport origin to follow `focus`, holding steady while `focus`
+/// stays `margin` cells clear of both edges (the dead-zone), clamped to
+/// [0, map - view]. When the view spans the whole map the origin is 0.
+fn scroll_axis(prev_o: i32, focus: i32, view: usize, map: usize, margin: usize) -> i32 {
+    if view >= map {
+        return 0;
+    }
+    let view = view as i32;
+    let map = map as i32;
+    let m = (margin as i32).min((view - 1) / 2).max(0);
+    let mut o = prev_o;
+    if focus < o + m {
+        o = focus - m;
+    }
+    if focus > o + view - 1 - m {
+        o = focus - (view - 1 - m);
+    }
+    o.clamp(0, map - view)
+}
+
+/// Window the full 80x30 grid down to the actual terminal, following `focus`
+/// (the player cell). Returns the visible cells (row-major, `vw` x `vh`), the
+/// dims, and the new map-viewport origin (feed back as `prev_origin` next
+/// frame for dead-zone continuity). Interactive-only: `--render-frame` renders
+/// the full grid and never calls this, so goldens stay frozen.
+///
+/// - `>= 80x30` play: returns the full grid unchanged (origin 0,0) -- zero
+///   behavior change on a normal console.
+/// - Smaller play: a scrolling map viewport + pinned status + bottom-aligned
+///   (newest) log, per `split_rows`.
+/// - Non-play (Title/End): a plain top-left crop -- no map to scroll.
+fn viewport(
+    full: &[Cell],
+    is_play: bool,
+    term_w: usize,
+    term_h: usize,
+    focus: (i32, i32),
+    prev_origin: (i32, i32),
+) -> (Vec<Cell>, usize, usize, (i32, i32)) {
+    let vw = term_w.clamp(1, COLS);
+    let vh = term_h.clamp(1, ROWS);
+    let blank = Cell { ch: b' ' as u16, fg: 0, bg: 0 };
+
+    // Full-size play view: identity, byte-for-byte today's output.
+    if is_play && vw == COLS && vh == ROWS {
+        return (full.to_vec(), COLS, ROWS, (0, 0));
+    }
+    // Non-play screens (Title/End) are static text: crop the top-left corner.
+    if !is_play {
+        let mut v = vec![blank; vw * vh];
+        for r in 0..vh {
+            for c in 0..vw {
+                v[r * vw + c] = full[r * COLS + c];
+            }
+        }
+        return (v, vw, vh, prev_origin);
+    }
+
+    // Windowed play view: scrolling map + pinned status + newest log lines.
+    let (map_h, log_h) = split_rows(vh);
+    let ox = scroll_axis(prev_origin.0, focus.0, vw, COLS, CAM_MARGIN);
+    let oy = scroll_axis(prev_origin.1, focus.1, map_h, MAP_H, CAM_MARGIN);
+    let mut v = vec![blank; vw * vh];
+
+    // Map viewport: rows [0, map_h) from source rows [oy, oy+map_h).
+    for r in 0..map_h {
+        let sy = oy + r as i32;
+        if sy < 0 || sy >= MAP_H as i32 {
+            continue;
+        }
+        for c in 0..vw {
+            let sx = ox + c as i32;
+            if sx < 0 || sx >= COLS as i32 {
+                continue;
+            }
+            v[r * vw + c] = full[sy as usize * COLS + sx as usize];
+        }
+    }
+    // Pinned status row (source row MAP_H), truncated to width.
+    if map_h < vh {
+        for c in 0..vw {
+            v[map_h * vw + c] = full[MAP_H * COLS + c];
+        }
+    }
+    // Log: the newest `log_h` source rows (the log block is bottom-heavy, so
+    // the newest line lives at ROWS-1). Fewer than 4 messages leaves the very
+    // top log rows blank in source, which only shows on sub-10-row consoles.
+    for k in 0..log_h {
+        let dst = map_h + 1 + k;
+        if dst >= vh {
+            break;
+        }
+        let src_row = ROWS - log_h + k;
+        for c in 0..vw {
+            v[dst * vw + c] = full[src_row * COLS + c];
+        }
+    }
+    (v, vw, vh, (ox, oy))
+}
+
 /// Encode a Cell grid as an ANSI byte stream. `prev = None` is a full
 /// redraw (`\x1b[2J\x1b[H` then every cell); `prev = Some(..)` emits
 /// escapes only for cells that changed (dirty-cell discipline) — this is
@@ -444,7 +616,13 @@ fn ascii_fallback(ch: u16) -> u16 {
 /// byte streams depending on `fx_hit`'s timing, which is exactly the kind
 /// of transient-vs-diff mismatch this encoder's purity is designed to
 /// avoid. Cheaper to skip it than to fight it.
-pub(crate) fn frame_bytes(cells: &[Cell], prev: Option<&[Cell]>, ascii: bool) -> Vec<u8> {
+pub(crate) fn frame_bytes(
+    cells: &[Cell],
+    w: usize,
+    h: usize,
+    prev: Option<&[Cell]>,
+    ascii: bool,
+) -> Vec<u8> {
     let mut out = Vec::new();
     let full = prev.is_none();
     if full {
@@ -455,9 +633,9 @@ pub(crate) fn frame_bytes(cells: &[Cell], prev: Option<&[Cell]>, ascii: bool) ->
     let mut last_fg: Option<u8> = None;
     let mut last_bg: Option<u8> = None;
 
-    for row in 0..ROWS {
-        for col in 0..COLS {
-            let i = row * COLS + col;
+    for row in 0..h {
+        for col in 0..w {
+            let i = row * w + col;
             let cell = cells[i];
             if let Some(p) = prev {
                 if cell == p[i] {
@@ -522,7 +700,7 @@ pub(crate) fn render_frame_main(seed: u64, ascii: bool) {
     let game = Game::new(seed);
     let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
     render_cells(&game, Screen::Play, &mut cells);
-    let bytes = frame_bytes(&cells, None, ascii);
+    let bytes = frame_bytes(&cells, COLS, ROWS, None, ascii);
     raw_write(&bytes);
 }
 
@@ -541,6 +719,46 @@ fn write_ghost(game: &Game, whash: u64, attempt_log: &[u8]) {
 }
 
 // ---------- interactive loop ----------
+
+/// Interactive present state: the last on-screen frame (for the dirty-cell
+/// diff) and the map-viewport origin (for dead-zone scroll continuity across
+/// turns). Backend-local presentation chrome -- never engine state, same
+/// category as the chord/selector armed flags.
+struct Present {
+    prev: Vec<Cell>,
+    dims: (usize, usize),
+    origin: (i32, i32),
+    have_prev: bool,
+}
+
+impl Present {
+    fn new() -> Self {
+        Present { prev: Vec::new(), dims: (0, 0), origin: (0, 0), have_prev: false }
+    }
+
+    /// Render `game`/`screen`, window it to the live terminal size, and write
+    /// the (dirty-diffed) bytes. A terminal-size change since the last frame
+    /// forces a full redraw. Interactive-only -- the `--render-frame` golden
+    /// path calls `frame_bytes` directly at the fixed 80x30.
+    fn show(&mut self, game: &Game, screen: Screen, ascii: bool) {
+        let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
+        render_cells(game, screen, &mut cells);
+        let (tw, th) = term_size().unwrap_or((COLS, ROWS));
+        let is_play = matches!(screen, Screen::Play);
+        let (view, vw, vh, origin) =
+            viewport(&cells, is_play, tw, th, game.camera_focus(), self.origin);
+        self.origin = origin;
+        let prev = if self.have_prev && self.dims == (vw, vh) {
+            Some(self.prev.as_slice())
+        } else {
+            None // first frame, or the terminal was resized -> full redraw
+        };
+        raw_write(&frame_bytes(&view, vw, vh, prev, ascii));
+        self.prev = view;
+        self.dims = (vw, vh);
+        self.have_prev = true;
+    }
+}
 
 /// Run the terminal window loop: blocking read -> input event -> apply to
 /// Game exactly as backend_minifb does (input_log push, apply_input,
@@ -565,16 +783,17 @@ pub(crate) fn run(
     let raw = enter_raw_mode();
     install_panic_hook();
 
-    let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
     let mut confirm_armed = false;
     let mut screen = if loaded { Screen::Play } else { Screen::Title };
     // The CURRENT attempt's input bytes only, cleared on every R/N — see
     // backend_minifb::run's identical field for the full rationale.
     let mut attempt_log: Vec<u8> = Vec::new();
 
-    render_cells(&game, screen, &mut cells);
-    raw_write(&frame_bytes(&cells, None, ascii));
-    let mut prev = cells.clone();
+    // All on-screen output goes through `present`, which windows the fixed
+    // 80x30 grid to the live terminal size (camera follows the player on
+    // smaller consoles) and dirty-diffs against the last frame.
+    let mut present = Present::new();
+    present.show(&game, screen, ascii);
 
     loop {
         match screen {
@@ -664,9 +883,7 @@ pub(crate) fn run(
                             game.apply_input(15);
                         } else {
                             game.log(use_menu_line(&summary));
-                            render_cells(&game, screen, &mut cells);
-                            raw_write(&frame_bytes(&cells, Some(&prev), ascii));
-                            prev.copy_from_slice(&cells);
+                            present.show(&game, screen, ascii);
                             match raw_read_byte() {
                                 Some(b @ b'1'..=b'9') => {
                                     let sel = (b - b'1') as usize;
@@ -778,9 +995,7 @@ pub(crate) fn run(
                 _ => {} // End only acts on retry/new-world/quit; everything else is ignored.
             },
         }
-        render_cells(&game, screen, &mut cells);
-        raw_write(&frame_bytes(&cells, Some(&prev), ascii));
-        prev.copy_from_slice(&cells);
+        present.show(&game, screen, ascii);
     }
 
     restore_terminal();
@@ -834,6 +1049,107 @@ mod tests {
         n
     }
 
+    // ---- camera console: row allocation (split_rows) ----
+
+    #[test]
+    fn split_rows_full_console_is_full_map_and_log() {
+        assert_eq!(split_rows(ROWS), (MAP_H, ROWS - MAP_H - 1)); // (25, 4)
+        assert_eq!(split_rows(ROWS + 5), (MAP_H, ROWS - MAP_H - 1)); // clamps down
+    }
+
+    #[test]
+    fn split_rows_classic_80x25_keeps_full_log_scrolls_map() {
+        // 25 rows = 1 status + 4 log + 20 map viewport
+        assert_eq!(split_rows(25), (20, 4));
+    }
+
+    #[test]
+    fn split_rows_short_console_floors_map_then_shrinks_log() {
+        assert_eq!(split_rows(10), (5, 4)); // map floor 5, log still full
+        assert_eq!(split_rows(8), (5, 2));
+        assert_eq!(split_rows(7), (5, 1)); // one log line kept at the floor
+        assert_eq!(split_rows(6), (4, 1)); // below the floor: map yields, log stays 1
+        assert_eq!(split_rows(2), (1, 0)); // status + a single map row
+        assert_eq!(split_rows(1), (0, 0)); // status only
+    }
+
+    // ---- camera console: dead-zone scroll (scroll_axis) ----
+
+    #[test]
+    fn scroll_axis_no_scroll_when_view_covers_map() {
+        assert_eq!(scroll_axis(0, 40, 80, 80, 4), 0);
+        assert_eq!(scroll_axis(0, 40, 100, 80, 4), 0);
+    }
+
+    #[test]
+    fn scroll_axis_holds_inside_dead_zone() {
+        // view 20, margin 4 -> dead zone [o+4, o+15]; focus 10 at o=5 is inside
+        assert_eq!(scroll_axis(5, 10, 20, 80, 4), 5);
+    }
+
+    #[test]
+    fn scroll_axis_follows_when_focus_pushes_margin() {
+        assert_eq!(scroll_axis(5, 6, 20, 80, 4), 2); // pushed into left margin
+        assert_eq!(scroll_axis(5, 25, 20, 80, 4), 10); // pushed past right margin
+    }
+
+    #[test]
+    fn scroll_axis_clamps_at_map_edges() {
+        assert_eq!(scroll_axis(55, 79, 20, 80, 4), 60); // right edge = map - view
+        assert_eq!(scroll_axis(2, 0, 20, 80, 4), 0); // left edge
+    }
+
+    // ---- camera console: composition (viewport) ----
+
+    /// A full 80x30 buffer whose every cell's glyph encodes its flat index,
+    /// so a windowed view's mapping back to source cells is exactly assertable.
+    fn indexed_full() -> Vec<Cell> {
+        (0..CELLS)
+            .map(|i| Cell { ch: i as u16, fg: 0, bg: 0 })
+            .collect()
+    }
+
+    #[test]
+    fn viewport_identity_at_full_size() {
+        let full = indexed_full();
+        let (v, w, h, origin) = viewport(&full, true, COLS, ROWS, (10, 10), (0, 0));
+        assert_eq!((w, h), (COLS, ROWS));
+        assert_eq!(origin, (0, 0));
+        assert!(v == full); // byte-for-byte the same grid
+    }
+
+    #[test]
+    fn viewport_clamps_oversized_terminal_to_grid() {
+        let full = indexed_full();
+        let (v, w, h, _) = viewport(&full, true, 200, 60, (0, 0), (0, 0));
+        assert_eq!((w, h), (COLS, ROWS));
+        assert_eq!(v.len(), CELLS);
+    }
+
+    #[test]
+    fn viewport_80x25_scrolls_map_pins_status_keeps_log() {
+        let full = indexed_full();
+        // focus near mid-map forces a vertical scroll; split_rows(25)=(20 map, 4 log)
+        let (v, w, h, origin) = viewport(&full, true, 80, 25, (40, 20), (0, 0));
+        assert_eq!((w, h), (80, 25));
+        assert_eq!(origin, (0, 5)); // oy from scroll_axis(0,20,20,25,4)
+        // map row 0, col 0 comes from source row oy=5
+        assert_eq!(v[0].ch, (5 * COLS) as u16);
+        // status row (index 20) is the pinned full status row MAP_H
+        assert_eq!(v[20 * 80].ch, (MAP_H * COLS) as u16);
+        // last visible log row (index 24) is the newest source log row (ROWS-1)
+        assert_eq!(v[24 * 80].ch, ((ROWS - 1) * COLS) as u16);
+    }
+
+    #[test]
+    fn viewport_non_play_crops_top_left() {
+        let full = indexed_full();
+        let (v, w, h, _) = viewport(&full, false, 40, 10, (0, 0), (0, 0));
+        assert_eq!((w, h), (40, 10));
+        assert_eq!(v[0].ch, 0);
+        assert_eq!(v[9 * 40 + 39].ch, (9 * COLS + 39) as u16); // bottom-right of crop
+    }
+
     /// c256 vectors: pure black -> palette 16, pure white -> 231, pure red
     /// -> 196 (all captured by hand from the 6x6x6 cube math), and one
     /// mid-gray landing in the 232..=255 grayscale ramp.
@@ -854,11 +1170,11 @@ mod tests {
         let mut changed = base.clone();
         changed[42] = Cell { ch: b'@' as u16, fg: 0xFFFFFF, bg: 0 };
 
-        let out = frame_bytes(&changed, Some(&base), false);
+        let out = frame_bytes(&changed, COLS, ROWS, Some(&base), false);
         assert_eq!(count_cursor_moves(&out), 1);
         assert!(!contains(&out, b"\x1b[2J"));
 
-        let same = frame_bytes(&base, Some(&base), false);
+        let same = frame_bytes(&base, COLS, ROWS, Some(&base), false);
         assert_eq!(count_cursor_moves(&same), 0);
         assert!(!contains(&same, b"\x1b[2J"));
     }
@@ -870,7 +1186,7 @@ mod tests {
     fn ascii_mode_no_high_bytes() {
         let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
         cells[10] = Cell { ch: 0x2500, fg: 0xFFFFFF, bg: 0 };
-        let out = frame_bytes(&cells, None, true);
+        let out = frame_bytes(&cells, COLS, ROWS, None, true);
         assert!(out.iter().all(|&b| b < 0x80));
     }
 
@@ -890,8 +1206,8 @@ mod tests {
     fn full_frame_deterministic() {
         let mut cells = vec![Cell { ch: b' ' as u16, fg: 0, bg: 0 }; CELLS];
         cells[5] = Cell { ch: b'#' as u16, fg: 0x123456, bg: 0x000000 };
-        let a = frame_bytes(&cells, None, false);
-        let b = frame_bytes(&cells, None, false);
+        let a = frame_bytes(&cells, COLS, ROWS, None, false);
+        let b = frame_bytes(&cells, COLS, ROWS, None, false);
         assert_eq!(a, b);
     }
 }
