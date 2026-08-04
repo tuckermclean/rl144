@@ -31,7 +31,11 @@ use crate::save::{
 };
 use std::sync::OnceLock;
 
-// ---------- termios FFI (Linux x86_64 layout) ----------
+// ---------- termios FFI (Linux musl/glibc layout; arch-independent) ----------
+// tcflag_t is unsigned int (u32) and c_cc is [u8; 32] on both 32- and 64-bit
+// Linux (musl and glibc alike), so this struct is correct for i686/i486-musl
+// as well as x86_64 -- verified when cross-building the terminal backend for
+// the 486 boot target (docs/design/486/).
 
 #[repr(C)]
 #[derive(Clone, Copy)]
