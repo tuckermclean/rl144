@@ -1,0 +1,15 @@
+# Role guard paths for /noodlebot:node (root-relative globs; each key replaces the default).
+# Unit tests live in src/tests/ (node T01 moves them there from the inline modules).
+# Golden dumps (tests/golden/**) and band files (tests/*-band.json) are deliberately NOT
+# test paths: they are regenerated only in nodes the owner has signed (SPEC.md principle 7).
+# CLAUDE.md (= AGENTS.md) is not a spec path: implementers may update it, except its
+# "Building a node" section (SPEC.md "Test layout").
+tests:
+  - "src/tests/**"
+  - "tests/fixtures/**"
+  - "**/*.test.sh"
+specs:
+  - "SPEC.md"
+  - "docs/graph.yaml"
+  - "nodes/**"
+  - ".noodlebot/**"

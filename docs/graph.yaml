@@ -1,0 +1,69 @@
+# The plan the node scheduler builds from. Scope: the engine (SPEC.md "Scope").
+# Game content and design for the contractor cartridge are later work, listed in
+# SPEC.md, not nodes. Open decisions (OD<n>) are in SPEC.md "Open decisions".
+template:
+  headings: [Purpose, Tests, Changes, Gate, Risks]
+
+nodes:
+  - id: T02
+    name: ci-make-check
+    deps: []
+    track: now
+    summary: A GitHub Actions workflow runs the whole `make check` gate on rust 1.75 with g++ and upx, so every node has CI evidence.
+    decisions: [OD2]
+
+  - id: T01
+    name: split-inline-tests
+    deps: [T02]
+    track: now
+    summary: Move the 270 inline unit tests into src/tests/<module>.rs files wired with #[path], so test code and production code have separate paths.
+    decisions: [OD8]
+
+  - id: B01
+    name: term-ioctl-32bit
+    deps: [T02]
+    track: now
+    summary: Fix the TIOCGWINSZ ioctl declaration so the camera console works on 32-bit, and add an i686 build, test and pty check outside make check.
+    decisions: [OD9]
+
+  - id: B02
+    name: input-byte-layout
+    deps: [T01, T02]
+    track: now
+    summary: Freeze the use-by-kind and set-down-by-kind input bytes at 17-36 and give new item kinds new bytes, so adding an item never changes what an old save means.
+    decisions: [OD1]
+
+  - id: E01
+    name: engine-noun-guard
+    deps: [T01, T02]
+    track: now
+    summary: A unit test enforces that engine and backend files hold no game nouns in strings or identifiers, replacing the manual grep.
+    decisions: [OD10]
+
+  - id: H01
+    name: solve-required-vaults
+    deps: [T01, T02]
+    track: now
+    summary: --solve fails any seed on which a cartridge's required vault room was not placed, for every seed it checks.
+    decisions: [OD7]
+
+  - id: D01
+    name: doc-truth-pass
+    deps: [T02]
+    track: now
+    summary: Bring CLAUDE.md, code comments and the camera spec in line with the code and the engine-first plan, and add a short README.
+    decisions: [OD6]
+
+  - id: S01
+    name: ship-pipeline
+    deps: [T02, B01]
+    track: now
+    summary: SHIP.md and `make ship` build, pack, checksum and budget-check the release artifacts, a release workflow publishes them, and the stale v0 binary goes.
+    decisions: [OD3]
+
+  - id: S02
+    name: floppy-image
+    deps: [S01]
+    track: now
+    summary: "`make floppy` writes a 1.44 MB FAT12 image holding the release artifacts, and the release workflow publishes it."
+    decisions: [OD4]

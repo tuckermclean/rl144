@@ -164,3 +164,55 @@ Mechanism details live at their definition sites (doc comments) and in the desig
 - **17**: the mimic (cast batch one) — NPC-vault MAJOR, talk-minigame framework, sword→Hold + set-down-for-regard, disguise, lesson-state. Flip held, widened to +9.9 after the accept-damage 2→7 playtest tuning; difficulty drift largely addressed. **Awaiting human playtest sign-off before cast batch two.**
 
 New status entries: append a dated one-paragraph entry here (what landed, gate numbers, playtest-pending items); keep the mechanism prose in doc comments and design docs, not in this file.
+
+## Building a node
+
+`AGENTS.md` is a symlink to this file. The plan is `SPEC.md` and `docs/graph.yaml`; each node's
+spec is `nodes/<ID>-<name>.md`. Implementers may edit this file (definition of done item 6), but
+not this section: a change here is a spec change on a `spec/<topic>` branch.
+
+- **Build a node** with `/noodlebot:node <ID>`, on the branch `node/<ID>-<name>`. The owner merges.
+- **Authority order:** `SPEC.md`, then `docs/graph.yaml`, then the node spec, then this file. The
+  doctrine above (size budget, core/crust, cartridge, seed/save, conventions) is adopted by
+  `SPEC.md`'s principles and binds every node. Canon precedence for story and design docs applies
+  to game work, which is later work (`SPEC.md` "Later work").
+- **Role agents:** the plugin's `noodlebot:tester`, `noodlebot:implementer` and
+  `noodlebot:reviewer`; this repository has none of its own. For node builds they replace the
+  model-per-role dispatch in "Process discipline".
+- **Spec checker:** `python3 -I <plugin dir>/skills/node/check-regime.py` must print `PROBLEMS 0`.
+- **Prerequisites:** rustc/cargo 1.75 via rustup, `make`, `g++` (minifb compiles a C++ shim), and
+  upx (4.2.4 from the upstream release where the distribution has no package). Invoke `make` with
+  `PATH="$HOME/.cargo/bin:$PATH"` when cargo comes from rustup.
+- **Commands** (all exist today unless marked):
+  - whole gate: `make check` (about 36 minutes): `build`, `test`, `test-term`, `goldens`, `frames`,
+    `xhash`, `solve`, `sim`, `flip`, `size`, `msrv`, each also runnable alone;
+  - quick test gate: `cargo test --quiet --no-default-features --features backend-term` (needs no
+    X11 or C++ compiler; covers 269 of the 270 tests) and `cargo test --quiet` for the minifb one;
+  - lint: warning-free builds, `make build` and `make build-term` (`RUSTFLAGS="-D warnings"`);
+    no rustfmt or clippy gate;
+  - size scoreboard: `make targets`;
+  - added by nodes: `make i686` (B01), `make ship` (S01), `make floppy` (S02).
+- **CI:** none yet. Node T02 adds `.github/workflows/check.yml`, which runs `make check` on every
+  pull request; from then on its run URL for the PR head is the evidence for every criterion that
+  builds. Until T02 merges, run `make check` in a `rust:1.75-slim` container with the
+  prerequisites above and keep the log.
+- **Red target form:** a command that exits non-zero at the RED commit and 0 after GREEN:
+  `cargo test --quiet --no-default-features --features backend-term <prefix>` (the new tests share
+  a name prefix, and the target must list at least one test), or `sh tests/<name>.test.sh`.
+  Prefer tests through existing surfaces: input bytes via `apply_input`, `--replay` hashes,
+  `--dump` and the other headless flags. A Rust test naming an item the node adds fails to
+  compile at RED; that counts as a valid RED here only when every compile error is a
+  "cannot find" or "no field/method" error (E0412, E0425, E0432, E0433, E0560, E0599, E0609)
+  naming an item the node spec's Changes add. Any other compile error is a broken test.
+- **Test and fixture paths** (`.noodlebot/roles.yaml`): `src/tests/**` (unit tests, one file per
+  module, included with `#[cfg(test)] #[path = "tests/<module>.rs"] mod tests;` from T01 on),
+  `tests/fixtures/**`, `**/*.test.sh`. Until T01 merges the tests are inline; T01 is the only node
+  that moves them. Golden dumps (`tests/golden/**`) and band files (`tests/*-band.json`) are not
+  test paths but are frozen: only a node whose graph decision the owner signed may regenerate
+  them (`SPEC.md` principle 7).
+- **Porting rules:** none.
+- **CI evidence to record** in the node PR: the check workflow's run URL for the head; the gate
+  lines (`goldens`, `frames`, `xhash` hash, `solve` worst case, each `sim` policy's win %, the
+  `flip` margin); stripped and packed sizes for both backends with the toolchain (definition of
+  done item 4); for B01, S01 and S02 the run of the job or workflow they add. Anything headlessly
+  unverifiable is listed as "needs interactive playtest", an owner step after merge.
