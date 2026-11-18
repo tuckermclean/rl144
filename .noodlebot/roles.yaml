@@ -1,0 +1,12 @@
+# Role guard paths for rl144 (see SPEC.md and the "Building a node" section of CLAUDE.md/AGENTS.md).
+# The unit tests are inline in src/*.rs today; src/tests/** is where a planned node moves them.
+# The goldens and band files under tests/ are re-baselined after implementation, so only the
+# replay fixture is tester-only. CLAUDE.md/AGENTS.md are not spec paths: CLAUDE.md's done-rule 6
+# has a change keep it current.
+tests:
+  - "src/tests/**"
+  - "tests/fixtures/**"
+specs:
+  - "SPEC.md"
+  - "docs/graph.yaml"
+  - "nodes/**"
