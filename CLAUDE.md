@@ -156,7 +156,7 @@ file, so this section is also the "Building a node" section of `AGENTS.md`.
 - **Authority order.** `SPEC.md` (whose principles are the rules of this file), then `docs/graph.yaml`, then the node
   spec `nodes/<ID>-<name>.md`, then the rest of this file. When two disagree, the earlier one wins; a spec PR fixes the
   later one, or, when the later one is this file, the node that owns it does. On game content the story canon
-  (`docs/story/STORY-COMPILE-v1.md`) outranks all of them, as `SPEC.md` says.
+  (`docs/story/STORY-COMPILE-v1.md`, `docs/story/FLAVOR-DRAFT-v0.md`) outranks all of them, as `SPEC.md` says.
 - **Roles.** The plugin's tester writes the failing tests, the implementer makes them pass, the reviewer judges the
   result. This repository has no role agents of its own.
 - **Spec checkers.** `python3 -I <plugin dir>/skills/node/check-regime.py` and
@@ -171,15 +171,16 @@ file, so this section is also the "Building a node" section of `AGENTS.md`.
 - **Quick gate.** In a session, run locally the node's red targets plus
   `PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.75 cargo test --quiet <test-name filter>` for the tests of what the
   change touches (add `--no-default-features --features backend-term` for the terminal backend's tests). It is the
-  runner `make test` calls, so it prints the same `---- <test> stdout ----` failure lines. Run the whole gate before the
-  PR.
+  runner `make test` calls, so it prints the same `---- <test> stdout ----` failure lines. Run the whole gate before
+  opening the PR.
 - **Known red.** The graph's `gate.known_red` lists the failures the gate already has (none at adoption). A failure that
   is not listed is a failure of the change. A node that fixes a listed failure removes it from the list in its own PR.
 - **Owns.** A node changes only the files it owns (its `owns` globs) and its direct deps' files, and places every file
   it adds in an area or in a node.
 - **Red target.** A command that exits non-zero before the node's change and 0 after, normally
   `PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.75 cargo test --quiet <the node's test name>`, or a headless mode
-  (`--dump`, `--solve`, `--sim`, a new flag) whose output the node's spec names.
+  (`--dump`, `--solve`, `--sim`, a new flag) whose output the node's spec names. Until the inline unit tests move (see
+  "Tests and fixtures"), it is a build or a headless mode.
 - **Tests and fixtures.** The unit tests are inline `#[cfg(test)] mod tests` in `src/main.rs` (most), `src/render.rs`
   and both backends. The role guard lets only the implementer write those files, so until a planned node moves the tests
   to `src/tests/*.rs` a tester cannot add a unit test (see `SPEC.md`'s open decisions). `.noodlebot/roles.yaml` makes
@@ -187,8 +188,7 @@ file, so this section is also the "Building a node" section of `AGENTS.md`.
   The map goldens `tests/golden/seed_*.txt`, the frame goldens `tests/golden/frame_*.bin` and the band files
   `tests/*-band.json` are re-baselined after an implementation, only when the node's spec says so (a map-layout diff
   needs the owner's MAJOR sign-off first). `Cargo.lock`, `rl144-*-upx` and `LICENSE` are out of scope.
-- **Spec files:** `SPEC.md`, `docs/graph.yaml`, `nodes/` (a trailing slash marks a folder); a spec PR changes only
-  these.
+- **Spec files:** `SPEC.md`, `docs/graph.yaml`, `nodes/` (a folder ends in a slash); a spec PR changes only these.
 - **Porting rules.** None. A mechanic ported from the sibling repository named above is ordinary node work.
 - **CI evidence.** In the node's PR, record the gate's output on the PR's head commit (the CI run once it exists, else a
   local run with the toolchain named), the red target's output before and after, and the stripped and packed sizes with

@@ -4,8 +4,8 @@
 rl144 is a top-down roguelike in Rust whose shipped binary plus all its assets fit on a 3.5" floppy: at most
 1,474,560 bytes, UPX-packed, per backend. It is being taken to 1.0 along the plan of record,
 `docs/design/2026-07-26-road-to-1.0.md`: cast, then the ending as an exam, then polish, legibility and ship
-(its finish line, a `SHIP.md` acceptance list gated by `make ship` and a `make floppy` image, is not written
-yet).
+(its finish line, a `SHIP.md` acceptance list gated by `make ship` plus a `make floppy` image, is not
+written yet).
 
 It is not: the post-1.0 work `CLAUDE.md` lists (Dest::World multiverse enrichment, scale/journey "B", ghost
 playback, audio, sprites, wasm/net; `docs/design/monomyth.md` is deferred), none of which is built without a
@@ -43,7 +43,7 @@ The rules in `CLAUDE.md` are the principles every node keeps (owner, answer Q4).
 ## State
 Done (owner, answer Q3): batches 1 to 17 as `CLAUDE.md`'s history records them, including the mimic (cast
 batch one) and its post-merge accept-damage 2→7 tuning; the flexible camera console of the terminal backend
-(commit f33a80e; the "awaiting approval" status line of
+(commit f33a80e; the "awaiting human approval" status line of
 `docs/superpowers/specs/2026-08-04-flexible-camera-console-design.md` is stale).
 
 Open owner step: **the mimic is not signed off.** It still needs the owner's playtest. That is an owner
@@ -53,12 +53,11 @@ listed here and in the plan until the owner signs it off (owner, answer Q3a).
 
 Baseline: the gate passes on rustc 1.75 (no known red; see `docs/graph.yaml`).
 
-Planned, in this order (owner, answer Q2 for items 1 and 3; item 2's place is a default, see the open
-decisions):
-1. **The gate first.** The pinned 1.75 toolchain is the gate (done in the gate command); then a CI workflow
-   that runs the gate on every PR, on a runner with `upx` and rustup's 1.75 (without them `make size` skips
-   the budget check and `make msrv` falls back to the ambient toolchain, and both still pass). The
-   repository has no CI today. This is the first node.
+Planned, in this order (owner, answer Q2 for items 1 and 3; item 2's place is an open decision):
+1. **The gate first.** The gate pins the 1.75 toolchain (done in the gate command); then a CI workflow that
+   runs the gate on every PR, on a runner with `upx` and rustup's 1.75 (without them `make size` skips the
+   budget check and `make msrv` falls back to the ambient toolchain, and both still pass). The repository
+   has no CI today. This is the first node.
 2. Later work found during adoption: moving the inline unit tests to `src/tests/*.rs` (via `#[path]`), so
    that a tester can write unit tests the guard allows (answer Q10); the
    `suspicious_runtime_symbol_definitions` lint (a warning on rustc 1.100 that the Makefile's `-D warnings`
@@ -67,7 +66,7 @@ decisions):
 3. Then the road-to-1.0 order, after the owner's mimic sign-off above: cast batch two (the coat with the
    first mid-run split-spawn, the lost guy, the tired ones, THE STAGE's dressing, the donkey rung-3
    companion, corpse/tombstone persistence; manifest
-   `docs/superpowers/plans/2026-07-27-cast-npc-vault-major.md` §A), then the ending as exam (§9-I), then
+   `docs/superpowers/plans/2026-07-27-cast-npc-vault-major.md` §A), then the ending as an exam (§9-I), then
    polish, legibility and ship. Each is briefed from the story canon when its turn comes.
 
 ## Architecture
