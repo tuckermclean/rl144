@@ -47,8 +47,8 @@ RUSTUP_TOOLCHAIN=1.75 cargo test --quiet <name>`. The format and replay tests: `
 `last_life_bloody_true_after_a_bloody_retry`, `last_life_bloody_false_after_a_merciful_retry`. The hash-coverage
 tests are listed under the Gate. The ghost tests: `ghost_bytes_round_trip`,
 `parse_ghost_rejects_out_of_bounds_label_idx`. Many engine tests (E04's replay criteria) also compare
-`state_hash` values. The `Makefile` target `xhash` replays `tests/fixtures/ref.sav` (a v1 blob that holds a
-byte 5) through both backends' `--replay` and requires the same hash.
+`state_hash` values. The `Makefile` target `xhash` replays `tests/fixtures/ref.sav` (a v5 blob: seed 4242, then six move and
+wait bytes, `1 3 3 3 4 1`, and no restart byte) through both backends' `--replay` and requires the same hash.
 
 ## Changes
 none: imported
@@ -59,10 +59,10 @@ none: imported
 - **S01-AC-3** — A live run saved, parsed and replayed reaches the same `state_hash` as the live game, the parsed seed and log equal the saved ones, and a put-down byte survives the round trip. *Verify:* `save_replay_roundtrip` and `put_down_byte_round_trips_through_save_parse_replay` in `src/main.rs`.
 - **S01-AC-4** — Every older save version (1 to 10) still parses and replays to the same `state_hash` as the same log replayed directly. *Verify:* `v1_save_replays_under_v7_parsing`, `v2_save_replays_under_v7_parsing`, `v3_save_replays_under_v7_parsing`, `v4_save_replays_under_v7_parsing`, `v5_save_replays_under_v7_parsing`, `v6_save_replays_under_v7_parsing`, `v7_save_replays_under_v8_parsing`, `v8_save_replays_under_v9_parsing`, `v9_save_replays_under_v10_parsing` and `v10_save_replays_under_v11_parsing` in `src/main.rs`.
 - **S01-AC-5** — `replay` is deterministic; byte 5 rerolls to a new seed and byte 6 keeps the seed; after a death, byte 6 sets `echo` to the death tile and `last_life_bloody` to whether kills exceeded spares. *Verify:* `replay_with_restart_deterministic`, `retry_byte_replay_deterministic_and_seed_semantics`, `echo_records_death_position_after_retry_byte`, `last_life_bloody_true_after_a_bloody_retry` and `last_life_bloody_false_after_a_merciful_retry` in `src/main.rs`.
-- **S01-AC-6** — `replay` starts from `Game::new_overworld`, the restart byte's new seed is `h64(seed, ["restart"])`, and a retry byte after an attempt that did not die leaves `echo` and `last_life_bloody` at `None`. *Verify:* unpinned.
+- **S01-AC-6** — `replay` starts from `Game::new_overworld`, the restart byte's new seed is `h64(seed, ["restart"])`, and a retry byte after an attempt that did not die leaves `echo` and `last_life_bloody` at `None`. *Verify:* `save_replay_roundtrip` in `src/main.rs` for the start from `Game::new_overworld` (replay from `Game::new` fails it); the restart label and the retry-after-a-live-attempt clause are unpinned (a different label, or `echo` set on such a retry, passes every save, retry, echo and last-life test).
 - **S01-AC-7** — `state_hash` changes when any of these changes: `spared`, `held`, push-block positions, a monster's `regard`, `calm`, `dividend_paid`, `struck_player`, `yielded` or `disguised`, `cache_light_collected`, `echo_done`, `answer_done`, `endure_done`, `mood_sum`, `mood_count`, `speech_attempts`, `objective_dropped`, or a dropped objective's position. *Verify:* `spared_is_hashed`, `held_is_hashed`, `blocks_are_hashed`, `monster_regard_and_calm_are_hashed`, `monster_dividend_paid_is_hashed`, `monster_struck_player_and_yielded_are_hashed`, `monster_disguised_is_hashed`, `cache_light_collected_is_hashed`, `lesson_state_fields_are_hashed`, `state_hash_covers_mood_sum_and_mood_count`, `state_hash_covers_speech_attempts_and_objective_dropped` and `state_hash_covers_dropped_objective_position` in `src/main.rs`.
 - **S01-AC-8** — `state_hash` also covers a monster's `awe` and `disarm_regard_paid`, the world id and provenance, the cached portal destinations, the stashed depths and every other visited world. *Verify:* unpinned (no test changes only these fields; the replay tests cover them only as part of whole runs).
-- **S01-AC-9** — The presentation-only `echo`, `mcguffin_last_line_turn`, `last_life_bloody` and `last_life_greeting_spoken` do not change `state_hash`. *Verify:* `echo_records_death_position_after_retry_byte`, `mcguffin_last_line_turn_is_not_hashed`, `last_life_bloody_is_not_hashed` and `last_life_bloody_true_after_a_bloody_retry` in `src/main.rs`.
+- **S01-AC-9** — The presentation-only `echo`, `mcguffin_last_line_turn`, `last_life_bloody` and `last_life_greeting_spoken` do not change `state_hash`. *Verify:* `echo_records_death_position_after_retry_byte`, `mcguffin_last_line_turn_is_not_hashed`, `last_life_bloody_is_not_hashed` and `last_life_bloody_true_after_a_bloody_retry` in `src/main.rs`. Per field: `echo` is pinned by `last_life_bloody_true_after_a_bloody_retry` (not by `echo_records_death_position_after_retry_byte`, whose two compared games have the same `echo`, so it pins `last_life_bloody`); `mcguffin_last_line_turn` by `mcguffin_last_line_turn_is_not_hashed`; `last_life_bloody` by `last_life_bloody_is_not_hashed` and `echo_records_death_position_after_retry_byte`; `last_life_greeting_spoken` by `last_life_bloody_is_not_hashed`.
 - **S01-AC-10** — The other presentation-only fields, `killer`, `facing`, `fx_hit` and `died_out_of_her_light`, and the render buffer `lit_r` do not change `state_hash`. *Verify:* unpinned.
 - **S01-AC-11** — Both backends replay `tests/fixtures/ref.sav` to the same `state_hash`. *Verify:* `make xhash` (target of `Makefile`, against `tests/fixtures/ref.sav`).
 - **S01-AC-12** — The hash's byte encoding is append-only: the dungeon tiles keep bytes 0-6, the overworld tiles take 7-10, and the world ids keep tags 0 (`Seed`), 1 (`Floor`), 2 (`Overworld`). *Verify:* unpinned (`make xhash` compares the two backends with each other, not with a recorded hash).
@@ -83,8 +83,9 @@ none: imported
 - Monster and item coordinates and monster hp are folded in as `u8` casts, and the RNG states as their `u64`
   words; any reordering or re-encoding changes every hash (and the `xhash` value) without failing a test that
   compares against a stored hash.
-- `replay` is the only caller of `Game::new_overworld` among the verification surfaces; `tests/fixtures/ref.sav`
-  was recorded for that front door. Changing which constructor `replay` uses breaks every save in the wild.
+- `tests/fixtures/ref.sav` and every save in the wild were recorded through `replay`'s use of the front door,
+  `Game::new_overworld` (which `headless::dump_overworld` and both backends also call); changing the constructor
+  `replay` uses breaks them all.
 - The ghost reader is dead code until ghost playback, which `CLAUDE.md` defers to after 1.0.
 - The tests these criteria name are all in `src/main.rs`, which only the implementer may write until the tests
   move to `src/tests/*.rs` (`SPEC.md`'s open decisions).
