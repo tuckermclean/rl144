@@ -7,7 +7,8 @@
 **Owns:** `src/games/mod.rs`, the cartridge selection seam.
 
 ## Purpose
-`src/games/mod.rs` is the one file in the crate that names a game module. It declares
+`src/games/mod.rs` is the one engine-side file that names a game module (`src/main.rs`'s tests also import
+`games::contractor`). It declares
 `pub(crate) mod contractor;` and re-exports `pub(crate) use contractor::GAME;`, so every engine file reaches
 the active cartridge as `crate::games::GAME` and stays free of any one game's nouns. The module is
 `pub(crate)` so that `src/main.rs`'s tests can import the cartridge's named kind indices
@@ -22,9 +23,9 @@ reaches the cartridge through it.
 none: imported
 
 ## Gate
-- **C02-AC-1** — `crate::games::GAME` resolves to the contractor cartridge and the crate builds warning-free under both backends and on rustc 1.75. *Verify:* `make build`, `make build-term` and `make msrv` (targets of `Makefile`).
+- **C02-AC-1** — `crate::games::GAME` resolves to the contractor cartridge; the crate builds warning-free under both backends (`make build`, `make build-term`) and checks on rustc 1.75 (`make msrv`). *Verify:* `make build`, `make build-term` and `make msrv` (targets of `Makefile`).
 - **C02-AC-2** — `src/main.rs`'s tests reach the cartridge's named indices through `games::contractor`. *Verify:* `make test` (target of `Makefile`).
-- **C02-AC-3** — No file outside `src/games/` (other than `src/main.rs`'s tests) names a game module; engine files use only `crate::games::GAME`. *Verify:* unpinned (the `CLAUDE.md` rule, not a tracked check).
+- **C02-AC-3** — No code outside `src/games/` (other than `src/main.rs`'s tests) names a game module (some comments do); engine files use only `crate::games::GAME`. *Verify:* unpinned (the `CLAUDE.md` rule, not a tracked check).
 
 ## Risks
 - Pointing the re-export at another cartridge is a MAJOR event for seeds and saves (`CLAUDE.md`): every
