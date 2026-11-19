@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | E01, E02, E03 | none | L |
+| done | E01, E02, E03 | C01 | L |
 
 **Owns:** `src/game.rs`, the engine core.
 
