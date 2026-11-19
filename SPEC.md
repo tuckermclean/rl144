@@ -84,9 +84,10 @@ encodes the gate (`make check`).
 ## The regime
 The graph (`docs/graph.yaml`) holds the gate (the command, its failure pattern and the failures it already
 had: none), the paths out of scope (`Cargo.lock`, the packed `rl144-*-upx` release artifacts, `LICENSE`),
-and the adoption areas, mapped one per later PR in this order: `engine-core`, `cartridge`, `save-headless`,
-`presentation`, `main-tests`, `project`, `docs`. It lists no node yet: the areas are mapped into imported
-nodes, and the planned work above becomes nodes, in later pull requests.
+and the adoption areas still to map, one per PR in this order: `engine-core`, `cartridge`, `save-headless`,
+`presentation`, `main-tests`, `project`, `docs`. Each mapped area leaves that list and becomes imported nodes
+(`status: imported`) that own its files and describe what the code does today (`engine-core` became E01 to
+E04); the planned work above becomes planned nodes once every area is mapped.
 
 ## Node spec template
 A node spec `nodes/<ID>-<name>.md` has the headings Purpose, Tests, Changes, Gate and Risks, a header row
