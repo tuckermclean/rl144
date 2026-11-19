@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | C01 | none | S |
+| done | C01 | S01, S02 | S |
 
 **Owns:** `src/games/mod.rs`, the cartridge selection seam.
 
