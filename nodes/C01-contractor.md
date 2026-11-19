@@ -12,9 +12,9 @@ E03) built from `const` tables, with no function, no `impl` and no `cfg`. It hol
 reads through `crate::games::GAME`:
 - **Named kind indices** for its own tables: monsters `RAT` 0, `GOBLIN` 1, `OGRE` 2, `TRAINER` 3, `DONKEY` 4,
   `MIMIC` 5; items `POTION` 0, `SWORD` 1, `OBJECTIVE` 2, `LORE_A`-`LORE_C` 3-5, `CHEESE` 6, `COAT` 7,
-  `TOWEL` 8, `LIGHT_CACHE` 9 (as `crate::game::MKind` and `IKind`). No engine code names them (some comments do); `src/main.rs`'s
-  tests import all but `LORE_A`-`LORE_C`, which only `BALANCE.lore_items` uses, and the six only tests use
-  carry `#[allow(dead_code)]`.
+  `TOWEL` 8, `LIGHT_CACHE` 9 (as `crate::game::MKind` and `IKind`). No engine code names them (some
+  comments do); `src/main.rs`'s tests import all but `LORE_A`-`LORE_C`, which only `BALANCE.lore_items`
+  uses, and the six only tests use carry `#[allow(dead_code)]`.
 - **The roster** (`MONSTERS`, six rows): stats, glyph, colour, talk threshold and `receptivity_base`, the
   four-stage, two-variant talk lines, and the per-creature mercy fields: the ogre's retaliation and stand-tall
   awe, the goblin's give-ground awe with its punish and tell, the trainer and donkey as passive `Yield` and
@@ -55,7 +55,7 @@ none: imported
 
 ## Gate
 - **C01-AC-1** — The cartridge fills every `GameDef` field, builds warning-free under both backends (`make build`, `make build-term`) and checks on rustc 1.75 (`make msrv`). *Verify:* `make build`, `make build-term` and `make msrv` (targets of `Makefile`).
-- **C01-AC-2** — The optional vaults are rectangular with a solid `#` border, an open centre and only the listed legend bytes; each guaranteed vault sits on depth 3 or 5 and holds the mimic's glyph (depth 3) or the objective's glyph (depth 5); on each golden seed's dump, depth 3 shows the mimic's glyph and depth 5 the objective's. *Verify:* `vaults_well_formed`, `required_vaults_well_formed` and `golden_dumps_show_the_cast_glyphs` in `src/main.rs`.
+- **C01-AC-2** — The optional vaults are rectangular with a solid `#` border, an open centre and only the listed legend bytes; each guaranteed vault sits on depth 3 or 5 and holds the mimic's glyph (depth 3) or the objective's glyph (depth 5); on each golden seed's dump, the depth-3 section (its title line included) contains the mimic's glyph and the depth-5 section the objective's glyph. *Verify:* `vaults_well_formed`, `required_vaults_well_formed` and `golden_dumps_show_the_cast_glyphs` in `src/main.rs`.
 - **C01-AC-3** — The authored floors and overworld screens are well formed (size, border, one `<` per floor, legend, screen links), and each floor's description, and its name in the test's copy of the arrival line (`You arrive at {}.`), fit the 78-column log row. *Verify:* `authored_floors_well_formed`, `overworld_screens_well_formed` and `authored_floors_flavor_fits_log_row` in `src/main.rs`.
 - **C01-AC-4** — These fit the 78-column log row: tone lines with every room kind; every theme's label and objective name in the tests' own copies of the entry and pickup templates; lore lines with every slot; tier warnings with every adjective; every monster's talk lines, `give_declined`, `polite_decline_hurt` and `disguise_reveal` with every theme's mob names; the four fixed give and use strings; every item's pickup and use line; and each give rule's `line`, unfilled. The McGuffin's preamble and lines fit and are ASCII. *Verify:* `theme_lines_fit_log_row`, `talk_lines_fit_log_row`, `give_use_strings_fit_log_row`, `polite_decline_hurt_fits_log_row`, `disguise_reveal_fits_log_row` and `mcguffin_lines_ascii_and_fit_log_row` in `src/main.rs`.
 - **C01-AC-5** — Every ghost label is ASCII and at most 16 bytes. *Verify:* `ghost_labels_fit_16_bytes` in `src/main.rs`.
@@ -86,5 +86,8 @@ none: imported
   comment holds out the `NAR_050`-`054` lines for this reason).
 - The roster grows with cast batch two (`docs/superpowers/plans/2026-07-27-cast-npc-vault-major.md` §A); a
   new move on a route needs the bot that models it taught in the same change (instrument parity).
+- `golden_dumps_show_the_cast_glyphs` searches each depth's whole dump section, its title line included. On
+  seeds 1 and 1337 depth 3 is "the salt counting-house", whose title contains a `c`, so the depth-3 check
+  passes there even with no mimic on the map; it relies on seeds 2, 3 and 42 to catch a missing mimic.
 - The data tests live in `src/main.rs`, which only the implementer may write until the tests move to
   `src/tests/*.rs` (`SPEC.md`'s open decisions).
