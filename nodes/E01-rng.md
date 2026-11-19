@@ -7,8 +7,7 @@
 **Owns:** `src/rng.rs`, the frozen random and hash primitives.
 
 ## Purpose
-`src/rng.rs` holds the engine's only sources of randomness and its byte hash, all pure functions of
-their inputs:
+`src/rng.rs` holds the engine's only sources of randomness and its byte hash, all pure functions of their inputs:
 - `Rng`, a xorshift64 generator (`Rng::new` forces the seed odd; `next`, `range(lo, hi)` in `[lo, hi)` that
   returns `lo` when `hi <= lo`, and `chance(num, den)`);
 - `h64(seed, tags)`, FNV-1a(64) over the seed's little-endian bytes and each tag after a `0x1f` unit

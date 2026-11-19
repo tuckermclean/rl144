@@ -85,9 +85,9 @@ encodes the gate (`make check`).
 The graph (`docs/graph.yaml`) holds the gate (the command, its failure pattern and the failures it already
 had: none), the paths out of scope (`Cargo.lock`, the packed `rl144-*-upx` release artifacts, `LICENSE`),
 and the adoption areas still to map, one per PR in this order: `cartridge`, `save-headless`, `presentation`,
-`main-tests`, `project`, `docs`. Each mapped area leaves that list and becomes imported nodes
-(`status: imported`) that own its files and describe what the code does today (`engine-core` became E01 to
-E04); the planned work above becomes planned nodes once every area is mapped.
+`main-tests`, `project`, `docs`. Each mapped area leaves that list and becomes imported nodes (`status: imported`)
+that own its files and describe what the code does today (`engine-core` became E01 to E04); the planned work above
+becomes planned nodes once every area is mapped.
 
 ## Node spec template
 A node spec `nodes/<ID>-<name>.md` has the headings Purpose, Tests, Changes, Gate and Risks, a header row
@@ -115,14 +115,17 @@ built; a node that moves a band names the band files it re-baselines and carries
 - **Golden and band re-baselines**: the goldens and band files under `tests/` are re-generated after an
   implementation, so the guard's tester-only paths are narrowed to `src/tests/**` and `tests/fixtures/**`.
   Default: an implementer re-baselines `tests/golden/*` or `tests/*-band.json` only when the node's spec
-  says so (with the MAJOR sign-off for a map-layout change).
-- **Tests the imported criteria name**: the criteria of E01 to E04 name 186 unit tests in `src/main.rs` (the
-  `main-tests` area) and, through `Makefile` targets, the map and frame goldens, the band files and
-  `tests/fixtures/ref.sav`. The node skill freezes the tests an imported node's criteria name: a later node
-  may add cases, and changes or removes one only with the owner's approval. Default: the owner's MAJOR
-  sign-off, or a band re-baseline that a node's spec names, is that approval for the files it names; the test
-  move keeps each named test's name and body, needs the owner's approval as a move of frozen tests, and is
-  followed by a spec PR that points the *Verify:* lines at the new files.
+  says so (with the MAJOR sign-off for a map-layout change). For the files the imported criteria name, the
+  settled entry below narrows this.
+- **Tests the imported criteria name** (settled by the owner on PR 5, 2026-11-19): the criteria of E01 to E04
+  name 186 unit tests in `src/main.rs` (the `main-tests` area) and, through `Makefile` targets, the map and
+  frame goldens, the band files and `tests/fixtures/ref.sav`. The node skill freezes the tests an imported
+  node's criteria name: a later node may add cases, and changes or removes one only with the owner's approval.
+  Decision: the owner's MAJOR sign-off, or a band re-baseline that a node's spec names, is that approval for
+  the files that spec names; any other change to a named golden, such as a frame golden re-baselined for a
+  render change, needs the owner's approval too, so for these files this narrows **Golden and band
+  re-baselines**. The test move keeps each named test's name and body, needs the owner's approval as a move
+  of frozen tests, and is followed by a spec PR that points the *Verify:* lines at the new files.
 - **Gate run time and CI evidence**: the whole gate takes about 35 minutes and there is no CI yet. Default:
   once the CI node lands, CI runs the gate on every PR and a session runs the quick gate locally; until then
   a node's PR records a local run of the gate command on its head commit as its evidence.

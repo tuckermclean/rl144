@@ -28,10 +28,10 @@ being a multiple of four. The one cartridge, `src/games/contractor.rs`, fills it
 ## Tests
 No test exercises this file alone: it has no logic, and the build (`make build`, `make build-term`) checks
 that the cartridge fills it. Inline tests in `src/main.rs` (run with `PATH="$HOME/.cargo/bin:$PATH"
-RUSTUP_TOOLCHAIN=1.75 cargo test --quiet <name>`) check the cartridge's data
-against the authoring rules the contract documents: `vaults_well_formed`, `required_vaults_well_formed`,
-`authored_floors_well_formed`, `overworld_screens_well_formed`, `ghost_labels_fit_16_bytes`,
-`talk_lines_fit_log_row`, `give_use_strings_fit_log_row`, `mcguffin_lines_ascii_and_fit_log_row`.
+RUSTUP_TOOLCHAIN=1.75 cargo test --quiet <name>`) check the cartridge's data against the authoring rules the
+contract documents: `vaults_well_formed`, `required_vaults_well_formed`, `authored_floors_well_formed`,
+`overworld_screens_well_formed`, `ghost_labels_fit_16_bytes`, `talk_lines_fit_log_row`,
+`give_use_strings_fit_log_row`, `mcguffin_lines_ascii_and_fit_log_row`.
 
 ## Changes
 none: imported
@@ -41,7 +41,7 @@ none: imported
 - **E03-AC-2** — The cartridge's optional vaults are rectangular, with a solid `#` border, an open centre and only the legend bytes the test lists; each guaranteed vault is rectangular with a solid `#` border, holds only `#`, `.`, the mimic's and the objective's glyphs, shows its own depth's glyph (the mimic's on depth 3, the objective's on 5) and sits on depth 3 or 5. *Verify:* `vaults_well_formed` and `required_vaults_well_formed` in `src/main.rs`.
 - **E03-AC-3** — Authored floors are rectangular, within 80×25, `#`-bordered, with exactly one `<` and only the listed legend bytes; overworld screens are within 80×25 and `#`-bordered except `=` links on edge columns, screen 1 linking east only, screen 2 both ways and screen 3 west only. *Verify:* `authored_floors_well_formed` and `overworld_screens_well_formed` in `src/main.rs`.
 - **E03-AC-4** — Every ghost label is ASCII and at most 16 bytes (the RLG1 `label_idx` contract). *Verify:* `ghost_labels_fit_16_bytes` in `src/main.rs`.
-- **E03-AC-5** — Each monster's talk lines and `give_declined`, filled with every theme's mob names, the four fixed give/use strings, each item's `pickup_line` and `use_line`, each give rule's `line`, and the McGuffin's preamble and lines fit the 78-column log row, and the McGuffin's lines are ASCII; a give rule's `line_becalmed` is not checked. *Verify:* `talk_lines_fit_log_row`, `give_use_strings_fit_log_row` and `mcguffin_lines_ascii_and_fit_log_row` in `src/main.rs`.
+- **E03-AC-5** — Each monster's talk lines, filled with its name in every theme, `give_declined`, filled with every theme's mob names, the four fixed give/use strings, each item's `pickup_line` and `use_line`, each give rule's `line`, and the McGuffin's preamble and lines fit the 78-column log row, and the McGuffin's lines are ASCII; a give rule's `line_becalmed` is not checked. *Verify:* `talk_lines_fit_log_row`, `give_use_strings_fit_log_row` and `mcguffin_lines_ascii_and_fit_log_row` in `src/main.rs`.
 - **E03-AC-6** — The file holds no logic (no `fn`, no `impl`), no `cfg` block and no platform call. *Verify:* unpinned (the file's own header and `CLAUDE.md`, not a tracked check).
 - **E03-AC-7** — `ghost_labels`' length is a multiple of four. *Verify:* unpinned (documented on the field, not checked).
 
