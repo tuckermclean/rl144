@@ -9,7 +9,6 @@ out_of_scope:
   - {glob: "LICENSE", reason: "legal text, changed by the owner only"}
 adoption:
   areas:
-    - {name: presentation, globs: ["src/render.rs", "src/backend_minifb.rs", "src/backend_term.rs"]}
     - {name: main-tests, globs: ["src/main.rs", "tests/"]}
     - {name: project, globs: ["Cargo.toml", "Makefile", ".gitignore", "CLAUDE.md"]}
     - {name: docs, globs: ["docs/design/", "docs/story/", "docs/superpowers/"]}
@@ -22,3 +21,6 @@ nodes:
   - {id: C02, name: games-seam, track: done, status: imported, deps: [C01], owns: ["src/games/mod.rs"]}
   - {id: S01, name: save, track: done, status: imported, deps: [E01, E04, C02], owns: ["src/save.rs"]}
   - {id: S02, name: headless, track: done, status: imported, deps: [E01, E02, E03, E04, C02], owns: ["src/headless.rs"]}
+  - {id: P01, name: render, track: done, status: imported, deps: [E02, E04, C02], owns: ["src/render.rs"]}
+  - {id: P02, name: backend-minifb, track: done, status: imported, deps: [E01, E02, E04, C02, S01, S02, P01], owns: ["src/backend_minifb.rs"]}
+  - {id: P03, name: backend-term, track: done, status: imported, deps: [E01, E02, E04, C02, S01, S02, P01], owns: ["src/backend_term.rs"]}

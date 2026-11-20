@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | E01, E03 | E04, S02 | S |
+| done | E01, E03 | E04, P01, P02, P03, S02 | S |
 
 **Owns:** `src/content.rs`, the generic content helpers and the engine's UI-chrome palette.
 
