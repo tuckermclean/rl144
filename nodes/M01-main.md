@@ -19,8 +19,8 @@ one headless mode or one interactive session.
 - **The seed.** `--seed S` wins; `seed_from_arg` parses a numeric `S` as it is and hashes any other string with
   `h64(0, &["seedstr", S])`, so `--seed swordfish` is stable. Without `--seed`, `--daily` gives
   `h64(day, &["daily"])`, `day` being the days since the Unix epoch; otherwise the seed is the launch time in
-  nanoseconds (`0xDEAD_BEEF` if the clock reads before the epoch). That clock read is the program's only
-  entropy.
+  nanoseconds (`0xDEAD_BEEF` if the clock reads before the epoch). These clock reads (the
+  seed, and `day`, read on every run) are the program's only entropy.
 - **Headless modes**, checked in this order, each returning when done: `--solve [N]` (`solve_main`, N
   default 10000, `--report` for stats only); `--sim [N]` (`sim_main`, N default 1000, `--report`, `--policy`
   `pacifist`, `tactical` or `tactical-pacifist`, any other value or none meaning greedy); `--sim-flip [N]`
@@ -37,21 +37,22 @@ one headless mode or one interactive session.
 - **The unit tests.** The inline `#[cfg(test)] mod tests` (about 5,700 of the file's 5,961 lines, 245
   `#[test]`s) holds most of the crate's unit tests: worldgen, combat, mercy, the cartridge, saves, headless
   tooling and rendering. Its `#[cfg(test)]` imports reach into every core module. `golden_dumps` compiles the
-  five map goldens in with `include_str!`. Only `string_seeds` tests this file's own code; the others are the
-  tests the other imported nodes' criteria name.
+  five map goldens in with `include_str!`. Only `string_seeds` tests this file's own code; the others, all but
+  the four named in Risks, are tests the other imported nodes' criteria name.
 
 ## Tests
 `string_seeds` (for `seed_from_arg`), run with `PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.75 cargo test
 --quiet string_seeds`. The `Makefile` gates run the release binaries through this dispatch: `goldens`
 (`--dump --seed N`), `frames` (the terminal build's `--render-frame --seed N [--ascii]`), `xhash` (`--replay`
-in both builds), `solve` (`--solve 10000`), `sim` (`--sim 5000` with each `--policy`) and `flip`
+in both builds), `solve` (`--solve 10000`), `sim` (`--sim 5000` bare, for greedy, and with `--policy pacifist`, `tactical`
+and `tactical-pacifist`) and `flip`
 (`--sim-flip 5000`). `make test` and `make test-term` run the whole test module under each feature set.
 
 ## Changes
 none: imported
 
 ## Gate
-- **M01-AC-1** — `seed_from_arg` returns a numeric string's value unchanged (`"123"` gives 123), and hashes a non-numeric string to the same value every time and to different values for different strings (`"swordfish"` and `"herring"`). *Verify:* `string_seeds` in `src/main.rs`.
+- **M01-AC-1** — `seed_from_arg` returns a numeric string's value unchanged (`"123"` gives 123), and hashes a non-numeric string to the same value every time (`"swordfish"` twice), and `"swordfish"` and `"herring"` to different values. *Verify:* `string_seeds` in `src/main.rs`.
 - **M01-AC-2** — `--dump --seed N` prints the dump of seed N. *Verify:* `make goldens` (target of `Makefile`, against `tests/golden/seed_*.txt`).
 - **M01-AC-3** — In the terminal build, `--render-frame --seed N` renders seed N's first frame and `--ascii` selects its 7-bit variant. *Verify:* `make frames` (target of `Makefile`, against `tests/golden/frame_seed_*.bin`).
 - **M01-AC-4** — `--replay <file>` prints a line with a `"hash":"<hex>"` field, and both builds print the same hash for `tests/fixtures/ref.sav`. *Verify:* `make xhash` (target of `Makefile`).

@@ -36,11 +36,12 @@ none: imported
 - **M03-AC-2** — Over seeds 0 to 4,999, the greedy bot's `win_pct` and `deaths_dark` lie inside their ranges in `tests/sim-band.json`, and the pacifist bot's `win_pct` inside its range in `tests/pacifist-band.json`. *Verify:* `make sim` (target of `Makefile`).
 - **M03-AC-3** — Over seeds 0 to 4,999, the tactical bot's `win_pct` and `deaths_dark` lie inside their ranges in `tests/tactical-band.json`, and the tactical diplomat's `win_pct` inside its range in `tests/tactical-pacifist-band.json`. *Verify:* `make sim` (target of `Makefile`).
 - **M03-AC-4** — Over seeds 0 to 4,999, the tactical diplomat's win percentage exceeds the tactical bot's by at least `flip_margin` from `tests/tactical-pacifist-band.json`. *Verify:* `make flip` (target of `Makefile`).
-- **M03-AC-5** — The files hold the keys and ranges listed in Purpose, and `flip_n` equals the `Makefile`'s `SIM_SEEDS` (5000). *Verify:* unpinned (a missing or misspelt key makes its check skip silently, and `flip_n` only prints a note on a mismatch).
+- **M03-AC-5** — The files hold the keys and ranges listed in Purpose, and `flip_n` equals the `Makefile`'s `SIM_SEEDS` (5000). *Verify:* unpinned (a missing or misspelt `[lo, hi]` key skips its check, a missing `flip_margin` falls back to 3, and `flip_n` only prints a note on a mismatch).
 
 ## Risks
 - A band check runs only when its key is found: `band_range` returns `None` for a missing or renamed key and
-  the gate then skips that check and passes (S02's Risks). A missing per-policy band file only warns; a missing
+  the gate then skips that check and passes (S02's Risks); a missing `flip_margin` falls back to 3
+  (`band_scalar(...).unwrap_or(3)` in `sim_flip_main`), and a missing `flip_n` only drops the note. A missing per-policy band file only warns; a missing
   `tests/tactical-pacifist-band.json` fails `make flip`.
 - Widening a range always passes the gate, so these files can only catch a narrowing or a measurement drift;
   `CLAUDE.md` makes every re-baseline an owner sign-off, the greedy and pacifist bands must not move when other
@@ -49,6 +50,7 @@ none: imported
 - The paths are relative to the working directory, so the gates must run from the repository root.
 - The `comment` strings are the measurement history and grow with each re-baseline; they are prose for people,
   never read by the code, and go stale: the solver band's comment quotes the 2026-07-18 stats (min 636, p50
-  954, p90 1110, p99 1272, max 1503), while `--solve 10000 --report` today gives 537, 885, 1044, 1215 and 1476.
+  954, p90 1110, p99 1272, max 1503), while a run of `--solve 10000 --report` on 2026-11-19 (rustc 1.75, release build) gave
+  537, 885, 1044, 1215 and 1476.
 - `make sim` checks each policy against the band file of the policy it ran, so it cannot tell a policy mix-up
   on the command line (M01's Risks).
