@@ -9,7 +9,6 @@ out_of_scope:
   - {glob: "LICENSE", reason: "legal text, changed by the owner only"}
 adoption:
   areas:
-    - {name: project, globs: ["Cargo.toml", "Makefile", ".gitignore", "CLAUDE.md"]}
     - {name: docs, globs: ["docs/design/", "docs/story/", "docs/superpowers/"]}
 nodes:
   - {id: E01, name: rng, track: done, status: imported, deps: [], owns: ["src/rng.rs"]}
@@ -27,3 +26,6 @@ nodes:
   - {id: M02, name: goldens, track: done, status: imported, deps: [S02, P03], owns: ["tests/golden/"]}
   - {id: M03, name: bands, track: done, status: imported, deps: [S02], owns: ["tests/*-band.json"]}
   - {id: M04, name: replay-fixture, track: done, status: imported, deps: [S01], owns: ["tests/fixtures/"]}
+  - {id: B01, name: build-config, track: done, status: imported, deps: [], owns: ["Cargo.toml", ".gitignore"]}
+  - {id: B02, name: makefile, track: done, status: imported, deps: [B01, M01, M02, M03, M04], owns: ["Makefile"]}
+  - {id: B03, name: project-guide, track: done, status: imported, deps: [B02], owns: ["CLAUDE.md"]}
