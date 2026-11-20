@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | S02, P03 | M01 | S |
+| done | S02, P03 | B02, M01 | S |
 
 **Owns:** `tests/golden/`, the frozen map dumps and terminal frames.
 

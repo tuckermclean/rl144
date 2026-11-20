@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | S02 | none | S |
+| done | S02 | B02 | S |
 
 **Owns:** `tests/*-band.json`, the solver and bot-simulator band files the gate checks measurements against.
 
