@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | none | E02, E04, S01, S02 | S |
+| done | none | E02, E04, P02, P03, S01, S02 | S |
 
 **Owns:** `src/rng.rs`, the frozen random and hash primitives.
 
