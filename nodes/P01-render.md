@@ -56,7 +56,7 @@ The inline `#[cfg(test)] mod tests` of `src/render.rs`: `wall_mask_representativ
 none: imported
 
 ## Gate
-- **P01-AC-1** — For a fresh `Game::new` of seeds 1 and 42, `render_cells` with `Screen::Play` produces the frozen frames: the seen map's glyphs and colours (floor, wall autotiles, the player `@`), the status row's text and bars, and the log lines at row `MAP_H + 1` from column 1 with their `PAL_LOG_FADE` shades. *Verify:* `make frames` (target of `Makefile`, against `tests/golden/frame_seed_1.bin`, `tests/golden/frame_seed_42.bin`, `tests/golden/frame_seed_1_ascii.bin`).
+- **P01-AC-1** — For a fresh `Game::new` of seeds 1 and 42, `render_cells` with `Screen::Play` produces the frozen frames: the seen map's glyphs and the 256-colour index each colour maps to (floor, wall autotiles, the player `@`), the status row's text and bars, and the log lines at row `MAP_H + 1` from column 1 with their `PAL_LOG_FADE` shades. The frames pin those indices, not the 24-bit values. *Verify:* `make frames` (target of `Makefile`, against `tests/golden/frame_seed_1.bin`, `tests/golden/frame_seed_42.bin`, `tests/golden/frame_seed_1_ascii.bin`).
 - **P01-AC-2** — `wall_mask` sets N=1, S=2, W=4, E=8 and counts a neighbour only when it is seen and a wall; `WALL_GLYPHS` maps the isolated, N|S, W|E, N|E, N|S|W and all-four masks to U+2500, U+2502, U+2500, U+2514, U+2524 and U+253C. *Verify:* `wall_mask_representative` in `src/render.rs`.
 - **P01-AC-3** — A visible tile is graded by the light at its own tile (`light_pct(g.lit_r[i])`): a tile lit only by the carried McGuffin's shine past a dying torch renders at her brightness, not the torch's. *Verify:* `mcguffin_shine_renders_at_her_brightness_not_the_dying_torch` in `src/render.rs`.
 - **P01-AC-4** — A becalmed monster renders in `PAL_CALM_TINT` exactly, and a hostile one in its kind's own colour. *Verify:* `becalmed_monster_uses_calm_tint` in `src/render.rs`.
@@ -64,15 +64,18 @@ none: imported
 - **P01-AC-6** — `scale` multiplies each RGB channel by `pct` / 100, truncating. *Verify:* `scale_color_channels` in `src/main.rs`.
 - **P01-AC-7** — `scene()` returns equal vectors on two calls with no change to the game between them. *Verify:* `scene_is_deterministic` in `src/render.rs`.
 - **P01-AC-8** — `scene()` includes the echo entity only when `g.echo` is set, its depth is the current depth and its tile is seen. *Verify:* `echo_appears_only_under_three_conditions` in `src/render.rs`.
-- **P01-AC-9** — `Game::facing` starts at `S` and after a move faces the move's direction, through `Facing::from_delta`. *Verify:* `facing_updates_on_move` in `src/render.rs`.
+- **P01-AC-9** — `Game::facing` starts at `S`, and after a move north from seed 1's spawn faces `N` through `Facing::from_delta`. *Verify:* `facing_updates_on_move` in `src/render.rs`.
 - **P01-AC-10** — A seen tile that is not visible is drawn at a quarter brightness (`dim`). *Verify:* unpinned (a fresh game's frames have no such tile).
 - **P01-AC-11** — The Play screen's echo is a dim `@` at 35%, drawn under items, blocks, monsters and the player; blocks are drawn over items; the HP bar and the resource bar switch to `PAL_ALERT` at a quarter of max HP and at a torch radius of 4 or less; `scene()` lists every visible monster and item with the facing and `anim_phase` described above. *Verify:* unpinned.
 - **P01-AC-12** — The Title screen shows the name, the depth-1 theme label and lore line, the seed, the key legend and "press any key"; the End screen shows the win or the death cause and the run's numbers; the key-legend lines fit 78 columns. *Verify:* unpinned (`title_legend_fits_78_cols` measures its own copies of the lines, not what `render_title` draws).
-- **P01-AC-13** — The file has no platform call, no `cfg` outside its test module, and no game noun as an identifier or a string literal. *Verify:* unpinned (the `CLAUDE.md` grep rule, not a tracked check).
+- **P01-AC-13** — The file has no platform call, no `cfg` outside its test module, and no game noun as an identifier; its only game-specific string literals are the Title and End screens' lines named in Risks (one death-cause line speaks of "her light"). *Verify:* unpinned (the `CLAUDE.md` grep rule, not a tracked check).
+- **P01-AC-14** — After a move south, west or east, `Game::facing` faces `S`, `W` or `E`; `Facing::from_delta` reads `dx` before `dy` and `(0, 0)` as `S`. *Verify:* unpinned (`facing_updates_on_move` moves only north from seed 1's spawn; a `from_delta` that gives `W` for `dx > 0` or `N` for `dy > 0` passes it).
 
 ## Risks
 - `src/render.rs` and `src/game.rs` import each other: `render` reads `Game`, and `game` stores
-  `render::Facing` in `Game::facing`. This node depends on E04; E04's spec does not list this node.
+  `render::Facing` in `Game::facing`. This node lists E04 in its Deps (E04's Unlocks lists this node, and
+  E04's Risks names the `render::Facing` import), but E04's Deps does not list this node: adding it would
+  make a cycle in the graph, which `check-regime.py` rejects.
 - The frame goldens freeze only a fresh `Game::new` on the Play screen at full torch, where every visible
   tile's `light_pct` is 100. The per-tile light grading went wrong once without any golden failing (the
   batch 14 render fix and its regression test); the Title and End screens and every mid-run state are

@@ -8,8 +8,14 @@
 
 ## Purpose
 `src/backend_minifb.rs` is the pixel frontend, built with the default `backend-minifb` feature (the only
-user of the `minifb` and `font8x8` crates). It consumes the core surface only: `render::render_cells`,
-`Game::apply_input` with the input-byte vocabulary, and the pure builders of `src/save.rs`.
+user of the `minifb` and `font8x8` crates). What it calls of the core: `render::render_cells` (with `Cell`,
+`CELLS` and `Screen`); `Game::apply_input` with the input-byte vocabulary; `Game::new_overworld`,
+`Game::held_summary` and `Game::log`, and the `Game` fields `seed`, `dead`, `won`, `depth`, `px`, `py`,
+`turns`, `killer`, `fx_hit` and `echo` (written on a retry); `game::COLS` and `ROWS`; the save builders and
+constants of `src/save.rs` (`save_bytes`, `save_filename`, `ghost_bytes`, `ghost_filename`, `INPUT_RETRY`,
+`INPUT_RESTART`, `GHOST_DIED_COMBAT`, `GHOST_DIED_DARK`); `headless::world_hash`; `rng::h64`;
+`content::ghost_label_idx`; and `GAME.items[..].glyph` through `crate::games::GAME`. These are why its
+deps include E01, E02, E04, C02, S01 and S02 as well as P01.
 - **Rasterizing.** Each cell is an 8×12 rect of a 640×360 buffer (`WIDTH`, `HEIGHT`). `glyph_bits` resolves a
   glyph by direct index into font8x8's legacy tables: ASCII from `BASIC_LEGACY`, U+2500 to U+257F from
   `BOX_LEGACY`, U+2580 to U+259F from `BLOCK_LEGACY`, any other code point a blank cell. `draw_glyph` fills
@@ -32,8 +38,9 @@ user of the `minifb` and `font8x8` crates). It consumes the core surface only: `
   `INPUT_RESTART` (5) and restarts on `h64(seed, ["restart"])`; `Q` writes the ghost and quits. The window
   title shows the seed (and the daily number for a daily run).
 - **Files.** `write_ghost` writes `ghost_bytes` of a dead attempt to `ghost_filename`, ignoring a failed write.
-  On quit (Escape, closing the window or `Q`), a live run with input is autosaved to its save file, or to a
-  `rl144-<hash>.auto.sav` sibling when the save file exists.
+  On quit (Escape or closing the window), a live run with input is autosaved to its save file, or to a
+  `rl144-<hash>.auto.sav` sibling when the save file exists. `Q` acts only on the End screen, where no run
+  is live, so it never autosaves.
 
 ## Tests
 The inline `#[cfg(test)] mod tests` of `src/backend_minifb.rs` holds `flash_channel_math`, run with
@@ -51,10 +58,15 @@ none: imported
 - **P02-AC-3** — The keys push the input bytes described in Purpose (moves, wait, the talk and give chords with re-arm and silent cancel, use with the digit selector, put-down), each to `input_log`, `attempt_log` and `Game::apply_input`; F1, F5 and the Title dismissal push none. *Verify:* unpinned (needs interactive playtest).
 - **P02-AC-4** — The End screen's `R` pushes byte 6 and restarts on the same seed with `echo` at the death tile, `N` pushes byte 5 and restarts on `h64(seed, ["restart"])`, both through `Game::new_overworld`; a dead attempt's ghost is written before `R`, `N` or `Q`, never after a win. *Verify:* unpinned (needs interactive playtest).
 - **P02-AC-5** — Glyphs come from font8x8's legacy tables by direct index (other code points draw blank); the `fx_hit` cell is squashed and flashed on the Play screen only; End follows a killing-blow flash by one frame. *Verify:* unpinned (needs interactive playtest).
-- **P02-AC-6** — F5 asks for a second press before it overwrites a save; quitting a live run with input autosaves, to the `.auto.sav` sibling when the save file exists. *Verify:* unpinned (needs interactive playtest).
+- **P02-AC-6** — F5 asks for a second press before it overwrites a save; quitting a live run with input (Escape or closing the window) autosaves, to the `.auto.sav` sibling when the save file exists. *Verify:* unpinned (needs interactive playtest).
 - **P02-AC-7** — The file names no game noun as an identifier or a string literal: the use menu names items by glyph. *Verify:* unpinned (the `CLAUDE.md` grep rule, not a tracked check).
 
 ## Risks
+- The backend calls more of the core than the four-item surface of `CLAUDE.md`'s core/crust section
+  (`render_cells`, `scene`, `apply_input`, the headless entry points): `world_hash`, `h64`,
+  `ghost_label_idx`, `held_summary`, `log`, `new_overworld`, the `Game` fields and `GAME.items` listed in
+  Purpose. `CLAUDE.md` calls a backend's need for a new core API a design decision to justify; these
+  calls predate the regime and no spec records that justification.
 - Nothing but a build and one colour test checks this file; every key, chord, screen transition and file
   write is "needs interactive playtest" in `CLAUDE.md`'s terms. A change here can only be compile-checked
   headlessly.
@@ -63,6 +75,9 @@ none: imported
   reconstruction bytes, and the bytes the same physical keys push must stay the same in both backends.
   `CLAUDE.md` asks that the title's key legend (`src/render.rs`) land in the same commit as any key it
   documents.
+- The title's legend says "Quit: q", but this backend has no `q` on the Play screen: Escape quits there,
+  and `Q` works only on the End screen. The terminal backend does quit on `q` during play. Under the
+  `CLAUDE.md` legend rule, the legend and this backend's keys disagree.
 - `Cargo.toml` builds `minifb` with `default-features = false, features = ["x11"]` for every target;
   `CLAUDE.md` notes that macOS and Windows need its default features, as a target-specific flag.
 - The window title holds a non-ASCII em dash; it goes to the window system, not to the cell grid.

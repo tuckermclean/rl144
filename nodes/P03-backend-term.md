@@ -8,7 +8,9 @@
 
 ## Purpose
 `src/backend_term.rs` is the terminal frontend, built with `--no-default-features --features backend-term`.
-It consumes the same core surface as the window backend and adds no crate.
+It adds no crate. It calls the same parts of the core as the window backend (P02's Purpose lists them)
+except the `fx_hit` field, plus `Game::camera_focus` (the camera console), `Game::new` (for
+`--render-frame`) and `game::MAP_H`.
 - **Terminal I/O.** Hand-written `extern "C"` declarations of `tcgetattr`, `tcsetattr`, `read`, `write` and
   `ioctl` (libc, linked through std), with a `Termios` layout for 32- and 64-bit Linux. `enter_raw_mode`
   turns off `ICANON`, `ECHO` and `ISIG` (Ctrl-C arrives as byte 3 and quits), sets blocking one-byte reads,
@@ -29,7 +31,8 @@ It consumes the same core surface as the window backend and adds no crate.
   `scroll_axis` slides the map viewport after the player with a dead zone of `CAM_MARGIN` (4) cells, clamped
   to the map; `viewport` composes them, returns the full grid unchanged at 80×30 or more, and crops Title and
   End to the top-left corner. `Present` keeps the last frame and the viewport origin and redraws in full when
-  the terminal's size changes.
+  the view's size (the terminal size clamped to 80×30) changes; a resize between two sizes both at least
+  80×30 leaves the view at 80×30 and redraws only the changed cells.
 - **Input** (`run`). Bytes are read one at a time: `wasd`, `hjkl` and the arrow keys move (0-3), `.` waits
   (4), `t` then a direction talks (7-10) and `g` then a direction gives (11-14) (a repeated `t` or `g`
   re-arms; any other byte cancels and logs "Talk cancelled." or "Give cancelled."), `u` pushes 15 with empty
@@ -37,7 +40,10 @@ It consumes the same core surface as the window backend and adds no crate.
   pushes 16, F1 (`ESC O P` or `ESC [ 1 1 ~`) logs the seed and world hash, F5 (`ESC [ 1 5 ~`) saves with the
   same overwrite confirmation as the window backend, and `q`, a lone Escape, Ctrl-C or the end of input quit.
   The Title, the End screen's `r`/`n`/`q`, the ghost writes and the quit autosave work as in the window
-  backend; with no window title, a restart logs the seed and world hash instead.
+  backend, with these differences: on the End screen a lone Escape, Ctrl-C or the end of input quit like
+  `q` and write the ghost of a dead attempt, where the window backend's Escape quits without one; the
+  End screen shows on the same read as the death or win, with no one-frame `pending_end` delay (there is
+  no flash); with no window title, a restart logs the seed and world hash instead.
 
 ## Tests
 The inline `#[cfg(test)] mod tests` of `src/backend_term.rs`: `split_rows_full_console_is_full_map_and_log`,
@@ -59,21 +65,22 @@ none: imported
 
 ## Gate
 - **P03-AC-1** — `--render-frame --seed N` writes the full-redraw encoding of the Play screen of `Game::new(N)` for seeds 1 and 42, and `--ascii` its 7-bit form for seed 1: the clear-and-home prefix, cursor moves only where the cursor is not already at the next cell, and colour escapes only when the colour changes. *Verify:* `make frames` (target of `Makefile`, against `tests/golden/frame_seed_1.bin`, `tests/golden/frame_seed_42.bin`, `tests/golden/frame_seed_1_ascii.bin`).
-- **P03-AC-2** — Against a previous frame, `frame_bytes` writes nothing for an unchanged grid (no cursor move, no clear) and one cursor move for a grid with one changed cell. *Verify:* `dirty_diff_single_cell` in `src/backend_term.rs`.
+- **P03-AC-2** — Against a previous frame, `frame_bytes` writes no cursor move and no clear for an unchanged grid, and one cursor move and no clear for a grid with one changed cell. *Verify:* `dirty_diff_single_cell` in `src/backend_term.rs`.
 - **P03-AC-3** — `frame_bytes` returns the same bytes for the same input. *Verify:* `full_frame_deterministic` in `src/backend_term.rs`.
 - **P03-AC-4** — With `ascii`, every byte written is below 0x80, and `ascii_fallback` maps U+2588 to `#`, U+2591 to `-`, box-drawing glyphs to `#` and any other code point to `?`. *Verify:* `ascii_mode_no_high_bytes` and `ascii_glyph_fallback_mapping` in `src/backend_term.rs`.
 - **P03-AC-5** — `c256` maps black to 16, white to 231, pure red to 196 and 0x808080 to the grey ramp's 244. *Verify:* `c256_vectors` in `src/backend_term.rs`.
 - **P03-AC-6** — `split_rows` gives (25, 4) at 30 rows or more, (20, 4) at 25, (5, 4) at 10, (5, 2) at 8, (5, 1) at 7, (4, 1) at 6, (1, 0) at 2 and (0, 0) at 1. *Verify:* `split_rows_full_console_is_full_map_and_log`, `split_rows_classic_80x25_keeps_full_log_scrolls_map` and `split_rows_short_console_floors_map_then_shrinks_log` in `src/backend_term.rs`.
-- **P03-AC-7** — `scroll_axis` returns 0 when the view covers the map, holds the origin while the focus is inside the dead zone, follows the focus when it is pushed into the left or right margin, and clamps the origin to `[0, map - view]`. *Verify:* `scroll_axis_no_scroll_when_view_covers_map`, `scroll_axis_holds_inside_dead_zone`, `scroll_axis_follows_when_focus_pushes_margin` and `scroll_axis_clamps_at_map_edges` in `src/backend_term.rs` (at the tested positions; a dead zone one cell wider or narrower passes them).
+- **P03-AC-7** — `scroll_axis` returns 0 when the view covers the map, holds the origin while the focus is inside the dead zone, follows the focus when it is pushed into the left or right margin, and clamps the origin to `[0, map - view]`. *Verify:* `scroll_axis_no_scroll_when_view_covers_map`, `scroll_axis_holds_inside_dead_zone`, `scroll_axis_follows_when_focus_pushes_margin` and `scroll_axis_clamps_at_map_edges` in `src/backend_term.rs`, at the tested positions: the tests pass the margin in as 4, so a margin changed by one inside `scroll_axis` fails them, but shifting only one edge's trigger by one cell passes them; `CAM_MARGIN` reaches `scroll_axis` only through `viewport_80x25_scrolls_map_pins_status_keeps_log`, which catches 4→3 but not 4→5 (the viewport's y-origin clamps at 5), so the value 4 of `CAM_MARGIN` is unpinned.
 - **P03-AC-8** — `viewport` returns the full grid with origin (0, 0) at 80×30, clamps a larger terminal to 80×30, at 80×25 shows map rows from the scrolled origin, the status row `MAP_H` at row 20 and the newest log row last, and crops a non-Play screen to its top-left corner. *Verify:* `viewport_identity_at_full_size`, `viewport_clamps_oversized_terminal_to_grid`, `viewport_80x25_scrolls_map_pins_status_keeps_log` and `viewport_non_play_crops_top_left` in `src/backend_term.rs`.
 - **P03-AC-9** — The terminal release build (`backend-term`) compiles with no warning on rustc 1.75. *Verify:* `make build-term` (target of `Makefile`, `RUSTFLAGS="-D warnings"`).
 - **P03-AC-10** — The bytes read push the input bytes described in Purpose, a repeated `t` or `g` re-arms its chord, a cancelled chord or use logs its cancel line and pushes nothing, and the End screen's `r`, `n` and `q` restart, reroll and quit as in the window backend. *Verify:* unpinned (needs interactive playtest).
-- **P03-AC-11** — Raw mode is entered and the terminal restored on a normal exit and on a panic; a terminal resize forces a full redraw. *Verify:* unpinned (needs interactive playtest).
+- **P03-AC-11** — Raw mode is entered and the terminal restored on a normal exit and on a panic; a change of the view's size (the terminal size clamped to 80×30) forces a full redraw. *Verify:* unpinned (needs interactive playtest).
 - **P03-AC-12** — The file names no game noun as an identifier or a string literal: the use menu names items by glyph. *Verify:* unpinned (the `CLAUDE.md` grep rule, not a tracked check).
 
 ## Risks
-- On rustc 1.100 the deny-by-default lint `suspicious_runtime_symbol_definitions` rejects the `read` and
-  `write` declarations at `src/backend_term.rs:56-57`; the gate pins rustc 1.75, where they build. The owner
+- On rustc 1.100 the lint `suspicious_runtime_symbol_definitions` (a warning, on by default) fires on the
+  `read` and `write` declarations at `src/backend_term.rs:56-57`, and the Makefile's `-D warnings` turns it
+  into an error; the gate pins rustc 1.75, where they build. The owner
   made the lint a later node, not a gate change (`SPEC.md`, planned item 2).
 - The `Termios` struct, the flag values and `TIOCGWINSZ` are Linux's layout (glibc and musl, 32- and 64-bit);
   another platform needs its own.
