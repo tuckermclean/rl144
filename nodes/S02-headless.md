@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | E01, E02, E03, E04, C02 | P02, P03 | L |
+| done | E01, E02, E03, E04, C02 | M01, M02, M03, P02, P03 | L |
 
 **Owns:** `src/headless.rs`, the display-free verification tooling: dumps, the solver, the bot simulator and their gates.
 

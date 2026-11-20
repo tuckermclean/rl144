@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | E03, E04 | C02 | L |
+| done | E03, E04 | C02, M01 | L |
 
 **Owns:** `src/games/contractor.rs`, cartridge #1 ("The Contractor"): every game fact as `const` data.
 

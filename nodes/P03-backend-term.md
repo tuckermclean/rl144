@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | E01, E02, E04, C02, S01, S02, P01 | none | M |
+| done | E01, E02, E04, C02, S01, S02, P01 | M01, M02 | M |
 
 **Owns:** `src/backend_term.rs`, the ANSI terminal backend (the `backend-term` feature) and `--render-frame`.
 
