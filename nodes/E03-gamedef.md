@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | none | C01, E02, E04, S02 | M |
+| done | none | C01, E02, E04, M01, S02 | M |
 
 **Owns:** `src/gamedef.rs`, the `GameDef` cartridge contract.
 

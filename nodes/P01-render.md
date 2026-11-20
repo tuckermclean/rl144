@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | E02, E04, C02 | P02, P03 | M |
+| done | E02, E04, C02 | M01, P02, P03 | M |
 
 **Owns:** `src/render.rs`, the core cell composer: the 80×30 `Cell` grid and the derived `scene()`.
 

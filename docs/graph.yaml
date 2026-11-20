@@ -9,7 +9,6 @@ out_of_scope:
   - {glob: "LICENSE", reason: "legal text, changed by the owner only"}
 adoption:
   areas:
-    - {name: main-tests, globs: ["src/main.rs", "tests/"]}
     - {name: project, globs: ["Cargo.toml", "Makefile", ".gitignore", "CLAUDE.md"]}
     - {name: docs, globs: ["docs/design/", "docs/story/", "docs/superpowers/"]}
 nodes:
@@ -24,3 +23,7 @@ nodes:
   - {id: P01, name: render, track: done, status: imported, deps: [E02, E04, C02], owns: ["src/render.rs"]}
   - {id: P02, name: backend-minifb, track: done, status: imported, deps: [E01, E02, E04, C02, S01, S02, P01], owns: ["src/backend_minifb.rs"]}
   - {id: P03, name: backend-term, track: done, status: imported, deps: [E01, E02, E04, C02, S01, S02, P01], owns: ["src/backend_term.rs"]}
+  - {id: M01, name: main, track: done, status: imported, deps: [E01, E02, E03, E04, C01, C02, S01, S02, P01, P02, P03, M02], owns: ["src/main.rs"]}
+  - {id: M02, name: goldens, track: done, status: imported, deps: [S02, P03], owns: ["tests/golden/"]}
+  - {id: M03, name: bands, track: done, status: imported, deps: [S02], owns: ["tests/*-band.json"]}
+  - {id: M04, name: replay-fixture, track: done, status: imported, deps: [S01], owns: ["tests/fixtures/"]}
