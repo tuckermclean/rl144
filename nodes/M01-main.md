@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | E01, E02, E03, E04, C01, C02, S01, S02, P01, P02, P03, M02 | none | L |
+| done | E01, E02, E03, E04, C01, C02, S01, S02, P01, P02, P03, M02 | B02 | L |
 
 **Owns:** `src/main.rs`, the binary's entry point (argument parsing, headless-mode and backend dispatch) and the crate's main inline unit-test module.
 
