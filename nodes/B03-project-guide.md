@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | B02 | none | S |
+| done | B02 | M05 | S |
 
 **Owns:** `CLAUDE.md`, the project guide (rules, verification, doctrine, status and history), which `AGENTS.md` links to.
 
