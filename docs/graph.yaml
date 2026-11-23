@@ -8,8 +8,7 @@ out_of_scope:
   - {glob: "rl144-*-upx", reason: "UPX-packed release artifacts, built from the source, never edited"}
   - {glob: "LICENSE", reason: "legal text, changed by the owner only"}
 adoption:
-  areas:
-    - {name: docs, globs: ["docs/design/", "docs/story/", "docs/superpowers/"]}
+  areas: []
 nodes:
   - {id: E01, name: rng, track: done, status: imported, deps: [], owns: ["src/rng.rs"]}
   - {id: E02, name: content, track: done, status: imported, deps: [E01, E03], owns: ["src/content.rs"]}
@@ -29,3 +28,10 @@ nodes:
   - {id: B01, name: build-config, track: done, status: imported, deps: [], owns: ["Cargo.toml", ".gitignore"]}
   - {id: B02, name: makefile, track: done, status: imported, deps: [B01, M01, M02, M03, M04], owns: ["Makefile"]}
   - {id: B03, name: project-guide, track: done, status: imported, deps: [B02], owns: ["CLAUDE.md"]}
+  - {id: D01, name: story-canon, track: done, status: imported, deps: [], owns: ["docs/story/STORY-COMPILE-v1.md", "docs/story/FLAVOR-DRAFT-v0.md"]}
+  - {id: D02, name: spaces-draft, track: done, status: imported, deps: [], owns: ["docs/story/SPACES-DRAFT-v0.md"]}
+  - {id: D03, name: design-arc, track: done, status: imported, deps: [], owns: ["docs/design/2026-*.md"]}
+  - {id: D04, name: monomyth, track: done, status: imported, deps: [], owns: ["docs/design/monomyth*.md"]}
+  - {id: D05, name: proposals, track: done, status: imported, deps: [], owns: ["docs/design/proposals/"]}
+  - {id: D06, name: 486-scope, track: done, status: imported, deps: [], owns: ["docs/design/486/"]}
+  - {id: D07, name: batch-plans, track: done, status: imported, deps: [], owns: ["docs/superpowers/"]}
