@@ -57,17 +57,18 @@ Planned, in this order (owner, answer Q2 for items 1 and 3; item 2's place is an
 1. **The gate first.** The gate pins the 1.75 toolchain (done in the gate command); then a CI workflow that
    runs the gate on every PR, on a runner with `upx` and rustup's 1.75 (without them `make size` skips the
    budget check and `make msrv` falls back to the ambient toolchain, and both still pass). The repository
-   has no CI today. This is the first node.
+   has no CI today. This is the first node, B04.
 2. Later work found during adoption: moving the inline unit tests to `src/tests/*.rs` (via `#[path]`), so
-   that a tester can write unit tests the guard allows (answer Q10); the
+   that a tester can write unit tests the guard allows (answer Q10), node M05; the
    `suspicious_runtime_symbol_definitions` lint (a warning on rustc 1.100 that the Makefile's `-D warnings`
    turns into an error) on the `read`/`write` FFI at `src/backend_term.rs:56-57`, a node, not a gate change
-   (answer Q6).
+   (answer Q6), node P04.
 3. Then the road-to-1.0 order, after the owner's mimic sign-off above: cast batch two (the coat with the
    first mid-run split-spawn, the lost guy, the tired ones, THE STAGE's dressing, the donkey rung-3
    companion, corpse/tombstone persistence; manifest
    `docs/superpowers/plans/2026-07-27-cast-npc-vault-major.md` §A), then the ending as an exam (§9-I), then
-   polish, legibility and ship. Each is briefed from the story canon when its turn comes.
+   polish, legibility and ship. Each is briefed from the story canon when its turn comes, so none of them is
+   a node yet: their nodes are planned after the mimic sign-off, from the canon's own §9 entries.
 
 ## Architecture
 One binary crate (`Cargo.toml`, edition 2021, `rust-version = "1.75"`). `src/rng.rs` holds the frozen hash
@@ -83,11 +84,13 @@ encodes the gate (`make check`).
 
 ## The regime
 The graph (`docs/graph.yaml`) holds the gate (the command, its failure pattern and the failures it already
-had: none), the paths out of scope (`Cargo.lock`, the packed `rl144-*-upx` release artifacts, `LICENSE`),
-and the adoption areas still to map, one per PR in this order: `cartridge`, `save-headless`, `presentation`,
-`main-tests`, `project`, `docs`. Each mapped area leaves that list and becomes imported nodes (`status: imported`)
-that own its files and describe what the code does today (`engine-core` became E01 to E04); the planned work above
-becomes planned nodes once every area is mapped.
+had: none), the paths out of scope (`Cargo.lock`, the packed `rl144-*-upx` release artifacts, `LICENSE`)
+and the nodes. The imported nodes (`status: imported`) own the files that existed at adoption and describe
+what the code did then: E01 to E04 the engine core, C01 and C02 the cartridge, S01 and S02 save and
+headless, P01 to P03 the presentation, M01 to M04 `src/main.rs` and `tests/`, B01 to B03 the build files
+and `CLAUDE.md`, D01 to D07 the docs. Work on their code is a new planned node that depends on them. The
+planned nodes are the work queue: B04, M05 and P04 now (State, items 1 and 2). New work comes from issues,
+which triage turns into planned nodes.
 
 ## Node spec template
 A node spec `nodes/<ID>-<name>.md` has the headings Purpose, Tests, Changes, Gate and Risks, a header row
@@ -111,7 +114,14 @@ built; a node that moves a band names the band files it re-baselines and carries
   a build or a headless mode (`--dump`, `--solve`, `--sim`), not from a new unit test.
 - **Order of the adoption follow-ups** (planned item 2): the answers place the gate first and the
   road-to-1.0 work after it, but not the follow-ups found during adoption. Default: the test move, then the
-  FFI lint node, both after the CI node and before cast batch two.
+  FFI lint node, both after the CI node and before cast batch two. The graph carries the default as deps:
+  M05 depends on B04, P04 on M05.
+- **Approval of the test move** (node M05's decision; settled by the owner on the plan's spec PR, 2026-11-24):
+  the settled decision **Tests the imported criteria name** below has the test move need the owner's approval
+  as a move of frozen tests. Decision: approved. It covers moving every inline unit test to `src/tests/`, and
+  the indentation change that comes with it, as long as every test keeps its name and its body (checked by
+  the sorted `cargo test -- --list` output staying identical on both builds). It does not cover a change to
+  any test's assertions or behaviour. The session that builds M05 does not stop to ask.
 - **Golden and band re-baselines**: the goldens and band files under `tests/` are re-generated after an
   implementation, so the guard's tester-only paths are narrowed to `src/tests/**` and `tests/fixtures/**`.
   Default: an implementer re-baselines `tests/golden/*` or `tests/*-band.json` only when the node's spec
@@ -127,7 +137,7 @@ built; a node that moves a band names the band files it re-baselines and carries
   re-baselines**. The test move keeps each named test's name and body, needs the owner's approval as a move
   of frozen tests, and is followed by a spec PR that points the *Verify:* lines at the new files.
 - **Gate run time and CI evidence**: the whole gate takes about 35 minutes and there is no CI yet. Default:
-  once the CI node lands, CI runs the gate on every PR and a session runs the quick gate locally; until then
+  once the CI node (B04) lands, CI runs the gate on every PR and a session runs the quick gate locally; until then
   a node's PR records a local run of the gate command on its head commit as its evidence.
 
 ## Conventions

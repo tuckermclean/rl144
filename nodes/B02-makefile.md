@@ -2,7 +2,7 @@
 
 | Track | Deps | Unlocks | Size |
 |---|---|---|---|
-| done | B01, M01, M02, M03, M04 | B03 | M |
+| done | B01, M01, M02, M03, M04 | B03, B04 | M |
 
 **Owns:** `Makefile`, the gate (`make check`) and the size scoreboard (`make targets`) as POSIX `sh` recipes.
 
