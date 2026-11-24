@@ -116,10 +116,12 @@ built; a node that moves a band names the band files it re-baselines and carries
   road-to-1.0 work after it, but not the follow-ups found during adoption. Default: the test move, then the
   FFI lint node, both after the CI node and before cast batch two. The graph carries the default as deps:
   M05 depends on B04, P04 on M05.
-- **Approval of the test move** (node M05's decision): the settled decision **Tests the imported criteria
-  name** below has the test move need the owner's approval as a move of frozen tests. Default: none is
-  assumed; the session that builds M05 asks the owner first, unless the owner has approved it on the plan's
-  spec PR by then.
+- **Approval of the test move** (node M05's decision; settled by the owner on the plan's spec PR, 2026-11-24):
+  the settled decision **Tests the imported criteria name** below has the test move need the owner's approval
+  as a move of frozen tests. Decision: approved. It covers moving every inline unit test to `src/tests/`, and
+  the indentation change that comes with it, as long as every test keeps its name and its body (checked by
+  the sorted `cargo test -- --list` output staying identical on both builds). It does not cover a change to
+  any test's assertions or behaviour. The session that builds M05 does not stop to ask.
 - **Golden and band re-baselines**: the goldens and band files under `tests/` are re-generated after an
   implementation, so the guard's tester-only paths are narrowed to `src/tests/**` and `tests/fixtures/**`.
   Default: an implementer re-baselines `tests/golden/*` or `tests/*-band.json` only when the node's spec

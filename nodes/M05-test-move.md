@@ -39,8 +39,11 @@ red target is the layout check of M05-AC-1, not a failing unit test.
 - **M05-AC-6** — `CLAUDE.md` names `src/tests/` as where the unit tests live and no longer says they are inline. *Verify:* `grep -nE "inline unit tests|unit tests are inline" CLAUDE.md` (two lines before, none after), recorded in the PR, and the PR's diff of `CLAUDE.md`.
 
 ## Risks
-- This node needs the owner's approval of the move as a move of frozen tests before it is built (its
-  decision **Approval of the test move**, SPEC.md).
+- The owner approved the move as a move of frozen tests (on the plan's spec PR, 2026-11-24; its decision
+  **Approval of the test move**, SPEC.md, is settled): every inline unit test moves to `src/tests/`, with the
+  indentation change that comes with it, as long as every test keeps its name and its body (M05-AC-2 and
+  M05-AC-3). The approval does not cover a change to any test's assertions or behaviour; such a change still
+  needs the owner's approval. The session that builds this node does not stop to ask for the move.
 - The imported criteria's *Verify:* lines name tests "in `src/main.rs`" (and the other three files). After the
   move they point at the old file. A spec PR after this node re-points them at the new files; this node
   changes no spec.
