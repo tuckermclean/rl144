@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - main
+      - 'ci-probe/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install rustup toolchain 1.75
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          fi
+          rustup toolchain install 1.75 --profile minimal
+
+      - name: Install upx
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl || sudo apt-get install -y upx
+          upx --version
+
+      - name: Show toolchain versions
+        run: |
+          PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.75 rustc --version
+          PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.75 cargo --version
+
+      - name: Gate
+        run: PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.75 make -k check
