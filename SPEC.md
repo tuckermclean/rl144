@@ -118,8 +118,9 @@ built; a node that moves a band names the band files it re-baselines and carries
   M05 depends on B04, P04 on M05.
 - **Approval of the test move** (node M05's decision; settled by the owner on the plan's spec PR, 2026-11-24):
   the settled decision **Tests the imported criteria name** below has the test move need the owner's approval
-  as a move of frozen tests. Decision: approved. It covers moving every inline unit test to `src/tests/`, and
-  the indentation change that comes with it, as long as every test keeps its name and its body (checked by
+  as a move of frozen tests. Decision: approved. It covers moving every inline unit test to `src/tests/`,
+  the indentation change that comes with it, and the five `include_str!` paths of `golden_dumps` re-pointed to the
+  same golden files from `src/tests/` (owner's answer Q1 (a) on issue #21, 2026-11-25), as long as every test keeps its name and its body (checked by
   the sorted `cargo test -- --list` output staying identical on both builds). It does not cover a change to
   any test's assertions or behaviour. The session that builds M05 does not stop to ask.
 - **Golden and band re-baselines**: the goldens and band files under `tests/` are re-generated after an
