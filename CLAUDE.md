@@ -28,6 +28,7 @@ Single binary crate. Keep this module count; don't fragment further without just
 - `src/render.rs` — cell-grid presentation core (80×30 `Cell{ch,fg,bg}`)
 - `src/backend_minifb.rs` / `src/backend_term.rs` — the two backends
 - `src/main.rs` — arg parsing, backend dispatch
+- `src/tests/*.rs` — the unit tests, one file per module, declared from it via `#[path]`
 
 **Dependencies are frozen**: `minifb` + `font8x8` only, both optional, pulled in only by the `backend-minifb` feature (font8x8 uses only the `legacy` module, direct-indexed). Adding a crate requires demonstrating (a) it can't be hand-rolled in <150 lines and (b) the measured size cost. **No engines** (Bevy/ggez/macroquad/SDL disqualified by budget), no `serde`, no `rand`, no `image`. **No asset files** — all content is procedural or `const` data; an `assets/` directory is a design smell.
 
@@ -50,7 +51,7 @@ Core hashed state stays explicit-width (`i32`/`u32`/`u64`) — no `usize` in any
 
 **The engine is generic; the game is data.** Every game fact (monsters, items, themes, vaults, authored floors, balance, win condition, strings) lives on `GameDef` in `contractor.rs`; engine files reach it only via `crate::games::GAME`.
 
-- **Engine code must stay grep-clean of game nouns.** No `rat`/`goblin`/`ogre`/`cheese`/`sword`/etc. as identifier or string literal in any engine or backend file — checked by grep on every change. Doc comments in plain English are fine; a string that renders or hashes is not. The test modules under `src/tests/` are exempt. **A leaked game literal in engine code is a real bug** — move it to the appropriate `GameDef` field (usually `StringsDef`).
+- **Engine code must stay grep-clean of game nouns.** No `rat`/`goblin`/`ogre`/`cheese`/`sword`/etc. as identifier or string literal in any engine or backend file — checked by grep on every change. Doc comments in plain English are fine; a string that renders or hashes is not. `main.rs`'s test module (`src/tests/main.rs`) is exempt. **A leaked game literal in engine code is a real bug** — move it to the appropriate `GameDef` field (usually `StringsDef`).
 - A second game = a second `src/games/<name>.rs` shaped like `contractor.rs`; flip the re-export in `games/mod.rs` (cfg permitted there — it's wiring).
 - Swapping cartridges is a MAJOR-version event for seeds/saves, same doctrine as a worldgen change.
 
