@@ -27,7 +27,8 @@ Single binary crate. Keep this module count; don't fragment further without just
 - `src/save.rs` — save format, replay, state_hash
 - `src/render.rs` — cell-grid presentation core (80×30 `Cell{ch,fg,bg}`)
 - `src/backend_minifb.rs` / `src/backend_term.rs` — the two backends
-- `src/main.rs` — arg parsing, backend dispatch, tests
+- `src/main.rs` — arg parsing, backend dispatch
+- `src/tests/*.rs` — the unit tests, one file per module, declared from it via `#[path]`
 
 **Dependencies are frozen**: `minifb` + `font8x8` only, both optional, pulled in only by the `backend-minifb` feature (font8x8 uses only the `legacy` module, direct-indexed). Adding a crate requires demonstrating (a) it can't be hand-rolled in <150 lines and (b) the measured size cost. **No engines** (Bevy/ggez/macroquad/SDL disqualified by budget), no `serde`, no `rand`, no `image`. **No asset files** — all content is procedural or `const` data; an `assets/` directory is a design smell.
 
@@ -50,7 +51,7 @@ Core hashed state stays explicit-width (`i32`/`u32`/`u64`) — no `usize` in any
 
 **The engine is generic; the game is data.** Every game fact (monsters, items, themes, vaults, authored floors, balance, win condition, strings) lives on `GameDef` in `contractor.rs`; engine files reach it only via `crate::games::GAME`.
 
-- **Engine code must stay grep-clean of game nouns.** No `rat`/`goblin`/`ogre`/`cheese`/`sword`/etc. as identifier or string literal in any engine or backend file — checked by grep on every change. Doc comments in plain English are fine; a string that renders or hashes is not. `main.rs`'s test module is exempt. **A leaked game literal in engine code is a real bug** — move it to the appropriate `GameDef` field (usually `StringsDef`).
+- **Engine code must stay grep-clean of game nouns.** No `rat`/`goblin`/`ogre`/`cheese`/`sword`/etc. as identifier or string literal in any engine or backend file — checked by grep on every change. Doc comments in plain English are fine; a string that renders or hashes is not. `main.rs`'s test module (`src/tests/main.rs`) is exempt. **A leaked game literal in engine code is a real bug** — move it to the appropriate `GameDef` field (usually `StringsDef`).
 - A second game = a second `src/games/<name>.rs` shaped like `contractor.rs`; flip the re-export in `games/mod.rs` (cfg permitted there — it's wiring).
 - Swapping cartridges is a MAJOR-version event for seeds/saves, same doctrine as a worldgen change.
 
@@ -179,12 +180,12 @@ file, so this section is also the "Building a node" section of `AGENTS.md`.
   it adds in an area or in a node.
 - **Red target.** A command that exits non-zero before the node's change and 0 after, normally
   `PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=1.75 cargo test --quiet <the node's test name>`, or a headless mode
-  (`--dump`, `--solve`, `--sim`, a new flag) whose output the node's spec names. Until the inline unit tests move (see
-  "Tests and fixtures"), it is a build or a headless mode.
-- **Tests and fixtures.** The unit tests are inline `#[cfg(test)] mod tests` in `src/main.rs` (most), `src/render.rs`
-  and both backends. The role guard lets only the implementer write those files, so until a planned node moves the tests
-  to `src/tests/*.rs` a tester cannot add a unit test (see `SPEC.md`'s open decisions). `.noodlebot/roles.yaml` makes
-  `src/tests/**` and `tests/fixtures/**` the tester's paths and `SPEC.md`, `docs/graph.yaml`, `nodes/**` the spec paths.
+  (`--dump`, `--solve`, `--sim`, a new flag) whose output the node's spec names.
+- **Tests and fixtures.** The unit tests live in `src/tests/main.rs`, `src/tests/render.rs`,
+  `src/tests/backend_minifb.rs` and `src/tests/backend_term.rs`, each declared from its module as
+  `#[cfg(test)] #[path = "tests/<file>.rs"] mod tests;` (a child module, so `super::*` and private access stay).
+  `.noodlebot/roles.yaml` makes `src/tests/**` and `tests/fixtures/**` the tester's paths, so a tester can add unit
+  tests there, and makes `SPEC.md`, `docs/graph.yaml`, `nodes/**` the spec paths.
   The map goldens `tests/golden/seed_*.txt`, the frame goldens `tests/golden/frame_*.bin` and the band files
   `tests/*-band.json` are re-baselined after an implementation, only when the node's spec says so (a map-layout diff
   needs the owner's MAJOR sign-off first). `Cargo.lock`, `rl144-*-upx` and `LICENSE` are out of scope.
