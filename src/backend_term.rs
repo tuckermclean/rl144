@@ -53,8 +53,8 @@ struct Termios {
 extern "C" {
     fn tcgetattr(fd: i32, termios_p: *mut Termios) -> i32;
     fn tcsetattr(fd: i32, optional_actions: i32, termios_p: *const Termios) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+    fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
+    fn write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize;
 }
 
 const ICANON: u32 = 0x2;
@@ -118,7 +118,7 @@ fn set_termios(t: &Termios) {
 fn raw_write(bytes: &[u8]) {
     let mut off = 0;
     while off < bytes.len() {
-        let n = unsafe { write(STDOUT_FD, bytes[off..].as_ptr(), bytes.len() - off) };
+        let n = unsafe { write(STDOUT_FD, bytes[off..].as_ptr() as *const std::ffi::c_void, bytes.len() - off) };
         if n <= 0 {
             break;
         }
@@ -131,7 +131,7 @@ fn raw_write(bytes: &[u8]) {
 /// closed) — callers decide what "no byte" means in context.
 fn raw_read_byte() -> Option<u8> {
     let mut b = [0u8; 1];
-    let n = unsafe { read(STDIN_FD, b.as_mut_ptr(), 1) };
+    let n = unsafe { read(STDIN_FD, b.as_mut_ptr() as *mut std::ffi::c_void, 1) };
     if n == 1 { Some(b[0]) } else { None }
 }
 
